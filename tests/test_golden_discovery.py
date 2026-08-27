@@ -79,6 +79,62 @@ class GoldenDiscoveryTests(unittest.TestCase):
         }), "quick")
         self.assertEqual([item["full_name"] for item in result["candidates"]], ["tools/useful"])
 
+    def test_search_output_omits_readme_but_snapshot_retains_it(self):
+        candidate = repo("tools/useful", 10, description="Useful music tool")
+        github = FrozenGitHub([("music", [candidate])], readmes={
+            "tools/useful": "# Useful\n## Installation\nRun it locally."
+        })
+        result = SearchEngine(self.store, github).search(SearchRequest.from_dict({
+            "request": "music tool", "core_concepts": ["music"]
+        }), "quick")
+
+        self.assertNotIn("readme", result["candidates"][0])
+        self.assertNotIn("owner", result["candidates"][0])
+        self.assertEqual(result["candidates"][0]["description"], "Useful music tool")
+        stored = self.store.get_candidate("tools/useful", result["search_id"])
+        self.assertEqual(stored["readme"], "# Useful\n## Installation\nRun it locally.")
+
+    def test_expand_enriches_new_low_star_refinement_before_old_candidates(self):
+        popular = repo("tools/popular", 10000, description="Broad tool")
+        target = repo("tools/hidden-gem", 3, description="Specific review skill")
+        github = FrozenGitHub(
+            [("broad", [popular]), ("specific symptom", [target])],
+            readmes={
+                "tools/popular": "# Popular\n## Installation",
+                "tools/hidden-gem": "# Hidden Gem\n## Installation\n## Usage",
+            },
+        )
+        engine = SearchEngine(self.store, github, enrich_limit=1, relation_budget=1)
+        first = engine.search(SearchRequest.from_dict({
+            "request": "broad search", "core_concepts": ["broad"]
+        }), "deep")
+        result = engine.expand(first["search_id"], {"concepts": ["specific symptom"]})
+
+        hidden = next(item for item in result["candidates"] if item["full_name"] == "tools/hidden-gem")
+        self.assertTrue(any(evidence["kind"] == "readme" for evidence in hidden["evidence"]))
+
+    def test_repeated_recall_does_not_duplicate_discovery_paths(self):
+        candidate = repo("tools/review", 3, description="Specific review skill")
+        github = FrozenGitHub([("specific symptom", [candidate])])
+        engine = SearchEngine(self.store, github, relation_budget=1)
+        first = engine.search(SearchRequest.from_dict({
+            "request": "specific", "core_concepts": ["specific symptom"]
+        }), "deep")
+        refinement = {"concepts": ["specific symptom"]}
+        engine.expand(first["search_id"], refinement)
+        result = engine.expand(first["search_id"], refinement)
+
+        found = next(item for item in result["candidates"] if item["full_name"] == "tools/review")
+        identities = {
+            (
+                path.get("kind"), path.get("query"), path.get("query_kind"),
+                path.get("relation"), path.get("from"),
+            )
+            for path in found["discovery_paths"]
+        }
+        self.assertEqual(len(found["discovery_paths"]), len(identities))
+        self.assertEqual(len(found["matched_kinds"]), len(set(found["matched_kinds"])))
+
 
 if __name__ == "__main__":
     unittest.main()

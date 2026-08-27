@@ -3,13 +3,13 @@ from __future__ import annotations
 import hashlib
 import base64
 import json
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from .auth import AuthError, resolve_token
 from .storage import Store
 
 
@@ -39,9 +39,13 @@ class GitHubClient:
     def __init__(self, store: Store, token: str | None = None,
                  base_url: str = "https://api.github.com", timeout: float = 15.0) -> None:
         self.store = store
-        self.token = token if token is not None else os.environ.get("GITHUB_TOKEN")
-        if not self.token:
-            raise GitHubError("GITHUB_TOKEN is required; it is never stored by Muse-shroom")
+        try:
+            credential = resolve_token(token)
+        except AuthError as exc:
+            raise GitHubError(str(exc)) from exc
+        if credential is None:
+            raise GitHubError("GitHub authentication is required; run 'muse-shroom auth login' or set GITHUB_TOKEN")
+        self.token = credential.token
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 

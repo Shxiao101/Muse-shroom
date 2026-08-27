@@ -1,0 +1,17 @@
+{
+  "request": "解决 AI 编码 Agent 过度设计、反复审查和增加无必要抽象的问题",
+  "core_concepts": [
+    {"term": "unnecessary abstractions", "weight": 1.0},
+    {"term": "overengineering", "weight": 0.9},
+    {"term": "code review simplicity", "weight": 0.8}
+  ],
+  "adjacent_concepts": [
+    "YAGNI code review",
+    "AI coding agent review",
+    "implementation minimalism"
+  ],
+  "artifact_types": ["skill", "plugin"],
+  "constraints": {"include_archived": false},
+  "exclusions": ["awesome", "course"],
+  "exploration_level": 0.7
+}

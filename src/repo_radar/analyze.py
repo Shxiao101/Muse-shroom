@@ -7,7 +7,7 @@ from typing import Any
 
 GITHUB_LINK = re.compile(r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", re.I)
 INSTALL_RE = re.compile(r"(?im)^#{1,3}\s*(install|installation|getting started|quick ?start|setup)\b")
-USAGE_RE = re.compile(r"(?im)^#{1,3}\s*(usage|examples?|how to use)\b")
+USAGE_RE = re.compile(r"(?im)^#{1,3}\s*(use|usage|examples?|how to use)\b")
 
 
 def safe_readme(text: str, max_chars: int = 200_000) -> tuple[str, bool]:

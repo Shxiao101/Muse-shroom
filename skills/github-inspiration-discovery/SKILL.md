@@ -51,4 +51,4 @@ Invoke `muse-shroom rank --search-id ID --assessments -`. Present the returned p
 
 ## Boundaries
 
-Muse-shroom only reads public GitHub data. Never clone, execute, install, or grant permissions to a candidate unless the user separately requests and authorizes that work. Never expose `GITHUB_TOKEN` in prompts or output.
+Muse-shroom only reads public GitHub data. If authentication is missing, direct the user to `muse-shroom auth login`; never ask them to paste a token into the conversation. Never clone, execute, install, or grant permissions to a candidate unless the user separately requests and authorizes that work. Never expose GitHub credentials in prompts or output.

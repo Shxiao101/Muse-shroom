@@ -11,6 +11,15 @@ from .queries import build_queries, refinement_queries, reverse_reference_query
 from .storage import Store
 
 
+PUBLIC_CANDIDATE_FIELDS = {
+    "full_name", "html_url", "description", "homepage", "topics", "language",
+    "stargazers_count", "forks_count", "open_issues_count", "archived", "disabled",
+    "fork", "created_at", "updated_at", "pushed_at", "default_branch", "license",
+    "latest_release", "readme_sha", "readme_truncated", "readme_links",
+    "discovery_paths", "matched_kinds", "evidence",
+}
+
+
 class SearchEngine:
     def __init__(self, store: Store, github: GitHubClient, *, candidate_limit: int = 100,
                  enrich_limit: int = 30, relation_budget: int = 40) -> None:
@@ -69,10 +78,15 @@ class SearchEngine:
                 if not key:
                     continue
                 candidate = candidates.setdefault(key, dict(repo))
-                candidate.setdefault("discovery_paths", []).append({
+                path = {
                     "kind": "query", "query": query_spec["query"], "query_kind": query_spec["kind"]
-                })
-                candidate.setdefault("matched_kinds", []).append(query_spec["kind"])
+                }
+                paths = candidate.setdefault("discovery_paths", [])
+                if path not in paths:
+                    paths.append(path)
+                kinds = candidate.setdefault("matched_kinds", [])
+                if query_spec["kind"] not in kinds:
+                    kinds.append(query_spec["kind"])
                 if len(candidates) >= self.candidate_limit:
                     return stale, cached_at
         return stale, cached_at
@@ -81,7 +95,17 @@ class SearchEngine:
         stale = False
         cached_at = None
         failed = False
-        ordered = sorted(candidates.values(), key=lambda item: item.get("stargazers_count", 0), reverse=True)
+        def priority(item: dict[str, Any]) -> tuple[int, int, int]:
+            needs_enrichment = "readme" not in item
+            refined = bool({"refinement", "anchor", "key_file"} & set(item.get("matched_kinds", [])))
+            related = any(path.get("kind") == "relationship" for path in item.get("discovery_paths", []))
+            return (
+                int(needs_enrichment and (refined or related)),
+                int(needs_enrichment),
+                int(item.get("stargazers_count", 0)),
+            )
+
+        ordered = sorted(candidates.values(), key=priority, reverse=True)
         selected = ordered[:limit or self.enrich_limit]
 
         def fetch(candidate: dict[str, Any]) -> tuple[dict[str, Any], ApiResult | None, ApiResult | None]:
@@ -151,9 +175,12 @@ class SearchEngine:
         if key not in candidates and len(candidates) >= self.candidate_limit:
             return
         candidate = candidates.setdefault(key, dict(repo))
-        candidate.setdefault("discovery_paths", []).append({
+        path = {
             "kind": "relationship", "from": parent, "relation": relation, "detail": detail
-        })
+        }
+        paths = candidate.setdefault("discovery_paths", [])
+        if path not in paths:
+            paths.append(path)
         evidence_id = f"relation:{parent.lower()}:{relation}:{key}"
         evidence = candidate.setdefault("evidence", [])
         if not any(item.get("id") == evidence_id for item in evidence):
@@ -308,7 +335,16 @@ class SearchEngine:
     @staticmethod
     def _search_output(search_id: str, candidates: Iterable[dict[str, Any]], stale: bool,
                        cached_at: str | None, incomplete: str | None) -> dict[str, Any]:
-        items = sorted(candidates, key=lambda item: item.get("stargazers_count", 0), reverse=True)
+        # Full GitHub responses and README text stay in SQLite for later expansion
+        # and ranking, while the wire response exposes only the stable fields the
+        # host agent needs for assessment.
+        items = []
+        for candidate in candidates:
+            public_candidate = {
+                key: value for key, value in candidate.items() if key in PUBLIC_CANDIDATE_FIELDS
+            }
+            items.append(public_candidate)
+        items.sort(key=lambda item: item.get("stargazers_count", 0), reverse=True)
         return {
             "schema_version": 1, "search_id": search_id, "stale": stale,
             "cache_time": cached_at, "incomplete_phase": incomplete,

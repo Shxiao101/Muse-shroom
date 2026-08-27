@@ -14,7 +14,8 @@ from tests.helpers import repo
 
 class StorageAndCliTests(unittest.TestCase):
     def test_doctor_reports_missing_token_without_printing_value(self):
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True), \
+             patch("repo_radar.cli.resolve_token", return_value=None):
             output = io.StringIO()
             with redirect_stdout(output):
                 code = main(["--data-dir", directory, "doctor"])
@@ -51,6 +52,14 @@ class StorageAndCliTests(unittest.TestCase):
                 code = main(["--data-dir", directory, "feedback", "--input", "-"])
             self.assertEqual(code, 0)
             self.assertEqual(json.loads(stdout.getvalue())["repo"], "owner/repo")
+
+    def test_json_output_supports_non_gbk_characters(self):
+        from repo_radar.cli import _emit
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            _emit({"description": "music 🎶 工具"})
+        self.assertEqual(json.loads(output.getvalue())["description"], "music 🎶 工具")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 import unittest
 
-from repo_radar.analyze import github_links, safe_readme
+from repo_radar.analyze import github_links, readme_signals, safe_readme
 from repo_radar.models import ContractError, SearchRequest
 from repo_radar.queries import build_queries
 
@@ -38,6 +38,9 @@ class ContractAndQueryTests(unittest.TestCase):
         text, truncated = safe_readme("<script>bad()</script>" + "x" * 40, max_chars=30)
         self.assertTrue(truncated)
         self.assertNotIn("script", text.lower())
+
+    def test_use_heading_counts_as_usage_documentation(self):
+        self.assertTrue(readme_signals("# Tool\n## Use\nRun the command.")["has_usage"])
 
     def test_github_links_are_deduplicated_and_self_link_removed(self):
         links = github_links(

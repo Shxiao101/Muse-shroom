@@ -2,19 +2,26 @@
 
 Muse-shroom 是一个“让当前 Agent 帮你打破 GitHub 信息茧房”的本地搜索内核。它把可复现的 GitHub API 调用、SQLite 缓存、关系扩散和确定性排名放进 Python CLI，把自然语言理解和语义评价留给 Codex、Claude、Cursor 等宿主 Agent。
 
-它不会克隆或运行候选仓库，也不会把 `GITHUB_TOKEN` 写入数据库或日志。
+它不会克隆或运行候选仓库，也不会把 GitHub Token 写入数据库或日志。默认使用系统凭据存储保存 Token。
 
 ## 安装
 
-需要 Python 3.10+ 和具有公共仓库读取权限的 GitHub Token：
+需要 Python 3.10+。安装后运行一次交互式登录：
 
 ```console
 pipx install .
-export GITHUB_TOKEN=github_pat_...
+muse-shroom auth login
 muse-shroom doctor
 ```
 
-PowerShell 中使用 `$env:GITHUB_TOKEN = "github_pat_..."`。开发态可运行：
+`auth login` 会打开 GitHub Fine-grained Token 创建页，在终端中隐藏读取 Token，验证成功后保存到 Windows Credential Manager、macOS Keychain 或 Linux Secret Service。可用以下命令管理：
+
+```console
+muse-shroom auth status
+muse-shroom auth logout
+```
+
+自动化环境仍可设置 `GITHUB_TOKEN`；它的优先级高于系统凭据存储。开发态可运行：
 
 ```console
 python -m pip install -e .
