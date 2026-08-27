@@ -1,0 +1,6 @@
+{
+  "concepts": ["optical music recognition", "sheet music scanner"],
+  "adjacent_concepts": ["OMR GUI", "music OCR desktop"],
+  "anchors": ["homr", "desktop frontend"],
+  "exclude": ["dataset", "paper list"]
+}
