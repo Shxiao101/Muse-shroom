@@ -7,12 +7,26 @@ description: Discover relevant GitHub repositories, including popular representa
 
 Turn a fuzzy request into a diverse, evidence-backed shortlist with Muse-shroom. Keep natural-language interpretation here; leave GitHub query syntax, caching, relationship expansion, and deterministic ranking to the CLI.
 
-## Choose a mode
+## Confirm intent and mode
 
-- Use **quick** when the user wants a lightweight shortlist. Perform one `search` and one `rank`.
-- Use **deep** when the user names a niche concept, wants hidden gems, or asks whether a specific kind of surprising repository can be rediscovered. Perform `search`, inspect the first-round vocabulary and evidence, then `expand`, then `rank`.
+Before invoking Muse-shroom, read [request-contract.md](references/request-contract.md) and resolve two separate interactions. Do not combine them into one question or choice panel.
 
-Before invoking the CLI, read [request-contract.md](references/request-contract.md). Before assessing candidates, read [assessment-contract.md](references/assessment-contract.md).
+### Interaction 1: confirm semantic expansion
+
+Translate the user's surface phrase into a proposed search interpretation. Show the core concepts, adjacent concepts, likely artifact types, important constraints, and exclusions in concise user-facing language. Ask whether this interpretation is correct or should be changed, then wait for the user's response. Do not search GitHub yet.
+
+Apply the user's corrections before continuing. Skip this confirmation only when the user explicitly asks to proceed without semantic confirmation.
+
+### Interaction 2: choose the search mode
+
+After the interpretation is confirmed, check whether the user has already specified a mode. If not, ask them to choose and wait for the response:
+
+- **quick**: a lightweight shortlist using one `search` and one `rank`;
+- **deep**: a broader search using `search`, evidence-based concept refinement, one `expand`, and one `rank`.
+
+If the user already requested quick or deep search, treat this interaction as resolved and do not ask again. Do not invoke Muse-shroom until both the semantic interpretation and mode are resolved.
+
+Before assessing candidates, read [assessment-contract.md](references/assessment-contract.md).
 
 ## Authenticate from a sandboxed host
 
@@ -22,9 +36,9 @@ When the host supports scoped approval or elevation, make the first Muse-shroom 
 
 Only direct the user to `muse-shroom auth login` when `auth status` in the host user context reports that no credential is configured or that GitHub rejected it. If host execution is unavailable, explain that limitation instead of treating a sandbox-only result as a logged-out account or silently falling back to unauthenticated search.
 
-## Interpret the request
+## Build the confirmed request
 
-Separate the surface phrase from the underlying symptom. For example, “Codex overthinks” can mean latency, token cost, over-design, repeated review, or excessive caution. Preserve these as distinct concepts so a repository about implementation minimalism is not presented as a latency fix.
+Use the interpretation confirmed in Interaction 1. Separate the surface phrase from the underlying symptom. For example, “Codex overthinks” can mean latency, token cost, over-design, repeated review, or excessive caution. Preserve these as distinct concepts so a repository about implementation minimalism is not presented as a latency fix.
 
 Include:
 
