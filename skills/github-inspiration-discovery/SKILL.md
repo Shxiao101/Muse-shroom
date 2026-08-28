@@ -14,6 +14,14 @@ Turn a fuzzy request into a diverse, evidence-backed shortlist with Muse-shroom.
 
 Before invoking the CLI, read [request-contract.md](references/request-contract.md). Before assessing candidates, read [assessment-contract.md](references/assessment-contract.md).
 
+## Authenticate from a sandboxed host
+
+Muse-shroom stores its GitHub token in the operating system credential store. A sandboxed process can report no credential even when the host user is already logged in.
+
+When the host supports scoped approval or elevation, make the first Muse-shroom call `muse-shroom auth status` in the host/local user context with network access. Do not probe the sandbox first. If that call reports `configured=true`, run `search` and `expand` in the same host context so they can read the credential store and reach GitHub. Request permission only for the specific Muse-shroom command; never copy the token into a prompt, temporary file, command argument, or environment variable.
+
+Only direct the user to `muse-shroom auth login` when `auth status` in the host user context reports that no credential is configured or that GitHub rejected it. If host execution is unavailable, explain that limitation instead of treating a sandbox-only result as a logged-out account or silently falling back to unauthenticated search.
+
 ## Interpret the request
 
 Separate the surface phrase from the underlying symptom. For example, “Codex overthinks” can mean latency, token cost, over-design, repeated review, or excessive caution. Preserve these as distinct concepts so a repository about implementation minimalism is not presented as a latency fix.
@@ -51,4 +59,4 @@ Invoke `muse-shroom rank --search-id ID --assessments -`. Present the returned p
 
 ## Boundaries
 
-Muse-shroom only reads public GitHub data. If authentication is missing, direct the user to `muse-shroom auth login`; never ask them to paste a token into the conversation. Never clone, execute, install, or grant permissions to a candidate unless the user separately requests and authorizes that work. Never expose GitHub credentials in prompts or output.
+Muse-shroom only reads public GitHub data. If authentication is confirmed missing in the host user context, direct the user to `muse-shroom auth login`; never ask them to paste a token into the conversation. Never clone, execute, install, or grant permissions to a candidate unless the user separately requests and authorizes that work. Never expose GitHub credentials in prompts or output.
