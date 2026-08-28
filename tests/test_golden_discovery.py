@@ -1,9 +1,9 @@
 import tempfile
 import unittest
 
-from repo_radar.models import SearchRequest
-from repo_radar.search import SearchEngine
-from repo_radar.storage import Store
+from muse_shroom.models import SearchRequest
+from muse_shroom.search import SearchEngine
+from muse_shroom.storage import Store
 
 from tests.helpers import FrozenGitHub, repo
 

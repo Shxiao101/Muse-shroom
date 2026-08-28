@@ -6,8 +6,8 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
-from repo_radar.cli import main
-from repo_radar.storage import Store
+from muse_shroom.cli import main
+from muse_shroom.storage import Store
 
 from tests.helpers import repo
 
@@ -15,7 +15,7 @@ from tests.helpers import repo
 class StorageAndCliTests(unittest.TestCase):
     def test_doctor_reports_missing_token_without_printing_value(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True), \
-             patch("repo_radar.cli.resolve_token", return_value=None):
+             patch("muse_shroom.cli.resolve_token", return_value=None):
             output = io.StringIO()
             with redirect_stdout(output):
                 code = main(["--data-dir", directory, "doctor"])
@@ -54,7 +54,7 @@ class StorageAndCliTests(unittest.TestCase):
             self.assertEqual(json.loads(stdout.getvalue())["repo"], "owner/repo")
 
     def test_json_output_supports_non_gbk_characters(self):
-        from repo_radar.cli import _emit
+        from muse_shroom.cli import _emit
 
         output = io.StringIO()
         with redirect_stdout(output):

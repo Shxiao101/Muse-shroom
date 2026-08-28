@@ -5,8 +5,8 @@ import unittest
 import urllib.error
 from unittest.mock import patch
 
-from repo_radar.github import GitHubClient, GitHubRateLimitError
-from repo_radar.storage import Store
+from muse_shroom.github import GitHubClient, GitHubRateLimitError
+from muse_shroom.storage import Store
 
 
 class Response:

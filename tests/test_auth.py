@@ -7,8 +7,8 @@ import urllib.error
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
-from repo_radar.auth import AuthError, Credential, delete_saved_token, resolve_token, save_token, validate_token
-from repo_radar.cli import main
+from muse_shroom.auth import AuthError, Credential, delete_saved_token, resolve_token, save_token, validate_token
+from muse_shroom.cli import main
 
 
 class Response:
@@ -62,8 +62,8 @@ class AuthTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             stdout, stderr = io.StringIO(), io.StringIO()
             with patch("sys.stdin", io.StringIO("secret-token\n")), \
-                 patch("repo_radar.cli.validate_token", return_value={"login": "Shxiao101"}), \
-                 patch("repo_radar.cli.save_token") as save, redirect_stdout(stdout), redirect_stderr(stderr):
+                 patch("muse_shroom.cli.validate_token", return_value={"login": "Shxiao101"}), \
+                 patch("muse_shroom.cli.save_token") as save, redirect_stdout(stdout), redirect_stderr(stderr):
                 code = main(["--data-dir", directory, "auth", "login", "--no-browser", "--token-stdin"])
         self.assertEqual(code, 0)
         save.assert_called_once_with("secret-token")
@@ -71,7 +71,7 @@ class AuthTests(unittest.TestCase):
 
     def test_auth_status_without_token_returns_nonzero(self):
         with tempfile.TemporaryDirectory() as directory, \
-             patch("repo_radar.cli.resolve_token", return_value=None), redirect_stdout(io.StringIO()):
+             patch("muse_shroom.cli.resolve_token", return_value=None), redirect_stdout(io.StringIO()):
             code = main(["--data-dir", directory, "auth", "status"])
         self.assertEqual(code, 2)
 

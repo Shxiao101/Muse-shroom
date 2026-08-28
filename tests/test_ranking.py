@@ -2,10 +2,10 @@ import json
 import tempfile
 import unittest
 
-from repo_radar.models import ContractError, SearchRequest
-from repo_radar.ranking import rank_search
-from repo_radar.search import SearchEngine
-from repo_radar.storage import Store
+from muse_shroom.models import ContractError, SearchRequest
+from muse_shroom.ranking import rank_search
+from muse_shroom.search import SearchEngine
+from muse_shroom.storage import Store
 
 from tests.helpers import FrozenGitHub, repo
 

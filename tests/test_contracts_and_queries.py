@@ -1,8 +1,8 @@
 import unittest
 
-from repo_radar.analyze import github_links, readme_signals, safe_readme
-from repo_radar.models import ContractError, SearchRequest
-from repo_radar.queries import build_queries
+from muse_shroom.analyze import github_links, readme_signals, safe_readme
+from muse_shroom.models import ContractError, SearchRequest
+from muse_shroom.queries import build_queries
 
 
 class ContractAndQueryTests(unittest.TestCase):

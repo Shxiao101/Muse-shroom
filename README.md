@@ -44,7 +44,7 @@ muse-shroom feedback Quackone/homr_gui --relevant yes --interesting yes --too-ha
 echo '{"repo":"Quackone/homr_gui","relevant":true,"interesting":true,"too_hard":false}' | muse-shroom feedback --input -
 ```
 
-所有命令默认输出 JSON。`--format text` 仅用于人工查看。`--data-dir` 可覆盖平台标准数据目录，便于隔离测试。原计划中的 `repo-radar` 命令作为兼容别名继续可用。
+所有命令默认输出 JSON。`--format text` 仅用于人工查看。`--data-dir` 可覆盖平台标准数据目录，便于隔离测试。
 
 ## 结果约束
 
@@ -63,7 +63,7 @@ echo '{"repo":"Quackone/homr_gui","relevant":true,"interesting":true,"too_hard":
 python -m unittest discover -s tests -v
 ```
 
-设置 `REPO_RADAR_LIVE_SMOKE=1` 后可选运行实时 API 认证/契约 smoke test；稳定测试不会执行它。
+设置 `MUSE_SHROOM_LIVE_SMOKE=1` 后可选运行实时 API 认证/契约 smoke test；稳定测试不会执行它。
 
 ## 首版边界
 

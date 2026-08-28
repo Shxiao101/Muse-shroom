@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from repo_radar.github import ApiResult, GitHubNotFoundError
+from muse_shroom.github import ApiResult, GitHubNotFoundError
 
 
 def repo(full_name: str, stars: int, *, description: str = "", topics: list[str] | None = None,
