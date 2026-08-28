@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from evaluation.cassette import CassetteGitHub, load_cassette
 from evaluation.run_ab import build_blind_pack, main as run_ab_main
 from evaluation.score_ab import main as score_ab_main, reveal, summarize
+from muse_shroom import __version__ as muse_shroom_version
 from muse_shroom.models import SearchRequest
 from muse_shroom.queries import build_queries
 
@@ -189,7 +190,7 @@ class EvaluationTests(unittest.TestCase):
             baseline = json.loads((root / "results" / "baseline.raw.json").read_text(encoding="utf-8"))
             candidate = json.loads((root / "results" / "candidate.raw.json").read_text(encoding="utf-8"))
             self.assertEqual(baseline["muse_shroom_version"], "0.2.0")
-            self.assertEqual(candidate["muse_shroom_version"], "0.3.1")
+            self.assertEqual(candidate["muse_shroom_version"], muse_shroom_version)
             self.assertEqual(baseline["results"][0]["candidates"][0]["repo"], "owner/music-tool")
             self.assertEqual(candidate["results"][0]["candidates"][0]["repo"], "owner/music-tool")
 

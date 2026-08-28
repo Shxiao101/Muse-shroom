@@ -11,11 +11,11 @@ Turn a fuzzy request into a diverse, evidence-backed shortlist with Muse-shroom.
 
 Before invoking Muse-shroom, read [request-contract.md](references/request-contract.md) and resolve two separate interactions. Do not combine them into one question or choice panel.
 
-### Interaction 1: confirm semantic expansion
+### Interaction 1: confirm semantic expansion when unresolved
 
 Translate the user's surface phrase into a proposed search interpretation. Show the core concepts, adjacent concepts, likely artifact types, important constraints, and exclusions in concise user-facing language. Ask whether this interpretation is correct or should be changed, then wait for the user's response. Do not search GitHub yet.
 
-Apply the user's corrections before continuing. Skip this confirmation only when the user explicitly asks to proceed without semantic confirmation.
+Apply the user's corrections before continuing. Treat semantic confirmation as resolved when the user already gave a specific interpretation or says “就搜这个”, “直接搜”, “无需确认”, or an equivalent explicit instruction. Do not ask them to reconfirm it.
 
 ### Interaction 2: choose the search mode
 
@@ -24,7 +24,7 @@ After the interpretation is confirmed, check whether the user has already specif
 - **quick**: a lightweight shortlist using one `search` and one `rank`;
 - **deep**: a broader search using `search`, evidence-based concept refinement, one `expand`, and one `rank`.
 
-If the user already requested quick or deep search, treat this interaction as resolved and do not ask again. Do not invoke Muse-shroom until both the semantic interpretation and mode are resolved.
+If the user already requested quick or deep search, treat this interaction as resolved and do not ask again. Do not invoke Muse-shroom until both the semantic interpretation and mode are resolved. Ask only for unresolved information: if both are already explicit, search immediately; if both are unresolved, keep the two interactions separate.
 
 Before assessing candidates, read [assessment-contract.md](references/assessment-contract.md).
 
@@ -42,21 +42,25 @@ Use the interpretation confirmed in Interaction 1. Separate the surface phrase f
 
 Include:
 
-- core concepts that must match;
+- two to five search-sized concepts, with core concepts that must match;
 - adjacent concepts that create useful surprise;
 - likely artifact types;
 - constraints and explicit exclusions;
 - an exploration level reflecting how far the user wants to roam.
 
-Do not write GitHub qualifiers yourself. Supply plain concepts through the request contract.
+Do not write GitHub qualifiers yourself. Supply plain concepts through the request contract. Keep problem/domain terms in `core_concepts`; put generic forms such as skill, MCP, plugin, tool, AI, and agent in `artifact_types`.
+
+Keep Chinese concepts as concise intact phrases such as `正文配图` or `文章配图`; do not split them by character, whitespace, or Latin-word rules. For English, prefer one-to-three meaningful words per concept.
 
 ## Retrieve and refine
 
-Invoke `muse-shroom search --request REQUEST --mode quick|deep` and retain its `search_id`.
+Write request, refinement, and assessment JSON as UTF-8 files. On Windows, never pipe `Get-Content` into Muse-shroom; use `-` only with a known non-interactive UTF-8 stdin stream. Invoke `muse-shroom search --request REQUEST --mode quick|deep --output SEARCH.json` and retain its `search_id`. If a complete `search_id` for the same request already exists and the user did not ask to refresh, do not search again.
+
+Default CLI JSON keeps at most three evidence items per candidate. Read the `--output` file for assessment. Use `muse-shroom candidates --search-id ID --scope all` only when broader debugging is necessary.
 
 For deep mode, examine descriptions, Topics, discovery paths, and README evidence from the first round. Add only terminology supported by that evidence: domain terms, aliases, project anchors, characteristic filenames, and exclusions. Invoke `muse-shroom expand --search-id ID --refinement REFINEMENT` once. Do not inject a repository name the user asked the workflow to rediscover blindly.
 
-Search schema v2 returns a balanced assessment shortlist in `candidates`; `candidate_count` reports the full recalled set. Use `muse-shroom candidates --search-id ID --scope all` only when broader debugging is necessary. Do not assume omitted candidates were rejected as irrelevant.
+Search schema v2 returns a balanced assessment shortlist in `candidates`; `candidate_count` reports the full recalled set. Do not assume omitted candidates were rejected as irrelevant.
 
 If output is stale or has `incomplete_phase`, disclose it. Do not silently treat cached or partial coverage as current and complete.
 
@@ -73,7 +77,7 @@ Apply type-aware judgment:
 - Skills: trigger boundary and instruction scope;
 - Mods: compatible versions, uninstall path, and conflicts.
 
-Invoke `muse-shroom rank --search-id ID --assessments -`. Present the returned popular, gems, and adjacent buckets without filling missing slots. Explain the discovery path for surprising recommendations and distinguish a demonstrated relationship from an inference.
+Invoke `muse-shroom rank --search-id ID --assessments ASSESSMENTS --output RANK.json`. Present the returned popular, gems, and adjacent buckets without filling missing slots. Explain the discovery path for surprising recommendations and distinguish a demonstrated relationship from an inference.
 
 ## Boundaries
 

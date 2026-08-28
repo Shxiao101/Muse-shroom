@@ -25,7 +25,46 @@ class ContractAndQueryTests(unittest.TestCase):
 
     def test_terse_request_still_generates_eight_query_variants(self):
         request = SearchRequest.from_dict({"request": "AI music", "core_concepts": ["AI music"]})
-        self.assertGreaterEqual(len(build_queries(request)), 8)
+        queries = build_queries(request)
+        self.assertGreaterEqual(len(queries), 8)
+        surfaces = " ".join(item["query"] for item in queries)
+        self.assertIn("in:name,description", surfaces)
+        self.assertIn("in:topics", surfaces)
+        self.assertIn("in:readme", surfaces)
+
+    def test_generic_core_terms_do_not_become_isolated_queries(self):
+        request = SearchRequest.from_dict({
+            "request": "文章配图 Skill",
+            "core_concepts": ["文章配图", "Skill"],
+            "artifact_types": ["skill"],
+        })
+        queries = [item["query"] for item in build_queries(request)]
+        joined = "\n".join(queries)
+        self.assertTrue(any('"文章配图"' in query for query in queries))
+        self.assertFalse(any(query.startswith('"Skill"') or query.startswith('"skill"') for query in queries))
+        self.assertNotIn('"Skill"', joined)
+        self.assertIn('"文章配图" "skill"', joined)
+
+    def test_chinese_concepts_stay_intact_phrases(self):
+        request = SearchRequest.from_dict({
+            "request": "正文配图",
+            "core_concepts": [{"term": "正文配图", "weight": 1.0}],
+            "artifact_types": ["skill"],
+        })
+        joined = " ".join(item["query"] for item in build_queries(request))
+        self.assertIn('"正文配图"', joined)
+        self.assertNotIn('"正"', joined)
+        self.assertNotIn('"文配图"', joined)
+
+    def test_typed_query_skips_type_tokens_already_in_the_concept(self):
+        request = SearchRequest.from_dict({
+            "request": "agent skill",
+            "core_concepts": ["writing skill"],
+            "artifact_types": ["skill"],
+        })
+        joined = " ".join(item["query"] for item in build_queries(request))
+        self.assertIn('"writing skill"', joined)
+        self.assertNotIn('"writing skill" "skill"', joined)
 
     def test_request_rejects_missing_core_concepts(self):
         with self.assertRaises(ContractError):

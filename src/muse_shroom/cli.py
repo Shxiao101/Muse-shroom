@@ -28,6 +28,9 @@ def _configure_stdio() -> None:
 
 def _json_input(path: str | None) -> Any:
     if path in {None, "-"}:
+        isatty = getattr(sys.stdin, "isatty", None)
+        if callable(isatty) and isatty():
+            raise ContractError("interactive stdin is not supported for JSON; save UTF-8 JSON to a file")
         return json.load(sys.stdin)
     with Path(path).open(encoding="utf-8") as handle:
         return json.load(handle)
@@ -44,6 +47,28 @@ def _emit(payload: Any, output_format: str = "json") -> None:
                     print(f"- {item['repo']} ({item['scores'][title[:-1] if title == 'gems' else title]}) {item.get('url')}")
         else:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _persist_output(payload: Any, output_path: str) -> dict[str, Any]:
+    path = Path(output_path)
+    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    path.write_text(text, encoding="utf-8")
+    receipt: dict[str, Any] = {
+        "ok": True, "output": str(path), "bytes": len(text.encode("utf-8")),
+    }
+    if isinstance(payload, dict):
+        if payload.get("search_id"):
+            receipt["search_id"] = payload["search_id"]
+        if "assessment_candidate_count" in payload:
+            receipt["assessment_candidate_count"] = payload["assessment_candidate_count"]
+        if payload.get("next_action"):
+            receipt["next_action"] = payload["next_action"]
+        if payload.get("reused"):
+            receipt["reused"] = True
+        buckets = payload.get("buckets")
+        if isinstance(buckets, dict):
+            receipt["returned"] = sum(len(buckets.get(name, [])) for name in ("popular", "gems", "adjacent"))
+    return receipt
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,12 +88,16 @@ def build_parser() -> argparse.ArgumentParser:
     search = sub.add_parser("search")
     search.add_argument("--request", required=True, help="request JSON path or - for stdin")
     search.add_argument("--mode", choices=("quick", "deep"), default="quick")
+    search.add_argument("--refresh", action="store_true", help="do not reuse a complete search with the same request")
+    search.add_argument("--output", help="write full JSON to this UTF-8 file and print a short receipt")
     expand = sub.add_parser("expand")
     expand.add_argument("--search-id", required=True)
     expand.add_argument("--refinement", required=True, help="refinement JSON path or - for stdin")
+    expand.add_argument("--output", help="write full JSON to this UTF-8 file and print a short receipt")
     rank = sub.add_parser("rank")
     rank.add_argument("--search-id", required=True)
     rank.add_argument("--assessments", required=True, help="assessment JSON path or - for stdin")
+    rank.add_argument("--output", help="write full JSON to this UTF-8 file and print a short receipt")
     inspect = sub.add_parser("inspect")
     inspect.add_argument("repo")
     inspect.add_argument("--search-id")
@@ -146,7 +175,10 @@ def run(args: argparse.Namespace) -> Any:
             github = GitHubClient(store)
             engine = SearchEngine(store, github)
             if args.command == "search":
-                return engine.search(SearchRequest.from_dict(_json_input(args.request)), args.mode)
+                return engine.search(
+                    SearchRequest.from_dict(_json_input(args.request)), args.mode,
+                    refresh=args.refresh,
+                )
             return engine.expand(args.search_id, _json_input(args.refinement))
         if args.command == "rank":
             return rank_search(store, args.search_id, _json_input(args.assessments))
@@ -217,6 +249,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         result = run(args)
+        output_path = getattr(args, "output", None)
+        if output_path:
+            result = _persist_output(result, output_path)
         _emit(result, args.format)
         needs_auth = args.command == "doctor" or (args.command == "auth" and args.auth_command == "status")
         return 2 if needs_auth and not result.get("ok", False) else 0

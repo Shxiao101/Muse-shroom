@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 from muse_shroom.cli import main
@@ -60,6 +61,72 @@ class StorageAndCliTests(unittest.TestCase):
         with redirect_stdout(output):
             _emit({"description": "music 🎶 工具"})
         self.assertEqual(json.loads(output.getvalue())["description"], "music 🎶 工具")
+
+    def test_interactive_stdin_is_rejected_for_json(self):
+        class Tty(io.StringIO):
+            def isatty(self) -> bool:
+                return True
+
+        with tempfile.TemporaryDirectory() as directory:
+            stderr = io.StringIO()
+            with patch("sys.stdin", Tty()), redirect_stderr(stderr):
+                code = main(["--data-dir", directory, "feedback", "--input", "-"])
+            self.assertEqual(code, 2)
+            payload = json.loads(stderr.getvalue())
+            self.assertEqual(payload["error"], "ContractError")
+            self.assertIn("UTF-8", payload["message"])
+
+    def test_search_writes_output_file_and_prints_receipt(self):
+        from muse_shroom.search import SearchEngine
+        from muse_shroom.models import SearchRequest
+        from tests.helpers import FrozenGitHub, repo
+
+        with tempfile.TemporaryDirectory() as directory:
+            request_path = os.path.join(directory, "request.json")
+            output_path = os.path.join(directory, "search.json")
+            with open(request_path, "w", encoding="utf-8") as handle:
+                json.dump({"request": "music", "core_concepts": ["music"]}, handle)
+            github = FrozenGitHub(
+                [("music", [repo("tools/useful", 10, description="Useful music tool")])],
+                readmes={"tools/useful": "# Useful\n## Installation\nRun it."},
+            )
+            stdout = io.StringIO()
+            with patch("muse_shroom.cli.GitHubClient", return_value=github), redirect_stdout(stdout):
+                code = main([
+                    "--data-dir", directory, "search", "--request", request_path,
+                    "--output", output_path,
+                ])
+            self.assertEqual(code, 0)
+            receipt = json.loads(stdout.getvalue())
+            self.assertTrue(receipt["ok"])
+            self.assertEqual(receipt["output"], output_path)
+            saved = json.loads(Path(output_path).read_text(encoding="utf-8"))
+            self.assertEqual(saved["search_id"], receipt["search_id"])
+            self.assertLessEqual(len(saved["candidates"][0]["evidence"]), 3)
+
+    def test_identical_search_is_reused_without_github(self):
+        from muse_shroom.search import SearchEngine
+        from muse_shroom.models import SearchRequest
+        from tests.helpers import FrozenGitHub, repo
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            github = FrozenGitHub(
+                [("music", [repo("tools/useful", 10, description="Useful music tool")])],
+                readmes={"tools/useful": "# Useful\n## Installation\nRun it."},
+            )
+            engine = SearchEngine(store, github)
+            request = SearchRequest.from_dict({"request": "music", "core_concepts": ["music"]})
+            first = engine.search(request, "quick")
+            search_calls = github.request_counts["search"]
+            second = engine.search(request, "quick")
+            self.assertTrue(second["reused"])
+            self.assertEqual(second["search_id"], first["search_id"])
+            self.assertEqual(github.request_counts["search"], search_calls)
+            refreshed = engine.search(request, "quick", refresh=True)
+            self.assertNotEqual(refreshed["search_id"], first["search_id"])
+            self.assertGreater(github.request_counts["search"], search_calls)
+            store.close()
 
 
 if __name__ == "__main__":

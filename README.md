@@ -37,17 +37,16 @@ muse-shroom --help
 5. CLI 合并元数据、关系证据、类型质量规则和评价，输出热门、宝藏、跨界三个榜。
 
 ```console
-muse-shroom search --request examples/music-ai.request.json --mode quick
-muse-shroom expand --search-id SEARCH_ID --refinement examples/music-ai.refinement.json
-muse-shroom rank --search-id SEARCH_ID --assessments assessments.json
+muse-shroom search --request examples/music-ai.request.json --mode quick --output search.json
+muse-shroom expand --search-id SEARCH_ID --refinement examples/music-ai.refinement.json --output expand.json
+muse-shroom rank --search-id SEARCH_ID --assessments assessments.json --output rank.json
 muse-shroom inspect Quackone/homr_gui --search-id SEARCH_ID
 muse-shroom candidates --search-id SEARCH_ID --scope assessment
 muse-shroom candidates --search-id SEARCH_ID --scope all
 muse-shroom feedback Quackone/homr_gui --relevant yes --interesting yes --too-hard no
-echo '{"repo":"Quackone/homr_gui","relevant":true,"interesting":true,"too_hard":false}' | muse-shroom feedback --input -
 ```
 
-所有命令默认输出 JSON。`--format text` 仅用于人工查看。`--data-dir` 可覆盖平台标准数据目录，便于隔离测试。
+所有命令默认输出 JSON。JSON 输入请保存为 UTF-8 文件；Windows 不要使用 `Get-Content | muse-shroom`。`-` 只接受非交互 stdin。`--output` 把完整 JSON 写到文件，控制台只打印回执。相同 request 和 mode 默认复用已完成的 `search_id`，需要新召回时加 `--refresh`。`--format text` 仅用于人工查看。`--data-dir` 可覆盖平台标准数据目录，便于隔离测试。
 
 ## 结果约束
 
@@ -55,7 +54,8 @@ echo '{"repo":"Quackone/homr_gui","relevant":true,"interesting":true,"too_hard":
 - 搜索输出使用 schema v2；`candidate_count` 是完整召回数，`candidates` 只包含最多 24 个评审候选。
 - 评审候选中同一仓库 owner 默认最多出现 3 次，避免单一插件生态占满评审预算。
 - 深搜从种子沿 README 链接、README 反向引用、Fork 和作者仓库扩散，并受请求预算限制。
-- README 只以最多 5 条、每条不超过 220 字符的不可信证据片段进入输出；原文仅保存在 SQLite。
+- README 富化最多提取 5 条不可信证据片段；默认 JSON 每个候选最多保留 3 条证据。原文仅保存在 SQLite。
+- 单独的 `skill` / `AI` / `agent` 不会作为核心查询；形态词应放在 `artifact_types`。中文概念整词保留。
 - 推荐理由必须引用已采集的 evidence ID；功能结论必须引用具体 README 片段，未知能力应写成 `unknown`。
 - 榜单上限为热门 4、宝藏 4、跨界 2；质量不足时少给，不填充。
 - Star 增长只有本地存在至少两个快照时才显示。

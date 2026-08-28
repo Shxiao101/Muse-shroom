@@ -40,19 +40,43 @@ def public_candidate(candidate: dict[str, Any], *, detailed: bool = False) -> di
             "kind": "query", "query_kind": path.get("query_kind"), "position": path.get("position")
         } for path in queries[:4]]
         result["discovery_paths"] = compact_paths
-        compact_evidence = []
+        extras = []
+        excerpts = []
+        metadata = None
+        readme_summary = None
         for item in candidate.get("evidence", []):
-            if item.get("kind") == "github_metadata":
-                compact_evidence.append({
+            kind = item.get("kind")
+            if kind == "github_metadata" and metadata is None:
+                metadata = {
                     "id": item.get("id"), "kind": "github_metadata",
                     "source": item.get("source"),
                     "facts": {"candidate_fields": [
                         "description", "stars", "archived", "license", "topics", "pushed_at"
                     ]},
-                })
-            else:
-                compact_evidence.append(item)
-        result["evidence"] = compact_evidence
+                }
+            elif kind == "readme" and readme_summary is None:
+                facts = item.get("facts") or {}
+                readme_summary = {
+                    "id": item.get("id"), "kind": "readme", "source": item.get("source"),
+                    "facts": {key: facts[key] for key in (
+                        "has_install", "has_usage", "mentions_uninstall", "mentions_compatibility",
+                        "mentions_permissions", "mentions_tool_contract", "truncated", "untrusted_source",
+                    ) if key in facts},
+                }
+            elif kind == "readme_excerpt":
+                excerpts.append(item)
+            elif kind not in {"readme", "github_metadata", "readme_excerpt"}:
+                extras.append(item)
+        preferred = {"overview": 0, "concept_match": 1, "type_risk": 2, "installation": 3, "usage": 4}
+        excerpts.sort(key=lambda item: preferred.get(str((item.get("facts") or {}).get("snippet_type")), 9))
+        chosen = []
+        if metadata:
+            chosen.append(metadata)
+        if excerpts:
+            chosen.append(excerpts[0])
+        remainder = extras + ([readme_summary] if readme_summary else []) + excerpts[1:]
+        chosen.extend(remainder[: max(0, 3 - len(chosen))])
+        result["evidence"] = chosen[:3]
     return result
 
 
@@ -296,11 +320,16 @@ class SearchEngine:
                     failed = True
         return stale, cached_at, calls, failed
 
-    def search(self, request: SearchRequest, mode: str) -> dict[str, Any]:
+    def search(self, request: SearchRequest, mode: str, *, refresh: bool = False) -> dict[str, Any]:
         if mode not in {"quick", "deep"}:
             raise ValueError("mode must be quick or deep")
+        fingerprint = request.fingerprint(mode)
+        if not refresh:
+            existing = self.store.find_complete_search(fingerprint, mode)
+            if existing:
+                return self._reused_output(existing, mode)
         search_id = uuid.uuid4().hex
-        self.store.create_search(search_id, request.to_dict(), mode)
+        self.store.create_search(search_id, request.to_dict(), mode, fingerprint)
         candidates: dict[str, dict[str, Any]] = {}
         stale = False
         cached_at = None
@@ -435,11 +464,29 @@ class SearchEngine:
             "relation_calls": relation_calls, "code_search_calls": code_calls,
             "lanes": lane_counts,
             "api_calls": dict(getattr(self.github, "request_counts", {})),
-            "rate_limits": dict(getattr(self.github, "rate_limits", {})),
         }
         return self._search_output(
             search_id, candidates.values(), selected, stale, cached_at, incomplete, coverage
         )
+
+    def _reused_output(self, search_id: str, mode: str) -> dict[str, Any]:
+        session = self.store.load_search(search_id)
+        selected = [item for item in session["candidates"] if item.get("selected_for_assessment")]
+        coverage = {
+            "queries_executed": self.store.query_count(search_id),
+            "enriched": sum("readme" in item for item in session["candidates"]),
+            "enriched_this_phase": 0,
+            "omitted": max(0, len(session["candidates"]) - len(selected)),
+            "relation_calls": 0, "code_search_calls": 0, "lanes": {},
+            "api_calls": {}, "reused": True,
+        }
+        output = self._search_output(
+            search_id, session["candidates"], selected, bool(session["stale"]),
+            session.get("updated_at"), session.get("incomplete_phase"), coverage,
+        )
+        output["reused"] = True
+        output["next_action"] = "expand" if mode == "deep" else "rank"
+        return output
 
     @staticmethod
     def _search_output(search_id: str, all_candidates: Iterable[dict[str, Any]],

@@ -78,15 +78,33 @@ class Store:
             );
             """
         )
-        self.db.commit()
-
-    def create_search(self, search_id: str, request: dict[str, Any], mode: str) -> None:
-        now = utc_now()
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(searches)")}
+        if "fingerprint" not in columns:
+            self.db.execute("ALTER TABLE searches ADD COLUMN fingerprint TEXT")
         self.db.execute(
-            "INSERT INTO searches VALUES (?, ?, ?, ?, ?, 0, NULL)",
-            (search_id, json.dumps(request, ensure_ascii=False), mode, now, now),
+            "CREATE INDEX IF NOT EXISTS idx_searches_fingerprint ON searches(fingerprint, mode)"
         )
         self.db.commit()
+
+    def create_search(self, search_id: str, request: dict[str, Any], mode: str,
+                      fingerprint: str | None = None) -> None:
+        now = utc_now()
+        self.db.execute(
+            """INSERT INTO searches
+               (id, request_json, mode, created_at, updated_at, stale, incomplete_phase, fingerprint)
+               VALUES (?, ?, ?, ?, ?, 0, NULL, ?)""",
+            (search_id, json.dumps(request, ensure_ascii=False), mode, now, now, fingerprint),
+        )
+        self.db.commit()
+
+    def find_complete_search(self, fingerprint: str, mode: str) -> str | None:
+        row = self.db.execute(
+            """SELECT id FROM searches
+               WHERE fingerprint=? AND mode=? AND incomplete_phase IS NULL
+               ORDER BY updated_at DESC LIMIT 1""",
+            (fingerprint, mode),
+        ).fetchone()
+        return None if row is None else str(row["id"])
 
     def mark_search(self, search_id: str, *, stale: bool, incomplete_phase: str | None) -> None:
         self.db.execute(

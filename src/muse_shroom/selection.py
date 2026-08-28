@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from .models import Concept, SearchRequest, repo_key
+from .queries import is_generic_term
 
 
 QUERY_WEIGHTS = {
@@ -17,6 +18,7 @@ RELATION_WEIGHTS = {
     "fork": 65.0, "same_owner": 45.0,
 }
 TOKEN_RE = re.compile(r"[A-Za-z0-9_+#.-]+|[\u3400-\u9fff]+")
+GENERIC_PARTIAL_TOKENS = {"skill", "skills", "tool", "tools", "ai", "agent", "agents"}
 
 
 def _text(candidate: dict[str, Any], include_readme: bool = False) -> dict[str, str]:
@@ -36,7 +38,9 @@ def _term_coverage(term: str, surfaces: dict[str, str]) -> float:
         return 0.0
     multipliers = {"name": 1.0, "topics": .95, "description": .8, "readme": .6}
     best = 0.0
-    tokens = TOKEN_RE.findall(phrase)
+    tokens = [token for token in TOKEN_RE.findall(phrase) if token.casefold() not in GENERIC_PARTIAL_TOKENS]
+    if not tokens and phrase not in GENERIC_PARTIAL_TOKENS:
+        tokens = TOKEN_RE.findall(phrase)
     for name, text in surfaces.items():
         if phrase in text:
             best = max(best, multipliers[name])
@@ -132,8 +136,14 @@ def score_candidates(candidates: Iterable[dict[str, Any]], request: SearchReques
     popularity = _percentiles(items)
     for item in items:
         key = repo_key(item)
-        core = concept_coverage(item, request.core_concepts, include_readme=enriched)
-        adjacent = concept_coverage(item, request.adjacent_concepts, include_readme=enriched)
+        core = concept_coverage(
+            item, [concept for concept in request.core_concepts if not is_generic_term(concept.term)],
+            include_readme=enriched,
+        )
+        adjacent = concept_coverage(
+            item, [concept for concept in request.adjacent_concepts if not is_generic_term(concept.term)],
+            include_readme=enriched,
+        )
         relation = relationship_score(item)
         recall = rrf.get(key, 0.0) * .55 + core * .30 + relation * .15
         evidence = _evidence_completeness(item) if enriched else 0.0

@@ -15,6 +15,9 @@ TYPE_TERMS = {
     "plugin": ["plugin", "extension"],
     "library": ["library", "sdk"],
 }
+GENERIC_TYPE_TOKENS = {"skill", "skills", "tool", "tools", "ai", "agent", "agents"}
+CJK_RE = re.compile(r"[\u3400-\u9fff]")
+LATIN_TOKEN_RE = re.compile(r"[A-Za-z0-9_+#.-]+")
 
 
 def _quote(term: str) -> str:
@@ -24,8 +27,33 @@ def _quote(term: str) -> str:
     return f'"{clean}"'
 
 
-def _terms(concepts: Iterable[Concept]) -> list[str]:
-    return [c.term for c in sorted(concepts, key=lambda item: item.weight, reverse=True) if c.term]
+def _latin_tokens(term: str) -> list[str]:
+    return LATIN_TOKEN_RE.findall(term)
+
+
+def is_generic_term(term: str) -> bool:
+    phrase = term.casefold().strip()
+    if not phrase or CJK_RE.search(phrase):
+        return False
+    tokens = [token.casefold() for token in _latin_tokens(phrase)]
+    return bool(tokens) and all(token in GENERIC_TYPE_TOKENS for token in tokens)
+
+
+def _terms(concepts: Iterable[Concept], *, allow_generic: bool = False) -> list[str]:
+    values = [c.term for c in sorted(concepts, key=lambda item: item.weight, reverse=True) if c.term]
+    if allow_generic:
+        return values
+    return [term for term in values if not is_generic_term(term)]
+
+
+def _typed_redundant(left: str, right: str) -> bool:
+    if not left or not right:
+        return True
+    if right.casefold() in left.casefold():
+        return True
+    right_tokens = {token.casefold() for token in _latin_tokens(right)}
+    left_tokens = {token.casefold() for token in _latin_tokens(left)}
+    return bool(right_tokens) and right_tokens <= left_tokens
 
 
 def _qualifiers(request: SearchRequest) -> str:
@@ -51,21 +79,26 @@ def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, str
     for artifact_type in request.artifact_types:
         type_terms.extend(TYPE_TERMS.get(artifact_type, [artifact_type]))
     suffix = _qualifiers(request)
+    lefts = core[:2] or adjacent[:2]
+    primary_term = core[0] if core else (adjacent[0] if adjacent else "")
+    primary = _quote(primary_term)
 
     raw: list[tuple[str, str, str]] = []
     for concept in core[:3]:
         raw.append((f"{_quote(concept)} in:name,description,topics,readme {suffix}", "core", "stars"))
     typed = []
-    for left in core[:2]:
+    for left in lefts:
         for right in type_terms[:2] or ["tool"]:
+            if _typed_redundant(left, right):
+                continue
             typed.append((f"{_quote(left)} {_quote(right)} in:name,description,topics,readme {suffix}", "typed", "stars"))
     raw.extend(typed[:3])
 
-    primary = _quote(core[0])
-    raw.extend([
-        (f"{primary} in:name,description,topics,readme stars:1..500 {suffix}", "gem", "updated"),
-        (f"{primary} in:name,description,topics,readme stars:0..50 {suffix}", "gem", "updated"),
-    ])
+    if primary:
+        raw.extend([
+            (f"{primary} in:name,description,topics,readme stars:1..500 {suffix}", "gem", "updated"),
+            (f"{primary} in:name,description,topics,readme stars:0..50 {suffix}", "gem", "updated"),
+        ])
 
     adjacent_queries = [
         (f"{_quote(term)} in:name,description,topics,readme {suffix}", "adjacent", "stars")
@@ -81,13 +114,16 @@ def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, str
 
     # Ensure even a terse request explores distinct indexed surfaces. These are
     # repository-search variants, not free-form syntax supplied by the agent.
-    for scope, kind in (
-        ("name,description", "core"), ("topics", "core"), ("readme", "core"),
-        ("name,description,topics", "core"),
-    ):
-        raw.append((f"{primary} in:{scope} {suffix}", kind, "stars"))
-    for companion in ("tool", "app", "plugin"):
-        raw.append((f"{primary} {_quote(companion)} in:name,description,topics,readme {suffix}", "typed", "stars"))
+    if primary:
+        for scope, kind in (
+            ("name,description", "core"), ("topics", "core"), ("readme", "core"),
+            ("name,description,topics", "core"),
+        ):
+            raw.append((f"{primary} in:{scope} {suffix}", kind, "stars"))
+        for companion in ("tool", "app", "plugin"):
+            if _typed_redundant(primary_term, companion):
+                continue
+            raw.append((f"{primary} {_quote(companion)} in:name,description,topics,readme {suffix}", "typed", "stars"))
 
     seen: set[str] = set()
     result = []

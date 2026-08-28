@@ -20,6 +20,10 @@ Pass a JSON object to `muse-shroom search --request FILE --mode quick|deep`.
 
 `request` and at least one `core_concepts` entry are required. Weights and `exploration_level` range from 0 to 1. Omit constraints the user did not state; do not invent minimum Star counts because low exposure is part of hidden-gem discovery.
 
+Keep generic artifact words such as `skill`, `tool`, `AI`, and `agent` out of `core_concepts` when a problem or domain term is available. Put the desired form in `artifact_types`. The CLI ignores standalone generic core terms and will not emit an isolated `"Skill"` query.
+
+Preserve concise Chinese concepts verbatim, for example `正文配图` and `文章配图`; do not split them by character, whitespace, or Latin-word rules. Keep English concepts to one to three meaningful words.
+
 For deep refinement, pass:
 
 ```json

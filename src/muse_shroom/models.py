@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import json
 import re
 from typing import Any
 
@@ -83,6 +84,10 @@ class SearchRequest:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def fingerprint(self, mode: str) -> str:
+        payload = {"mode": mode, "request": self.to_dict()}
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 @dataclass(slots=True)
