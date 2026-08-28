@@ -8,7 +8,7 @@ from muse_shroom.cli import main
 from muse_shroom.models import ContractError, SearchRequest
 from muse_shroom.ranking import _percentiles, rank_search
 from muse_shroom.search import SearchEngine
-from muse_shroom.selection import balanced_select
+from muse_shroom.selection import balanced_select, candidate_allowed
 from muse_shroom.storage import Store
 
 from tests.helpers import FrozenGitHub, repo
@@ -19,6 +19,47 @@ def path(kind: str, query: str, position: int = 1) -> dict:
 
 
 class V03QualityTests(unittest.TestCase):
+    def test_multiword_exclusion_requires_a_contiguous_normalized_phrase(self):
+        request = SearchRequest.from_dict({
+            "request": "desktop companion", "core_concepts": ["desktop companion"],
+            "exclusions": ["streaming platform"],
+        })
+        separated = repo(
+            "owner/companion", 5,
+            description="Streaming events for a cross-platform desktop pet",
+        )
+        explicit = repo(
+            "owner/service", 5,
+            description="A streaming-platform client",
+        )
+        self.assertTrue(candidate_allowed(separated, request, include_readme=False))
+        self.assertFalse(candidate_allowed(explicit, request, include_readme=False))
+
+    def test_assessment_selection_caps_repositories_from_one_owner(self):
+        request = SearchRequest.from_dict({
+            "request": "release helper", "core_concepts": ["release notes"],
+        })
+        candidates = []
+        for index in range(5):
+            item = repo(
+                f"same/plugin-{index}", 100 - index,
+                description="release notes helper", topics=["release-notes"],
+            )
+            item["matched_kinds"] = ["core"]
+            candidates.append(item)
+        for index in range(4):
+            item = repo(
+                f"owner-{index}/tool", 50 - index,
+                description="release notes helper", topics=["release-notes"],
+            )
+            item["matched_kinds"] = ["core"]
+            candidates.append(item)
+        selected, _ = balanced_select(
+            candidates, request, {"core": 6}, enriched=False, max_per_owner=2,
+        )
+        self.assertEqual(len(selected), 6)
+        self.assertLessEqual(sum(item["full_name"].startswith("same/") for item in selected), 2)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.store = Store(self.temp.name)

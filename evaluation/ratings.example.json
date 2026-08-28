@@ -2,9 +2,9 @@
   "evaluations": [
     {
       "prompt_id": "creative-music-ai",
-      "preferred": "candidate",
-      "baseline": {"relevance": 3, "interesting": 3, "evidence": 2, "actionability": 3, "diversity": 3},
-      "candidate": {"relevance": 4, "interesting": 4, "evidence": 4, "actionability": 4, "diversity": 4}
+      "preferred": "A",
+      "A": {"relevance": 3, "interesting": 3, "evidence": 2, "actionability": 3, "diversity": 3},
+      "B": {"relevance": 4, "interesting": 4, "evidence": 4, "actionability": 4, "diversity": 4}
     }
   ]
 }

@@ -419,7 +419,7 @@ class SearchEngine:
             candidate["selected_for_assessment"] = False
         assessable = [item for item in candidates.values() if "readme" in item]
         selected, lane_counts = balanced_select(
-            assessable, request, ASSESSMENT_QUOTAS, enriched=True
+            assessable, request, ASSESSMENT_QUOTAS, enriched=True, max_per_owner=3
         )
         for candidate in selected:
             candidate["selected_for_assessment"] = True

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import statistics
 import sys
@@ -7,6 +8,25 @@ from pathlib import Path
 
 
 DIMENSIONS = ("relevance", "interesting", "evidence", "actionability", "diversity")
+
+
+def reveal(payload: dict, key_payload: dict) -> dict:
+    mappings = key_payload.get("mappings", {})
+    revealed = []
+    for item in payload.get("evaluations", []):
+        prompt_id = str(item.get("prompt_id", ""))
+        mapping = mappings.get(prompt_id)
+        if not isinstance(mapping, dict) or set(mapping) != {"A", "B"}:
+            raise ValueError(f"missing blind mapping for {prompt_id}")
+        if item.get("preferred") not in {"A", "B", "tie"}:
+            raise ValueError("blind preferred must be A, B, or tie")
+        by_version = {mapping[label]: item[label] for label in ("A", "B")}
+        preferred = "tie" if item["preferred"] == "tie" else mapping[item["preferred"]]
+        revealed.append({
+            "prompt_id": prompt_id, "preferred": preferred,
+            "baseline": by_version["baseline"], "candidate": by_version["candidate"],
+        })
+    return {"evaluations": revealed}
 
 
 def summarize(payload: dict) -> dict:
@@ -38,17 +58,25 @@ def summarize(payload: dict) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = argv or sys.argv[1:]
-    if len(args) != 1:
-        print("usage: python evaluation/score_ab.py RATINGS.json", file=sys.stderr)
-        return 2
+    parser = argparse.ArgumentParser(description="Score a Muse-shroom blind A/B evaluation")
+    parser.add_argument("ratings", type=Path)
+    parser.add_argument("--key", type=Path)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args(argv)
     try:
-        payload = json.loads(Path(args[0]).read_text(encoding="utf-8"))
+        payload = json.loads(args.ratings.read_text(encoding="utf-8"))
+        if args.key:
+            key_payload = json.loads(args.key.read_text(encoding="utf-8"))
+            payload = reveal(payload, key_payload)
         result = summarize(payload)
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
         print(json.dumps({"ok": False, "message": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    rendered = json.dumps(result, ensure_ascii=False, indent=2)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(rendered + "\n", encoding="utf-8")
+    print(rendered)
     return 0 if result["passed"] else 1
 
 

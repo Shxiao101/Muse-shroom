@@ -53,6 +53,7 @@ echo '{"repo":"Quackone/homr_gui","relevant":true,"interesting":true,"too_hard":
 
 - 快搜最多生成 12 条受控查询，首轮富化 30 个候选。
 - 搜索输出使用 schema v2；`candidate_count` 是完整召回数，`candidates` 只包含最多 24 个评审候选。
+- 评审候选中同一仓库 owner 默认最多出现 3 次，避免单一插件生态占满评审预算。
 - 深搜从种子沿 README 链接、README 反向引用、Fork 和作者仓库扩散，并受请求预算限制。
 - README 只以最多 5 条、每条不超过 220 字符的不可信证据片段进入输出；原文仅保存在 SQLite。
 - 推荐理由必须引用已采集的 evidence ID；功能结论必须引用具体 README 片段，未知能力应写成 `unknown`。
@@ -70,7 +71,7 @@ python -m unittest discover -s tests -v
 
 设置 `MUSE_SHROOM_LIVE_SMOKE=1` 后可选运行实时 API 认证/契约 smoke test；稳定测试不会执行它。
 
-人工盲测协议和 8 个模糊需求位于 `evaluation/`。诊断仓库只记录命中情况，不参与发布通过判定。
+人工盲测协议和 8 个模糊需求位于 `evaluation/`。运行 `python evaluation/run_ab.py capture` 可在隔离源码树中录制 v0.2/v0.3 的共同 GitHub 响应并生成匿名评审包，`replay` 可完全离线复跑。诊断仓库只记录命中情况，不参与发布通过判定。
 
 ## 首版边界
 

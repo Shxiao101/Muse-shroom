@@ -167,22 +167,34 @@ def score_candidates(candidates: Iterable[dict[str, Any]], request: SearchReques
 
 
 def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest,
-                    quotas: dict[str, int], *, enriched: bool) -> tuple[list[dict[str, Any]], dict[str, int]]:
+                    quotas: dict[str, int], *, enriched: bool,
+                    max_per_owner: int | None = None) -> tuple[list[dict[str, Any]], dict[str, int]]:
     items = score_candidates(candidates, request, enriched=enriched)
     selected: list[dict[str, Any]] = []
     selected_names: set[str] = set()
+    owner_counts: dict[str, int] = {}
     counts = {lane: 0 for lane in quotas}
+
+    def add(item: dict[str, Any]) -> bool:
+        key = repo_key(item)
+        owner = key.partition("/")[0]
+        if key in selected_names:
+            return False
+        if max_per_owner is not None and owner_counts.get(owner, 0) >= max_per_owner:
+            return False
+        selected.append(item)
+        selected_names.add(key)
+        owner_counts[owner] = owner_counts.get(owner, 0) + 1
+        return True
+
     for lane, quota in quotas.items():
         pool = sorted(
             (item for item in items if lane in item.get("selection_lanes", [])),
             key=lambda item: (-item["_lane_scores"][lane], repo_key(item)),
         )
         for item in pool:
-            key = repo_key(item)
-            if key in selected_names:
+            if not add(item):
                 continue
-            selected.append(item)
-            selected_names.add(key)
             counts[lane] += 1
             if counts[lane] >= quota:
                 break
@@ -194,8 +206,7 @@ def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest
     for item in fallback:
         if len(selected) >= target:
             break
-        selected.append(item)
-        selected_names.add(repo_key(item))
+        add(item)
     counts["fallback"] = max(0, len(selected) - sum(counts.values()))
     for item in items:
         item.pop("_lane_scores", None)
@@ -221,9 +232,12 @@ def candidate_allowed(candidate: dict[str, Any], request: SearchRequest, *, incl
     if terms:
         surfaces = _text(candidate, include_readme=include_readme)
         haystack = " ".join(surfaces.values())
+        phrase_tokens = re.compile(r"[A-Za-z0-9_+#]+|[\u3400-\u9fff]+")
+        normalized_haystack = " ".join(phrase_tokens.findall(haystack))
+
         def excluded(term: str) -> bool:
-            tokens = TOKEN_RE.findall(term)
-            return term in haystack or bool(tokens) and all(token in haystack for token in tokens)
+            normalized_term = " ".join(phrase_tokens.findall(term))
+            return term in haystack or bool(normalized_term) and normalized_term in normalized_haystack
         if any(excluded(term) for term in terms):
             return False
     return True
