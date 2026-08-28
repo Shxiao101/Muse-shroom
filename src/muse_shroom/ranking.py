@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import asdict
 from typing import Any
 
@@ -27,9 +28,12 @@ def _readme_facts(candidate: dict[str, Any]) -> dict[str, Any]:
 
 
 def _percentiles(candidates: list[dict[str, Any]]) -> dict[str, float]:
-    ordered = sorted((int(item.get("stargazers_count", 0)), repo_key(item)) for item in candidates)
-    denominator = max(1, len(ordered) - 1)
-    return {name: index / denominator * 100 for index, (_, name) in enumerate(ordered)}
+    star_values = sorted({int(item.get("stargazers_count", 0)) for item in candidates})
+    if len(star_values) == 1:
+        return {repo_key(item): 100.0 for item in candidates}
+    denominator = max(1, len(star_values) - 1)
+    ranks = {stars: index / denominator * 100 for index, stars in enumerate(star_values)}
+    return {repo_key(item): ranks[int(item.get("stargazers_count", 0))] for item in candidates}
 
 
 def _type_quality(artifact_type: str, candidate: dict[str, Any]) -> float:
@@ -60,15 +64,23 @@ def _type_quality(artifact_type: str, candidate: dict[str, Any]) -> float:
 
 
 def _relationship(candidate: dict[str, Any]) -> float:
-    strengths = {"readme_link": 90, "reverse_readme": 85, "fork": 65, "same_owner": 45}
+    strengths = {"key_file": 95, "readme_link": 90, "reverse_readme": 85, "fork": 65, "same_owner": 45}
     values = [strengths.get(path.get("relation"), 30) for path in candidate.get("discovery_paths", [])
               if path.get("kind") == "relationship"]
     return max(values, default=30 if candidate.get("discovery_paths") else 0)
 
 
 def _similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
-    left_tokens = set(map(str.lower, left.get("topics", []))) | {left.get("assessment", {}).get("category", "").lower()}
-    right_tokens = set(map(str.lower, right.get("topics", []))) | {right.get("assessment", {}).get("category", "").lower()}
+    def tokens(item: dict[str, Any]) -> set[str]:
+        stopwords = {"the", "and", "for", "with", "from", "tool", "tools", "app", "application", "project", "github"}
+        description = re.findall(r"[a-z0-9_+#.-]{3,}", str(item.get("description", "")).lower())
+        return (
+            set(map(str.lower, item.get("topics", [])))
+            | {item.get("assessment", {}).get("category", "").lower()}
+            | (set(description) - stopwords)
+        )
+    left_tokens = tokens(left)
+    right_tokens = tokens(right)
     left_tokens.discard("")
     right_tokens.discard("")
     union = left_tokens | right_tokens
@@ -102,14 +114,17 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
         name = str(raw.get("repo", "")).lower()
         if name not in by_name:
             raise ContractError(f"assessment references unknown candidate: {name}")
-        evidence_ids = {str(item.get("id")) for item in by_name[name].get("evidence", [])}
-        assessment = Assessment.from_dict(raw, evidence_ids)
+        evidence = {
+            str(item.get("id")): str(item.get("kind"))
+            for item in by_name[name].get("evidence", [])
+        }
+        assessment = Assessment.from_dict(raw, evidence)
         assessments[name] = assessment
         store.save_assessment(search_id, name, asdict(assessment))
     if not assessments:
         raise ContractError("at least one assessment is required")
 
-    percentiles = _percentiles([by_name[name] for name in assessments])
+    percentiles = _percentiles(candidates)
     scored = []
     for name, assessment in assessments.items():
         candidate = by_name[name]
@@ -118,6 +133,9 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
         activity = max(0.0, 100.0 - age_days(candidate.get("pushed_at")) / 7)
         type_quality = _type_quality(assessment.artifact_type, candidate)
         relation = _relationship(candidate)
+        evidence_completeness = float(
+            candidate.get("selection_score_components", {}).get("evidence_completeness", 0)
+        )
         exposure = max(0.0, min(100.0, 100 - 20 * math.log10(stars + 1)))
         easy = DIFFICULTY[assessment.difficulty]
         personal = store.feedback_bias(name, candidate.get("topics", [])) * 15.0
@@ -126,12 +144,13 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
             type_quality * .15 + assessment.usability * .10 + personal
         )
         gem_score = (
-            assessment.relevance * .27 + assessment.uniqueness * .20 + assessment.usability * .16 +
-            easy * .10 + exposure * .10 + type_quality * .09 + relation * .08 + personal
+            assessment.relevance * .25 + assessment.uniqueness * .18 + assessment.usability * .14 +
+            easy * .08 + exposure * .10 + type_quality * .08 + relation * .07 +
+            evidence_completeness * .10 + personal
         )
         adjacent_score = (
-            assessment.relevance * .24 + assessment.uniqueness * .28 + assessment.usability * .16 +
-            easy * .10 + type_quality * .10 + relation * .12 + personal
+            assessment.relevance * .22 + assessment.uniqueness * .25 + assessment.usability * .14 +
+            easy * .09 + type_quality * .09 + relation * .11 + evidence_completeness * .10 + personal
         )
         item = {
             "repo": candidate["full_name"], "url": candidate.get("html_url"),
@@ -147,6 +166,7 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
                     "popularity_percentile": round(popularity, 2), "activity": round(activity, 2),
                     "type_quality": round(type_quality, 2), "relationship": round(relation, 2),
                     "underexposure": round(exposure, 2), "personalization": round(personal, 2),
+                    "evidence_completeness": round(evidence_completeness, 2),
                 },
             },
             "star_growth": None,
@@ -173,11 +193,11 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
     gem_pool = [item for item in eligible if item["repo"].lower() not in used and item["scores"]["components"]["underexposure"] >= 20]
     gems = _mmr_select(gem_pool, 4, adjacent + popular, "gem")
     result = {
-        "schema_version": 1, "search_id": search_id,
+        "schema_version": 2, "search_id": search_id,
         "stale": bool(session["stale"]), "incomplete_phase": session["incomplete_phase"],
         "buckets": {"popular": popular, "gems": gems, "adjacent": adjacent},
         "coverage": {
-            "assessed": len(assessments), "eligible": len(eligible),
+            "recalled": len(candidates), "assessed": len(assessments), "eligible": len(eligible),
             "returned": len(popular) + len(gems) + len(adjacent),
             "adjacent_share": round(len(adjacent) / max(1, len(popular) + len(gems) + len(adjacent)), 3),
         },

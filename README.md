@@ -32,14 +32,17 @@ muse-shroom --help
 
 1. Agent 根据 [`examples/music-ai.request.json`](examples/music-ai.request.json) 生成结构化需求。
 2. 快搜调用一次 `search` 和一次 `rank`；深搜在两者之间调用 `expand`。
-3. Agent 只根据候选中的 evidence IDs 生成语义评价。
-4. CLI 合并元数据、关系证据、类型质量规则和评价，输出热门、宝藏、跨界三个榜。
+3. CLI 从完整召回集合中平衡富化 30 个候选，默认只返回最多 24 个评审候选。
+4. Agent 只根据候选中的 evidence IDs 生成语义评价，功能结论必须引用 README 片段。
+5. CLI 合并元数据、关系证据、类型质量规则和评价，输出热门、宝藏、跨界三个榜。
 
 ```console
 muse-shroom search --request examples/music-ai.request.json --mode quick
 muse-shroom expand --search-id SEARCH_ID --refinement examples/music-ai.refinement.json
 muse-shroom rank --search-id SEARCH_ID --assessments assessments.json
 muse-shroom inspect Quackone/homr_gui --search-id SEARCH_ID
+muse-shroom candidates --search-id SEARCH_ID --scope assessment
+muse-shroom candidates --search-id SEARCH_ID --scope all
 muse-shroom feedback Quackone/homr_gui --relevant yes --interesting yes --too-hard no
 echo '{"repo":"Quackone/homr_gui","relevant":true,"interesting":true,"too_hard":false}' | muse-shroom feedback --input -
 ```
@@ -49,21 +52,25 @@ echo '{"repo":"Quackone/homr_gui","relevant":true,"interesting":true,"too_hard":
 ## 结果约束
 
 - 快搜最多生成 12 条受控查询，首轮富化 30 个候选。
+- 搜索输出使用 schema v2；`candidate_count` 是完整召回数，`candidates` 只包含最多 24 个评审候选。
 - 深搜从种子沿 README 链接、README 反向引用、Fork 和作者仓库扩散，并受请求预算限制。
-- 推荐理由必须引用已采集的 evidence ID；未知能力应写成 `unknown`，不能从仓库名猜测。
+- README 只以最多 5 条、每条不超过 220 字符的不可信证据片段进入输出；原文仅保存在 SQLite。
+- 推荐理由必须引用已采集的 evidence ID；功能结论必须引用具体 README 片段，未知能力应写成 `unknown`。
 - 榜单上限为热门 4、宝藏 4、跨界 2；质量不足时少给，不填充。
 - Star 增长只有本地存在至少两个快照时才显示。
-- API 失败时只有对应请求已有缓存才返回旧数据，并明确标记 `stale`、缓存时间和未完成阶段。
+- 网络失败、5xx 或确认限流时，只有对应请求已有缓存才返回旧数据并标记 `stale`；401、404 和查询错误不会回退缓存。
 
 ## 开发验证
 
-测试完全使用冻结的 GitHub 响应，不依赖实时排名：
+稳定测试使用冻结的 GitHub 响应和行为断言，不把特定仓库视为唯一正确答案：
 
 ```console
 python -m unittest discover -s tests -v
 ```
 
 设置 `MUSE_SHROOM_LIVE_SMOKE=1` 后可选运行实时 API 认证/契约 smoke test；稳定测试不会执行它。
+
+人工盲测协议和 8 个模糊需求位于 `evaluation/`。诊断仓库只记录命中情况，不参与发布通过判定。
 
 ## 首版边界
 

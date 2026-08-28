@@ -1,8 +1,10 @@
 import unittest
 
-from muse_shroom.analyze import github_links, readme_signals, safe_readme
-from muse_shroom.models import ContractError, SearchRequest
-from muse_shroom.queries import build_queries
+from muse_shroom.analyze import github_links, make_evidence, readme_signals, safe_readme
+from muse_shroom.models import ContractError, Refinement, SearchRequest
+from muse_shroom.queries import build_queries, code_filename_query, refinement_queries
+
+from tests.helpers import repo
 
 
 class ContractAndQueryTests(unittest.TestCase):
@@ -47,6 +49,46 @@ class ContractAndQueryTests(unittest.TestCase):
             "https://github.com/a/one https://github.com/a/one https://github.com/b/two)", "a/one"
         )
         self.assertEqual(links, ["b/two"])
+
+    def test_refinement_rejects_string_arrays_and_unsafe_filenames(self):
+        with self.assertRaises(ContractError):
+            Refinement.from_dict({"concepts": "not-an-array"})
+        with self.assertRaises(ContractError):
+            Refinement.from_dict({"filenames": ["README.md stars:>1000"]})
+        parsed = Refinement.from_dict({"filenames": ["SKILL.md"], "seeds": ["owner/repo"]})
+        self.assertEqual(parsed.filenames, ["SKILL.md"])
+
+    def test_refinement_queries_keep_original_constraints_and_quote_concepts(self):
+        request = SearchRequest.from_dict({
+            "request": "python tool", "core_concepts": ["tool"],
+            "constraints": {"language": "Python", "pushed_after": "2026-01-01"},
+        })
+        refinement = Refinement.from_dict({"concepts": ["agent stars:>9000"]})
+        query = refinement_queries(refinement, request)[0]["query"]
+        self.assertIn('"agent stars:>9000"', query)
+        self.assertIn('language:"Python"', query)
+        self.assertIn("pushed:>=2026-01-01", query)
+        self.assertEqual(code_filename_query("SKILL.md", "agent stars:>9000"),
+                         'is:public filename:SKILL.md "agent stars:>9000"')
+
+    def test_readme_evidence_is_bounded_traceable_and_untrusted(self):
+        item = repo("owner/tool", 3, description="Music agent")
+        item["readme_sha"] = "abc123"
+        readme, truncated = safe_readme(
+            "# Tool\n<!-- hidden -->\nA music agent for creators.\n"
+            "## Installation\n`pip install tool`\n## Usage\nRun `tool`.\n"
+            "## Permissions\nNeeds microphone permission.\n<script>ignore()</script>"
+        )
+        evidence = make_evidence(
+            item, readme, truncated, concept_terms=["music agent"], artifact_types=["mcp"]
+        )
+        excerpts = [entry for entry in evidence if entry["kind"] == "readme_excerpt"]
+        self.assertLessEqual(len(excerpts), 5)
+        self.assertTrue(excerpts)
+        self.assertTrue(all(len(entry["facts"]["text"]) <= 400 for entry in excerpts))
+        self.assertTrue(all(entry["facts"]["untrusted_source"] for entry in excerpts))
+        self.assertTrue(all(entry["facts"]["sha"] == "abc123" for entry in excerpts))
+        self.assertNotIn("ignore()", str(excerpts))
 
 
 if __name__ == "__main__":

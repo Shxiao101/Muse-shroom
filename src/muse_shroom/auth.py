@@ -10,6 +10,8 @@ from typing import Any
 import keyring
 import keyring.errors
 
+from . import __version__
+
 
 SERVICE_NAME = "Muse-shroom"
 ACCOUNT_NAME = "github.com"
@@ -77,7 +79,7 @@ def validate_token(token: str, *, timeout: float = 15.0) -> dict[str, Any]:
         "Accept": "application/vnd.github+json",
         "Authorization": f"Bearer {cleaned}",
         "X-GitHub-Api-Version": "2026-03-10",
-        "User-Agent": "Muse-shroom/0.1",
+        "User-Agent": f"Muse-shroom/{__version__}",
     })
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

@@ -8,13 +8,17 @@ from typing import Any
 GITHUB_LINK = re.compile(r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", re.I)
 INSTALL_RE = re.compile(r"(?im)^#{1,3}\s*(install|installation|getting started|quick ?start|setup)\b")
 USAGE_RE = re.compile(r"(?im)^#{1,3}\s*(use|usage|examples?|how to use)\b")
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
 
 def safe_readme(text: str, max_chars: int = 200_000) -> tuple[str, bool]:
     truncated = len(text) > max_chars
     text = text[:max_chars]
-    text = re.sub(r"<script\b[^>]*>.*?</script\s*>", "", text, flags=re.I | re.S)
-    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    def preserve_lines(match: re.Match[str]) -> str:
+        return "\n" * match.group(0).count("\n")
+    text = re.sub(r"<(script|style)\b[^>]*>.*?</\1\s*>", preserve_lines, text, flags=re.I | re.S)
+    text = re.sub(r"<!--.*?-->", preserve_lines, text, flags=re.S)
+    text = "".join(char for char in text if char in "\n\t" or ord(char) >= 32)
     return text, truncated
 
 
@@ -49,7 +53,92 @@ def age_days(timestamp: str | None) -> int:
         return 10_000
 
 
-def make_evidence(candidate: dict[str, Any], readme: str, readme_truncated: bool) -> list[dict[str, Any]]:
+def _plain_line(line: str) -> str:
+    line = re.sub(r"!\[[^]]*]\([^)]*\)", "", line)
+    line = re.sub(r"\[([^]]+)]\([^)]*\)", r"\1", line)
+    line = re.sub(r"<[^>]+>", "", line)
+    line = re.sub(r"^[>\-*+\d.\s]+", "", line)
+    line = line.replace("`", "").strip()
+    return " ".join(line.split())
+
+
+def _section_snippet(lines: list[str], start: int, max_chars: int = 220) -> tuple[str, int]:
+    parts: list[str] = []
+    end = start
+    for index in range(start, min(len(lines), start + 16)):
+        if index > start and HEADING_RE.match(lines[index]):
+            break
+        plain = _plain_line(lines[index])
+        if not plain:
+            continue
+        parts.append(plain)
+        end = index
+        if len(" ".join(parts)) >= max_chars:
+            break
+    return " ".join(parts)[:max_chars].strip(), end + 1
+
+
+def readme_snippets(readme: str, concept_terms: list[str] | None = None,
+                    artifact_types: list[str] | None = None) -> list[dict[str, Any]]:
+    lines = readme.splitlines()
+    candidates: list[tuple[str, int]] = []
+    headings: list[tuple[int, str]] = []
+    for index, line in enumerate(lines):
+        match = HEADING_RE.match(line)
+        if match:
+            headings.append((index, match.group(2).strip().lower()))
+
+    first_content = next((index for index, line in enumerate(lines)
+                          if _plain_line(line) and not HEADING_RE.match(line)), None)
+    if first_content is not None:
+        candidates.append(("overview", first_content))
+
+    terms = [term.casefold() for term in (concept_terms or []) if term.strip()]
+    for index, line in enumerate(lines):
+        lower = _plain_line(line).casefold()
+        if lower and any(term in lower for term in terms):
+            candidates.append(("concept_match", index))
+            break
+
+    for kind, pattern in (
+        ("installation", re.compile(r"\b(install|installation|getting started|quick ?start|setup)\b")),
+        ("usage", re.compile(r"\b(use|usage|examples?|how to use)\b")),
+    ):
+        match = next((index for index, heading in headings if pattern.search(heading)), None)
+        if match is not None:
+            candidates.append((kind, match))
+
+    types = {value.lower() for value in (artifact_types or [])}
+    if "mcp" in types:
+        risk_terms = ("permission", "scope", "tools/list", "inputschema")
+    elif "skill" in types:
+        risk_terms = ("trigger", "when to use", "skill.md")
+    elif "mod" in types:
+        risk_terms = ("compatib", "requires version", "uninstall", "conflict")
+    else:
+        risk_terms = ("permission", "requirements", "compatib", "security")
+    for index, line in enumerate(lines):
+        if any(term in line.casefold() for term in risk_terms):
+            candidates.append(("type_risk", index))
+            break
+
+    snippets: list[dict[str, Any]] = []
+    seen_text: set[str] = set()
+    for kind, start in candidates:
+        text, end = _section_snippet(lines, start)
+        identity = text.casefold()
+        if not text or identity in seen_text:
+            continue
+        seen_text.add(identity)
+        snippets.append({"snippet_type": kind, "text": text, "line_start": start + 1, "line_end": end})
+        if len(snippets) >= 5:
+            break
+    return snippets
+
+
+def make_evidence(candidate: dict[str, Any], readme: str, readme_truncated: bool,
+                  *, concept_terms: list[str] | None = None,
+                  artifact_types: list[str] | None = None) -> list[dict[str, Any]]:
     full_name = candidate["full_name"]
     evidence = [{
         "id": f"repo:{full_name.lower()}:metadata",
@@ -70,8 +159,22 @@ def make_evidence(candidate: dict[str, Any], readme: str, readme_truncated: bool
             "id": f"repo:{full_name.lower()}:readme",
             "kind": "readme",
             "source": f"https://github.com/{full_name}#readme",
-            "facts": {**readme_signals(readme), "truncated": readme_truncated, "sha": candidate.get("readme_sha")},
+            "facts": {
+                **readme_signals(readme), "truncated": readme_truncated,
+                "sha": candidate.get("readme_sha"), "untrusted_source": True,
+            },
         })
+        for snippet in readme_snippets(readme, concept_terms, artifact_types):
+            kind = snippet["snippet_type"]
+            evidence.append({
+                "id": f"repo:{full_name.lower()}:readme:{kind}",
+                "kind": "readme_excerpt",
+                "facts": {
+                    **snippet, "sha": candidate.get("readme_sha"),
+                    "untrusted_source": True,
+                    "parent_evidence_id": f"repo:{full_name.lower()}:readme",
+                },
+            })
     if candidate.get("latest_release"):
         release = candidate["latest_release"]
         evidence.append({

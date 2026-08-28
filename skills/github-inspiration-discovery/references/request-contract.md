@@ -34,3 +34,5 @@ For deep refinement, pass:
 ```
 
 Keep all arrays short and evidence-driven. Muse-shroom generates and validates GitHub syntax.
+
+All refinement values must be arrays of strings. Seeds use `owner/repo`; filenames must be basenames such as `SKILL.md`, never paths or query fragments. Original search constraints remain active during expansion.

@@ -86,6 +86,51 @@ class SearchRequest:
 
 
 @dataclass(slots=True)
+class Refinement:
+    concepts: list[str] = field(default_factory=list)
+    adjacent_concepts: list[str] = field(default_factory=list)
+    anchors: list[str] = field(default_factory=list)
+    seeds: list[str] = field(default_factory=list)
+    filenames: list[str] = field(default_factory=list)
+    exclude: list[str] = field(default_factory=list)
+
+    @staticmethod
+    def _strings(data: dict[str, Any], name: str, limit: int) -> list[str]:
+        value = data.get(name, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ContractError(f"refinement.{name} must be an array of strings")
+        result = [item.strip() for item in value if item.strip()]
+        if len(result) > limit:
+            raise ContractError(f"refinement.{name} cannot contain more than {limit} items")
+        if any(len(item) > 160 or "\n" in item or "\r" in item for item in result):
+            raise ContractError(f"refinement.{name} contains an invalid value")
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Refinement":
+        if not isinstance(data, dict):
+            raise ContractError("refinement must be an object")
+        result = cls(
+            concepts=cls._strings(data, "concepts", 10),
+            adjacent_concepts=cls._strings(data, "adjacent_concepts", 10),
+            anchors=cls._strings(data, "anchors", 10),
+            seeds=cls._strings(data, "seeds", 8),
+            filenames=cls._strings(data, "filenames", 5),
+            exclude=cls._strings(data, "exclude", 10),
+        )
+        repo_pattern = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+        if any(not repo_pattern.fullmatch(seed) for seed in result.seeds):
+            raise ContractError("refinement.seeds must use owner/repo names")
+        filename_pattern = re.compile(r"[A-Za-z0-9_.+@-]{1,100}")
+        if any(not filename_pattern.fullmatch(filename) or filename in {".", ".."} for filename in result.filenames):
+            raise ContractError("refinement.filenames must contain safe basenames")
+        return result
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class Assessment:
     repo: str
     relevance: float
@@ -99,7 +144,7 @@ class Assessment:
     risks: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any], evidence_ids: set[str]) -> "Assessment":
+    def from_dict(cls, data: dict[str, Any], evidence: set[str] | dict[str, str]) -> "Assessment":
         repo = str(data.get("repo", "")).strip().lower()
         if "/" not in repo:
             raise ContractError("assessment repo must be owner/name")
@@ -108,6 +153,7 @@ class Assessment:
             raise ContractError("difficulty must be easy, medium, hard, or unknown")
         reasons = list(data.get("reasons", []))
         risks = list(data.get("risks", []))
+        evidence_ids = set(evidence)
         for item in reasons + risks:
             if not isinstance(item, dict) or not str(item.get("text", "")).strip():
                 raise ContractError("each reason/risk needs text")
@@ -117,13 +163,22 @@ class Assessment:
             unknown = set(map(str, cited)) - evidence_ids
             if unknown:
                 raise ContractError(f"unknown evidence ids for {repo}: {sorted(unknown)}")
+        use_case = str(data.get("use_case", "unknown")).strip() or "unknown"
+        if use_case.casefold() != "unknown" and isinstance(evidence, dict):
+            cited_reason_ids = {
+                str(evidence_id) for item in reasons for evidence_id in item.get("evidence_ids", [])
+            }
+            if not any(evidence.get(evidence_id) == "readme_excerpt" for evidence_id in cited_reason_ids):
+                raise ContractError(
+                    f"verified use_case for {repo} must cite at least one readme excerpt"
+                )
         return cls(
             repo=repo,
             relevance=_score(data.get("relevance"), "relevance"),
             uniqueness=_score(data.get("uniqueness"), "uniqueness"),
             usability=_score(data.get("usability"), "usability"),
             difficulty=difficulty,
-            use_case=str(data.get("use_case", "unknown")).strip() or "unknown",
+            use_case=use_case,
             category=str(data.get("category", "uncategorized")).strip() or "uncategorized",
             artifact_type=str(data.get("artifact_type", "unknown")).strip().lower() or "unknown",
             reasons=reasons,

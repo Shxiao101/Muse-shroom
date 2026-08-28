@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "prompts": [
+    {
+      "id": "creative-music-ai",
+      "category": "creative",
+      "request": {
+        "request": "寻找有意思、上手难度低的音乐与 AI 创作小工具",
+        "core_concepts": ["music AI", "creative music tool"],
+        "adjacent_concepts": ["music visualization", "audio experiment", "sheet music"],
+        "artifact_types": ["application", "plugin"],
+        "exclusions": ["awesome list", "course"],
+        "exploration_level": 0.7
+      }
+    },
+    {
+      "id": "creative-photo-memory",
+      "category": "creative",
+      "request": {
+        "request": "把个人照片或声音做成抽象记忆作品的小型开源工具",
+        "core_concepts": ["generative memory art", "photo audio art tool"],
+        "adjacent_concepts": ["visual diary", "sound visualization", "creative coding"],
+        "artifact_types": ["application", "library"],
+        "exclusions": ["course", "paper list"],
+        "exploration_level": 0.75
+      }
+    },
+    {
+      "id": "agent-overengineering",
+      "category": "ai-agent",
+      "request": {
+        "request": "减少 AI 编码 Agent 过度设计、重复审查和不必要抽象",
+        "core_concepts": ["overengineering", "code review minimalism"],
+        "adjacent_concepts": ["YAGNI", "agent workflow", "implementation simplicity"],
+        "artifact_types": ["skill", "plugin"],
+        "exclusions": ["awesome list"],
+        "exploration_level": 0.7
+      }
+    },
+    {
+      "id": "agent-local-memory",
+      "category": "ai-agent",
+      "request": {
+        "request": "让本地 AI Agent 的记忆可查看、可整理且保护隐私",
+        "core_concepts": ["local agent memory", "memory inspector"],
+        "adjacent_concepts": ["knowledge graph", "conversation archive", "privacy dashboard"],
+        "artifact_types": ["application", "mcp", "plugin"],
+        "exclusions": ["hosted only"],
+        "exploration_level": 0.65
+      }
+    },
+    {
+      "id": "dev-codebase-map",
+      "category": "developer-productivity",
+      "request": {
+        "request": "快速理解陌生代码库模块关系和改动影响的小工具",
+        "core_concepts": ["codebase map", "dependency impact analysis"],
+        "adjacent_concepts": ["architecture visualization", "call graph", "repository exploration"],
+        "artifact_types": ["application", "plugin"],
+        "exclusions": ["enterprise only"],
+        "exploration_level": 0.6
+      }
+    },
+    {
+      "id": "dev-release-helper",
+      "category": "developer-productivity",
+      "request": {
+        "request": "从提交和 PR 生成简洁发布说明的轻量工具",
+        "core_concepts": ["release notes generator", "changelog automation"],
+        "adjacent_concepts": ["semantic commit", "PR summary", "developer communication"],
+        "artifact_types": ["application", "plugin"],
+        "exclusions": ["full DevOps platform"],
+        "exploration_level": 0.45
+      }
+    },
+    {
+      "id": "game-mod-safety",
+      "category": "game-extension",
+      "request": {
+        "request": "帮助小众游戏管理 Mod 版本、冲突和卸载的工具",
+        "core_concepts": ["mod manager", "mod compatibility"],
+        "adjacent_concepts": ["conflict detection", "save backup", "mod profile"],
+        "artifact_types": ["mod", "application"],
+        "exclusions": ["cheat"],
+        "exploration_level": 0.55
+      }
+    },
+    {
+      "id": "game-desktop-companion",
+      "category": "game-extension",
+      "request": {
+        "request": "把游戏状态、音乐或窗口事件做成桌面互动伙伴",
+        "core_concepts": ["game desktop companion", "game event overlay"],
+        "adjacent_concepts": ["desktop pet", "audio reactive", "window capture"],
+        "artifact_types": ["application", "plugin", "mod"],
+        "exclusions": ["streaming platform"],
+        "exploration_level": 0.85
+      }
+    }
+  ]
+}

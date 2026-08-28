@@ -19,6 +19,8 @@ def candidate(full_name, stars, category, *, adjacent=False, quality=True):
          "facts": {"stars": stars, "license": "MIT", "topics": [category]}},
         {"id": f"repo:{full_name.lower()}:readme", "kind": "readme", "source": item["html_url"] + "#readme",
          "facts": {"has_install": quality, "has_usage": quality}},
+        {"id": f"repo:{full_name.lower()}:readme:overview", "kind": "readme_excerpt",
+         "source": item["html_url"] + "#readme", "facts": {"snippet_type": "overview", "text": "Documented workflow"}},
     ]
     return item
 
@@ -40,7 +42,7 @@ class RankingTests(unittest.TestCase):
             "repo": name, "relevance": relevance, "uniqueness": uniqueness, "usability": usability,
             "difficulty": difficulty, "use_case": "Reduce unnecessary implementation complexity",
             "category": item["topics"][0], "artifact_type": "skill",
-            "reasons": [{"text": "Documented workflow", "evidence_ids": [f"repo:{name.lower()}:readme"]}],
+            "reasons": [{"text": "Documented workflow", "evidence_ids": [f"repo:{name.lower()}:readme:overview"]}],
             "risks": [{"text": "Check scope before use", "evidence_ids": [f"repo:{name.lower()}:metadata"]}],
         }
 
@@ -84,6 +86,7 @@ class RankingTests(unittest.TestCase):
         item["evidence"] = [item["evidence"][0]]
         self.store.save_candidate(self.search_id, item)
         assessment = self._assessment(item, relevance=20, uniqueness=100, usability=10, difficulty="unknown")
+        assessment["use_case"] = "unknown"
         assessment["reasons"][0]["evidence_ids"] = [f"repo:{item['full_name'].lower()}:metadata"]
         result = rank_search(self.store, self.search_id, [assessment])
         self.assertEqual(result["coverage"]["returned"], 0)

@@ -114,6 +114,18 @@ class Store:
         )
         self.db.commit()
 
+    def retain_search_candidates(self, search_id: str, full_names: list[str]) -> None:
+        names = [name.lower() for name in full_names]
+        if not names:
+            self.db.execute("DELETE FROM search_candidates WHERE search_id=?", (search_id,))
+        else:
+            placeholders = ",".join("?" for _ in names)
+            self.db.execute(
+                f"DELETE FROM search_candidates WHERE search_id=? AND full_name NOT IN ({placeholders})",
+                (search_id, *names),
+            )
+        self.db.commit()
+
     def load_search(self, search_id: str) -> dict[str, Any]:
         row = self.db.execute("SELECT * FROM searches WHERE id=?", (search_id,)).fetchone()
         if row is None:
@@ -122,6 +134,10 @@ class Store:
             "SELECT payload_json FROM search_candidates WHERE search_id=? ORDER BY full_name", (search_id,)
         )]
         return {**dict(row), "request": json.loads(row["request_json"]), "candidates": candidates}
+
+    def query_count(self, search_id: str) -> int:
+        row = self.db.execute("SELECT COUNT(*) FROM queries WHERE search_id=?", (search_id,)).fetchone()
+        return int(row[0])
 
     def get_candidate(self, full_name: str, search_id: str | None = None) -> dict[str, Any] | None:
         if search_id:
@@ -146,6 +162,10 @@ class Store:
             (search_id, json.dumps(ranking, ensure_ascii=False), utc_now()),
         )
         self.db.commit()
+
+    def get_ranking(self, search_id: str) -> dict[str, Any] | None:
+        row = self.db.execute("SELECT ranking_json FROM rankings WHERE search_id=?", (search_id,)).fetchone()
+        return json.loads(row[0]) if row else None
 
     def get_cache(self, key: str) -> tuple[Any, str] | None:
         with self._lock:
@@ -177,23 +197,34 @@ class Store:
         rows = self.db.execute(
             "SELECT relevant, interesting, too_hard FROM feedback WHERE full_name=?", (full_name.lower(),)
         ).fetchall()
-        values = []
+        exact_values = []
         for row in rows:
-            values.append((1 if row[0] else -1 if row[0] is not None else 0) * 0.4)
-            values.append((1 if row[1] else -1 if row[1] is not None else 0) * 0.4)
-            values.append((-1 if row[2] else 0) * 0.2)
+            exact_values.append(
+                (1 if row[0] else -1 if row[0] is not None else 0) * .4
+                + (1 if row[1] else -1 if row[1] is not None else 0) * .4
+                + (-1 if row[2] else 0) * .2
+            )
         topic_set = {str(topic).lower() for topic in (topics or [])}
+        topic_values = []
         if topic_set:
             related = self.db.execute(
                 "SELECT f.relevant,f.interesting,f.too_hard,r.snapshot_json "
-                "FROM feedback f JOIN repositories r ON r.full_name=f.full_name"
+                "FROM feedback f JOIN repositories r ON r.full_name=f.full_name "
+                "WHERE f.full_name<>?", (full_name.lower(),)
             ).fetchall()
             for row in related:
                 snapshot_topics = {str(topic).lower() for topic in json.loads(row[3]).get("topics", [])}
                 if topic_set & snapshot_topics:
-                    values.extend([
-                        (1 if row[0] else -1 if row[0] is not None else 0) * .2,
-                        (1 if row[1] else -1 if row[1] is not None else 0) * .2,
-                        (-1 if row[2] else 0) * .1,
-                    ])
-        return max(-1.0, min(1.0, sum(values) / max(1, len(rows))))
+                    topic_values.append(
+                        (1 if row[0] else -1 if row[0] is not None else 0) * .4
+                        + (1 if row[1] else -1 if row[1] is not None else 0) * .4
+                        + (-1 if row[2] else 0) * .2
+                    )
+        weighted = []
+        if exact_values:
+            weighted.append((sum(exact_values) / len(exact_values), .7))
+        if topic_values:
+            weighted.append((sum(topic_values) / len(topic_values), .3))
+        denominator = sum(weight for _, weight in weighted)
+        value = sum(score * weight for score, weight in weighted) / denominator if denominator else 0.0
+        return max(-1.0, min(1.0, value))

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
-from .models import Concept, SearchRequest
+from .models import Concept, Refinement, SearchRequest
 
 
 TYPE_TERMS = {
@@ -28,13 +28,7 @@ def _terms(concepts: Iterable[Concept]) -> list[str]:
     return [c.term for c in sorted(concepts, key=lambda item: item.weight, reverse=True) if c.term]
 
 
-def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, str]]:
-    """Build validated repository-search queries; agents never construct GitHub syntax."""
-    core = _terms(request.core_concepts)
-    adjacent = _terms(request.adjacent_concepts)
-    type_terms: list[str] = []
-    for artifact_type in request.artifact_types:
-        type_terms.extend(TYPE_TERMS.get(artifact_type, [artifact_type]))
+def _qualifiers(request: SearchRequest) -> str:
     qualifiers = ["is:public"]
     if not request.constraints.get("include_archived", False):
         qualifiers.append("archived:false")
@@ -46,7 +40,17 @@ def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, str
         qualifiers.append(f"stars:>={int(request.constraints['min_stars'])}")
     if request.constraints.get("max_stars") is not None:
         qualifiers.append(f"stars:<={int(request.constraints['max_stars'])}")
-    suffix = " ".join(qualifiers)
+    return " ".join(qualifiers)
+
+
+def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, str]]:
+    """Build validated repository-search queries; agents never construct GitHub syntax."""
+    core = _terms(request.core_concepts)
+    adjacent = _terms(request.adjacent_concepts)
+    type_terms: list[str] = []
+    for artifact_type in request.artifact_types:
+        type_terms.extend(TYPE_TERMS.get(artifact_type, [artifact_type]))
+    suffix = _qualifiers(request)
 
     raw: list[tuple[str, str, str]] = []
     for concept in core[:3]:
@@ -97,22 +101,30 @@ def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, str
     return result
 
 
-def refinement_queries(refinement: dict, limit: int = 10) -> list[dict[str, str]]:
-    concepts = [str(v).strip() for v in refinement.get("concepts", []) if str(v).strip()]
-    adjacent = [str(v).strip() for v in refinement.get("adjacent_concepts", []) if str(v).strip()]
-    anchors = [str(v).strip() for v in refinement.get("anchors", []) if str(v).strip()]
+def refinement_queries(refinement: Refinement, request: SearchRequest,
+                       limit: int = 10) -> list[dict[str, str]]:
+    concepts = refinement.concepts
+    adjacent = refinement.adjacent_concepts
+    anchors = refinement.anchors
+    suffix = _qualifiers(request)
     result = []
     for term in concepts:
-        result.append({"query": f"{_quote(term)} in:name,description,topics,readme is:public archived:false", "kind": "refinement"})
+        result.append({"query": f"{_quote(term)} in:name,description,topics,readme {suffix}", "kind": "refinement"})
     for left in concepts[:3]:
         for right in anchors[:3]:
-            result.append({"query": f"{_quote(left)} {_quote(right)} in:readme is:public archived:false", "kind": "anchor"})
+            result.append({"query": f"{_quote(left)} {_quote(right)} in:readme {suffix}", "kind": "anchor"})
     for term in adjacent:
-        result.append({"query": f"{_quote(term)} in:name,description,topics,readme is:public archived:false", "kind": "adjacent"})
+        result.append({"query": f"{_quote(term)} in:name,description,topics,readme {suffix}", "kind": "adjacent"})
     unique = {item["query"]: item for item in result}
     return list(unique.values())[:limit]
 
 
-def reverse_reference_query(full_name: str) -> str:
+def reverse_reference_query(full_name: str, request: SearchRequest | None = None) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.\-/]", "", full_name)
-    return f'"{safe}" in:readme is:public archived:false'
+    suffix = _qualifiers(request) if request else "is:public archived:false"
+    return f'"{safe}" in:readme {suffix}'
+
+
+def code_filename_query(filename: str, concept: str | None = None) -> str:
+    query = f"is:public filename:{filename}"
+    return query + (f" {_quote(concept)}" if concept else "")

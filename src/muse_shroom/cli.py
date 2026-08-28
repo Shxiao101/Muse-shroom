@@ -15,7 +15,7 @@ from .auth import AuthError, TOKEN_URL, delete_saved_token, resolve_token, save_
 from .github import GitHubClient, GitHubError
 from .models import ContractError, SearchRequest
 from .ranking import rank_search
-from .search import SearchEngine
+from .search import SearchEngine, public_candidate
 from .storage import Store
 
 
@@ -35,7 +35,7 @@ def _json_input(path: str | None) -> Any:
 
 def _emit(payload: Any, output_format: str = "json") -> None:
     if output_format == "json":
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     else:
         if isinstance(payload, dict) and "buckets" in payload:
             for title, items in payload["buckets"].items():
@@ -72,6 +72,9 @@ def build_parser() -> argparse.ArgumentParser:
     inspect = sub.add_parser("inspect")
     inspect.add_argument("repo")
     inspect.add_argument("--search-id")
+    candidates = sub.add_parser("candidates", help="list assessment or all recalled candidates")
+    candidates.add_argument("--search-id", required=True)
+    candidates.add_argument("--scope", choices=("assessment", "all"), default="assessment")
     feedback = sub.add_parser("feedback")
     feedback.add_argument("repo", nargs="?")
     feedback.add_argument("--input", help="feedback JSON path or - for stdin")
@@ -147,12 +150,37 @@ def run(args: argparse.Namespace) -> Any:
             return engine.expand(args.search_id, _json_input(args.refinement))
         if args.command == "rank":
             return rank_search(store, args.search_id, _json_input(args.assessments))
+        if args.command == "candidates":
+            session = store.load_search(args.search_id)
+            items = session["candidates"]
+            if args.scope == "assessment":
+                items = [item for item in items if item.get("selected_for_assessment", False)]
+            result = [public_candidate(item) for item in items]
+            result.sort(key=lambda item: (
+                -float(item.get("selection_score_components", {}).get("recall", 0)),
+                item.get("full_name", "").lower(),
+            ))
+            return {
+                "schema_version": 2, "search_id": args.search_id, "scope": args.scope,
+                "candidate_count": len(session["candidates"]), "returned_count": len(result),
+                "candidates": result,
+            }
         if args.command == "inspect":
             candidate = store.get_candidate(args.repo, args.search_id)
             if candidate is None:
                 raise KeyError(f"repository not found in local snapshots: {args.repo}")
             history = store.star_history(args.repo)
-            return {"repository": candidate, "star_history": history, "growth_available": len(history) >= 2}
+            ranking_item = None
+            if args.search_id:
+                ranking = store.get_ranking(args.search_id)
+                if ranking:
+                    ranking_item = next((item for bucket in ranking.get("buckets", {}).values()
+                                         for item in bucket if item.get("repo", "").lower() == args.repo.lower()), None)
+            return {
+                "schema_version": 2, "repository": public_candidate(candidate, detailed=True),
+                "star_history": history, "growth_available": len(history) >= 2,
+                "ranking": ranking_item,
+            }
         if args.command == "feedback":
             if args.input:
                 payload = _json_input(args.input)

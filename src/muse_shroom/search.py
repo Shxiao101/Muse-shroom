@@ -5,19 +5,55 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Iterable
 
 from .analyze import github_links, make_evidence, safe_readme
-from .github import ApiResult, GitHubClient, GitHubError, GitHubNotFoundError
-from .models import SearchRequest, repo_key
-from .queries import build_queries, refinement_queries, reverse_reference_query
+from .github import (
+    ApiResult, GitHubAuthenticationError, GitHubClient, GitHubError,
+    GitHubNotFoundError,
+)
+from .models import Refinement, SearchRequest, repo_key
+from .queries import build_queries, code_filename_query, refinement_queries, reverse_reference_query
+from .selection import balanced_select, candidate_allowed
 from .storage import Store
 
 
 PUBLIC_CANDIDATE_FIELDS = {
     "full_name", "html_url", "description", "homepage", "topics", "language",
-    "stargazers_count", "forks_count", "open_issues_count", "archived", "disabled",
-    "fork", "created_at", "updated_at", "pushed_at", "default_branch", "license",
-    "latest_release", "readme_sha", "readme_truncated", "readme_links",
-    "discovery_paths", "matched_kinds", "evidence",
+    "stargazers_count", "archived", "pushed_at", "license", "latest_release",
+    "readme_truncated",
+    "discovery_paths", "matched_kinds", "evidence", "selection_lanes",
+    "selection_score_components", "selected_for_assessment",
 }
+
+ENRICH_QUOTAS = {"core": 10, "gems": 8, "adjacent": 6, "popular": 6}
+ASSESSMENT_QUOTAS = {"core": 7, "gems": 6, "adjacent": 5, "popular": 6}
+
+
+def public_candidate(candidate: dict[str, Any], *, detailed: bool = False) -> dict[str, Any]:
+    result = {key: value for key, value in candidate.items() if key in PUBLIC_CANDIDATE_FIELDS}
+    license_value = result.get("license")
+    if isinstance(license_value, dict):
+        result["license"] = license_value.get("spdx_id")
+    if not detailed:
+        relationships = [path for path in candidate.get("discovery_paths", []) if path.get("kind") == "relationship"]
+        queries = [path for path in candidate.get("discovery_paths", []) if path.get("kind") == "query"]
+        queries.sort(key=lambda path: (int(path.get("position", 10)), str(path.get("query_kind", ""))))
+        compact_paths = relationships[:4] + [{
+            "kind": "query", "query_kind": path.get("query_kind"), "position": path.get("position")
+        } for path in queries[:4]]
+        result["discovery_paths"] = compact_paths
+        compact_evidence = []
+        for item in candidate.get("evidence", []):
+            if item.get("kind") == "github_metadata":
+                compact_evidence.append({
+                    "id": item.get("id"), "kind": "github_metadata",
+                    "source": item.get("source"),
+                    "facts": {"candidate_fields": [
+                        "description", "stars", "archived", "license", "topics", "pushed_at"
+                    ]},
+                })
+            else:
+                compact_evidence.append(item)
+        result["evidence"] = compact_evidence
+    return result
 
 
 class SearchEngine:
@@ -33,21 +69,6 @@ class SearchEngine:
     def _items(result: ApiResult) -> list[dict[str, Any]]:
         data = result.data
         return list(data.get("items", [])) if isinstance(data, dict) else list(data)
-
-    @staticmethod
-    def _apply_exclusions(candidates: dict[str, dict[str, Any]], exclusions: Iterable[str]) -> dict[str, dict[str, Any]]:
-        terms = [str(term).strip().lower() for term in exclusions if str(term).strip()]
-        if not terms:
-            return candidates
-        kept = {}
-        for name, candidate in candidates.items():
-            haystack = " ".join([
-                name, str(candidate.get("description", "")), " ".join(candidate.get("topics", [])),
-                str(candidate.get("readme", "")),
-            ]).lower()
-            if not any(term in haystack for term in terms):
-                kept[name] = candidate
-        return kept
 
     def _recall(self, search_id: str, queries: Iterable[dict[str, str]],
                 candidates: dict[str, dict[str, Any]]) -> tuple[bool, str | None]:
@@ -71,7 +92,7 @@ class SearchEngine:
             cached_at = cached_at or result.cached_at
             items = self._items(result)
             self.store.add_query(search_id, query_spec["query"], query_spec["kind"], len(items))
-            for repo in items:
+            for position, repo in enumerate(items, 1):
                 if repo.get("private") or repo.get("visibility") not in {None, "public"}:
                     continue
                 key = repo_key(repo)
@@ -79,11 +100,19 @@ class SearchEngine:
                     continue
                 candidate = candidates.setdefault(key, dict(repo))
                 path = {
-                    "kind": "query", "query": query_spec["query"], "query_kind": query_spec["kind"]
+                    "kind": "query", "query": query_spec["query"],
+                    "query_kind": query_spec["kind"], "position": position,
                 }
                 paths = candidate.setdefault("discovery_paths", [])
-                if path not in paths:
+                existing_path = next((item for item in paths if (
+                    item.get("kind") == "query"
+                    and item.get("query") == path["query"]
+                    and item.get("query_kind") == path["query_kind"]
+                )), None)
+                if existing_path is None:
                     paths.append(path)
+                else:
+                    existing_path["position"] = min(position, int(existing_path.get("position", position)))
                 kinds = candidate.setdefault("matched_kinds", [])
                 if query_spec["kind"] not in kinds:
                     kinds.append(query_spec["kind"])
@@ -91,22 +120,14 @@ class SearchEngine:
                     return stale, cached_at
         return stale, cached_at
 
-    def _enrich(self, candidates: dict[str, dict[str, Any]], limit: int | None = None) -> tuple[bool, str | None, bool]:
+    def _enrich(self, candidates: dict[str, dict[str, Any]], request: SearchRequest,
+                limit: int | None = None) -> tuple[bool, str | None, bool, int]:
         stale = False
         cached_at = None
         failed = False
-        def priority(item: dict[str, Any]) -> tuple[int, int, int]:
-            needs_enrichment = "readme" not in item
-            refined = bool({"refinement", "anchor", "key_file"} & set(item.get("matched_kinds", [])))
-            related = any(path.get("kind") == "relationship" for path in item.get("discovery_paths", []))
-            return (
-                int(needs_enrichment and (refined or related)),
-                int(needs_enrichment),
-                int(item.get("stargazers_count", 0)),
-            )
-
-        ordered = sorted(candidates.values(), key=priority, reverse=True)
-        selected = ordered[:limit or self.enrich_limit]
+        pending = [item for item in candidates.values() if "readme" not in item]
+        selected, _ = balanced_select(pending, request, ENRICH_QUOTAS, enriched=False)
+        selected = selected[:limit or self.enrich_limit]
 
         def fetch(candidate: dict[str, Any]) -> tuple[dict[str, Any], ApiResult | None, ApiResult | None]:
             readme_result = None
@@ -115,17 +136,21 @@ class SearchEngine:
                 readme_result = self.github.readme(candidate["full_name"])
             except GitHubNotFoundError:
                 pass
+            except GitHubAuthenticationError:
+                raise
             except GitHubError:
                 readme_result = "error"
             try:
                 release_result = self.github.latest_release(candidate["full_name"])
             except (GitHubNotFoundError, AttributeError):
                 pass
+            except GitHubAuthenticationError:
+                raise
             except GitHubError:
                 release_result = "error"
             return candidate, readme_result, release_result
 
-        with ThreadPoolExecutor(max_workers=min(8, max(1, len(selected)))) as pool:
+        with ThreadPoolExecutor(max_workers=min(12, max(1, len(selected)))) as pool:
             fetched = list(pool.map(fetch, selected))
         for candidate, result, release_result in fetched:
             if result == "error" or release_result == "error":
@@ -160,17 +185,23 @@ class SearchEngine:
             candidate["readme_truncated"] = truncated
             candidate["readme_links"] = github_links(readme, full_name)
             existing = {item.get("id"): item for item in candidate.get("evidence", [])}
-            for item in make_evidence(candidate, readme, truncated):
+            concept_terms = [concept.term for concept in request.core_concepts + request.adjacent_concepts]
+            for item in make_evidence(
+                candidate, readme, truncated, concept_terms=concept_terms,
+                artifact_types=request.artifact_types,
+            ):
                 existing[item["id"]] = item
             candidate["evidence"] = list(existing.values())
-        return stale, cached_at, failed
+        return stale, cached_at, failed, len(selected)
 
     def _add_related(self, candidates: dict[str, dict[str, Any]], repo: dict[str, Any],
-                     parent: str, relation: str, detail: str) -> None:
+                     parent: str, relation: str, detail: str, request: SearchRequest) -> None:
         key = repo_key(repo)
         if repo.get("private") or repo.get("visibility") not in {None, "public"}:
             return
         if not key or (key == parent.lower() and relation != "key_file"):
+            return
+        if not candidate_allowed(repo, request, include_readme=False):
             return
         if key not in candidates and len(candidates) >= self.candidate_limit:
             return
@@ -181,6 +212,10 @@ class SearchEngine:
         paths = candidate.setdefault("discovery_paths", [])
         if path not in paths:
             paths.append(path)
+        if relation == "key_file":
+            kinds = candidate.setdefault("matched_kinds", [])
+            if "key_file" not in kinds:
+                kinds.append("key_file")
         evidence_id = f"relation:{parent.lower()}:{relation}:{key}"
         evidence = candidate.setdefault("evidence", [])
         if not any(item.get("id") == evidence_id for item in evidence):
@@ -191,7 +226,7 @@ class SearchEngine:
             })
 
     def _expand_relations(self, search_id: str, candidates: dict[str, dict[str, Any]],
-                          seed_names: list[str] | None = None) -> tuple[bool, str | None, int, bool]:
+                          request: SearchRequest, seed_names: list[str] | None = None) -> tuple[bool, str | None, int, bool]:
         stale = False
         cached_at = None
         calls = 0
@@ -208,47 +243,55 @@ class SearchEngine:
                 if calls >= self.relation_budget:
                     break
                 try:
-                    result = self.github.repository(linked)
                     calls += 1
+                    result = self.github.repository(linked)
                     stale = stale or result.stale
                     cached_at = cached_at or result.cached_at
-                    self._add_related(candidates, result.data, full_name, "readme_link", linked)
+                    self._add_related(candidates, result.data, full_name, "readme_link", linked, request)
                 except GitHubNotFoundError:
                     continue
+                except GitHubAuthenticationError:
+                    raise
                 except GitHubError:
                     failed = True
             if calls < self.relation_budget:
-                query = reverse_reference_query(full_name)
+                query = reverse_reference_query(full_name, request)
                 try:
-                    result = self.github.search_repositories(query, per_page=10)
                     calls += 1
+                    result = self.github.search_repositories(query, per_page=10)
                     stale = stale or result.stale
                     cached_at = cached_at or result.cached_at
                     items = self._items(result)
                     self.store.add_query(search_id, query, "reverse_readme", len(items))
                     for item in items:
-                        self._add_related(candidates, item, full_name, "reverse_readme", query)
+                        self._add_related(candidates, item, full_name, "reverse_readme", query, request)
+                except GitHubAuthenticationError:
+                    raise
                 except GitHubError:
                     failed = True
             if calls < self.relation_budget:
                 try:
-                    result = self.github.forks(full_name, per_page=5)
                     calls += 1
+                    result = self.github.forks(full_name, per_page=5)
                     stale = stale or result.stale
                     cached_at = cached_at or result.cached_at
                     for item in self._items(result):
-                        self._add_related(candidates, item, full_name, "fork", "GitHub forks endpoint")
+                        self._add_related(candidates, item, full_name, "fork", "GitHub forks endpoint", request)
+                except GitHubAuthenticationError:
+                    raise
                 except GitHubError:
                     failed = True
             if calls < self.relation_budget:
                 try:
                     owner = full_name.split("/", 1)[0]
-                    result = self.github.owner_repositories(owner, per_page=10)
                     calls += 1
+                    result = self.github.owner_repositories(owner, per_page=10)
                     stale = stale or result.stale
                     cached_at = cached_at or result.cached_at
                     for item in self._items(result):
-                        self._add_related(candidates, item, full_name, "same_owner", owner)
+                        self._add_related(candidates, item, full_name, "same_owner", owner, request)
+                except GitHubAuthenticationError:
+                    raise
                 except GitHubError:
                     failed = True
         return stale, cached_at, calls, failed
@@ -262,91 +305,162 @@ class SearchEngine:
         stale = False
         cached_at = None
         incomplete = None
+        enriched_count = 0
         try:
             s, cache_time = self._recall(search_id, build_queries(request), candidates)
             stale, cached_at = stale or s, cached_at or cache_time
-            s, cache_time, enrich_failed = self._enrich(candidates)
+            candidates = {
+                name: item for name, item in candidates.items()
+                if candidate_allowed(item, request, include_readme=False)
+            }
+            s, cache_time, enrich_failed, enriched_count = self._enrich(candidates, request)
             stale, cached_at = stale or s, cached_at or cache_time
             if enrich_failed:
                 incomplete = "enrichment_partial_failure"
+        except GitHubAuthenticationError:
+            self.store.mark_search(search_id, stale=False, incomplete_phase="github_authentication_error")
+            raise
         except GitHubError as exc:
             incomplete = f"github_error:{type(exc).__name__}"
             if not candidates:
                 self.store.mark_search(search_id, stale=stale, incomplete_phase=incomplete)
                 raise
-        if not request.constraints.get("include_archived", False):
-            candidates = {name: item for name, item in candidates.items() if not item.get("archived", False)}
-        candidates = self._apply_exclusions(candidates, request.exclusions)
-        for candidate in candidates.values():
-            candidate.setdefault("evidence", make_evidence(candidate, "", False))
-            candidate["matched_kinds"] = sorted(set(candidate.get("matched_kinds", [])))
-            self.store.save_candidate(search_id, candidate)
-        self.store.mark_search(search_id, stale=stale, incomplete_phase=incomplete)
-        output = self._search_output(search_id, candidates.values(), stale, cached_at, incomplete)
+        output = self._finish(
+            search_id, candidates, request, stale, cached_at, incomplete,
+            enriched_count=enriched_count, relation_calls=0, code_calls=0,
+        )
         output["next_action"] = "expand" if mode == "deep" else "rank"
         return output
 
     def expand(self, search_id: str, refinement: dict[str, Any]) -> dict[str, Any]:
         session = self.store.load_search(search_id)
+        parsed_refinement = Refinement.from_dict(refinement)
+        request_data = dict(session["request"])
+        request_data["exclusions"] = list(request_data.get("exclusions", [])) + parsed_refinement.exclude
+        request = SearchRequest.from_dict(request_data)
         candidates = {repo_key(item): item for item in session["candidates"]}
         stale = bool(session["stale"])
         cached_at = None
-        recalled_stale, recalled_cache = self._recall(search_id, refinement_queries(refinement), candidates)
-        stale, cached_at = stale or recalled_stale, recalled_cache
-        for filename in [str(v).strip() for v in refinement.get("filenames", []) if str(v).strip()][:5]:
-            concepts = [str(v).strip() for v in refinement.get("concepts", []) if str(v).strip()]
-            query = f"is:public filename:{filename}" + (f" {concepts[0]}" if concepts else "")
-            result = self.github.search_code(query, per_page=10)
-            stale = stale or result.stale
-            cached_at = cached_at or result.cached_at
-            items = self._items(result)
-            self.store.add_query(search_id, query, "key_file", len(items))
-            for item in items:
-                repository = item.get("repository", item)
-                self._add_related(candidates, repository, repository.get("full_name", "unknown"), "key_file", filename)
-        s, cache_time, first_enrich_failed = self._enrich(candidates)
+        recall_failed = False
+        try:
+            recalled_stale, recalled_cache = self._recall(
+                search_id, refinement_queries(parsed_refinement, request), candidates
+            )
+            stale, cached_at = stale or recalled_stale, recalled_cache
+        except GitHubAuthenticationError:
+            raise
+        except GitHubError:
+            recall_failed = True
+        candidates = {
+            name: item for name, item in candidates.items()
+            if candidate_allowed(item, request, include_readme="readme" in item)
+        }
+        code_calls = 0
+        code_failed = False
+        for filename in parsed_refinement.filenames:
+            query = code_filename_query(filename, parsed_refinement.concepts[0] if parsed_refinement.concepts else None)
+            code_calls += 1
+            try:
+                result = self.github.search_code(query, per_page=10)
+                stale = stale or result.stale
+                cached_at = cached_at or result.cached_at
+                items = self._items(result)
+                self.store.add_query(search_id, query, "key_file", len(items))
+                for item in items:
+                    repository = item.get("repository", item)
+                    self._add_related(
+                        candidates, repository, repository.get("full_name", "unknown"),
+                        "key_file", filename, request,
+                    )
+            except GitHubAuthenticationError:
+                raise
+            except GitHubError:
+                code_failed = True
+        s, cache_time, first_enrich_failed, first_enriched = self._enrich(candidates, request)
         stale, cached_at = stale or s, cached_at or cache_time
-        seeds = [str(v).strip() for v in refinement.get("seeds", []) if str(v).strip()]
-        s, cache_time, calls, relation_failed = self._expand_relations(search_id, candidates, seeds or None)
+        s, cache_time, calls, relation_failed = self._expand_relations(
+            search_id, candidates, request, parsed_refinement.seeds or None
+        )
         stale, cached_at = stale or s, cached_at or cache_time
-        s, cache_time, second_enrich_failed = self._enrich(candidates)
+        s, cache_time, second_enrich_failed, second_enriched = self._enrich(candidates, request)
         stale, cached_at = stale or s, cached_at or cache_time
         if calls >= self.relation_budget:
             incomplete = "relationship_budget_reached"
+        elif recall_failed or code_failed:
+            incomplete = "refinement_partial_failure"
         elif first_enrich_failed or second_enrich_failed:
             incomplete = "enrichment_partial_failure"
         elif relation_failed:
             incomplete = "relationship_partial_failure"
         else:
             incomplete = None
-        if not session["request"].get("constraints", {}).get("include_archived", False):
-            candidates = {name: item for name, item in candidates.items() if not item.get("archived", False)}
-        candidates = self._apply_exclusions(
-            candidates, list(session["request"].get("exclusions", [])) + list(refinement.get("exclude", []))
+        output = self._finish(
+            search_id, candidates, request, stale, cached_at, incomplete,
+            enriched_count=first_enriched + second_enriched,
+            relation_calls=calls, code_calls=code_calls,
         )
-        for candidate in candidates.values():
-            candidate.setdefault("evidence", make_evidence(candidate, "", False))
-            self.store.save_candidate(search_id, candidate)
-        self.store.mark_search(search_id, stale=stale, incomplete_phase=incomplete)
-        output = self._search_output(search_id, candidates.values(), stale, cached_at, incomplete)
         output["next_action"] = "rank"
         return output
 
+    def _finish(self, search_id: str, candidates: dict[str, dict[str, Any]], request: SearchRequest,
+                stale: bool, cached_at: str | None, incomplete: str | None, *,
+                enriched_count: int, relation_calls: int, code_calls: int) -> dict[str, Any]:
+        candidates = {
+            name: item for name, item in candidates.items()
+            if candidate_allowed(item, request, include_readme="readme" in item)
+        }
+        concept_terms = [concept.term for concept in request.core_concepts + request.adjacent_concepts]
+        for candidate in candidates.values():
+            candidate.setdefault("evidence", make_evidence(
+                candidate, "", False, concept_terms=concept_terms,
+                artifact_types=request.artifact_types,
+            ))
+            candidate["matched_kinds"] = sorted(set(candidate.get("matched_kinds", [])))
+            candidate["selected_for_assessment"] = False
+        assessable = [item for item in candidates.values() if "readme" in item]
+        selected, lane_counts = balanced_select(
+            assessable, request, ASSESSMENT_QUOTAS, enriched=True
+        )
+        for candidate in selected:
+            candidate["selected_for_assessment"] = True
+        self.store.retain_search_candidates(search_id, list(candidates))
+        for candidate in candidates.values():
+            self.store.save_candidate(search_id, candidate)
+        self.store.mark_search(search_id, stale=stale, incomplete_phase=incomplete)
+        coverage = {
+            "queries_executed": self.store.query_count(search_id),
+            "enriched": sum("readme" in item for item in candidates.values()),
+            "enriched_this_phase": enriched_count,
+            "omitted": max(0, len(candidates) - len(selected)),
+            "relation_calls": relation_calls, "code_search_calls": code_calls,
+            "lanes": lane_counts,
+            "api_calls": dict(getattr(self.github, "request_counts", {})),
+            "rate_limits": dict(getattr(self.github, "rate_limits", {})),
+        }
+        return self._search_output(
+            search_id, candidates.values(), selected, stale, cached_at, incomplete, coverage
+        )
+
     @staticmethod
-    def _search_output(search_id: str, candidates: Iterable[dict[str, Any]], stale: bool,
-                       cached_at: str | None, incomplete: str | None) -> dict[str, Any]:
+    def _search_output(search_id: str, all_candidates: Iterable[dict[str, Any]],
+                       selected: Iterable[dict[str, Any]], stale: bool,
+                       cached_at: str | None, incomplete: str | None,
+                       coverage: dict[str, Any]) -> dict[str, Any]:
         # Full GitHub responses and README text stay in SQLite for later expansion
         # and ranking, while the wire response exposes only the stable fields the
         # host agent needs for assessment.
+        all_candidates = list(all_candidates)
         items = []
-        for candidate in candidates:
-            public_candidate = {
-                key: value for key, value in candidate.items() if key in PUBLIC_CANDIDATE_FIELDS
-            }
-            items.append(public_candidate)
-        items.sort(key=lambda item: item.get("stargazers_count", 0), reverse=True)
+        for candidate in selected:
+            items.append(public_candidate(candidate))
+        items.sort(key=lambda item: (
+            -max(item.get("selection_score_components", {}).get("recall", 0),
+                 item.get("selection_score_components", {}).get("adjacent_concept", 0)),
+            item.get("full_name", "").lower(),
+        ))
         return {
-            "schema_version": 1, "search_id": search_id, "stale": stale,
+            "schema_version": 2, "search_id": search_id, "stale": stale,
             "cache_time": cached_at, "incomplete_phase": incomplete,
-            "candidate_count": len(items), "candidates": items,
+            "candidate_count": len(all_candidates), "assessment_candidate_count": len(items),
+            "candidates": items, "coverage": coverage,
         }

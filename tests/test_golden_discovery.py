@@ -124,7 +124,8 @@ class GoldenDiscoveryTests(unittest.TestCase):
         engine.expand(first["search_id"], refinement)
         result = engine.expand(first["search_id"], refinement)
 
-        found = next(item for item in result["candidates"] if item["full_name"] == "tools/review")
+        found = self.store.get_candidate("tools/review", result["search_id"])
+        self.assertIsNotNone(found)
         identities = {
             (
                 path.get("kind"), path.get("query"), path.get("query_kind"),
