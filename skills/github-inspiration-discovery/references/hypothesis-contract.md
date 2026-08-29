@@ -38,7 +38,15 @@ Prefer: `decision`, `reason`, `target_direction`, `target_mechanism`, `concepts`
 
 Advanced, only when first-round evidence supports them: `aliases`, `anchors`, `seeds`, `filenames`, `exclude`, `rejected_directions`, `adjacent_concepts`.
 
-`negative_directions` are session-level wrong senses. `rejected_directions` are user refusals. Discovered terms are not searched and do not become mechanisms until listed in `promote_discovered_terms` or `add_exploration_directions` and later matched by description, Topics, or README evidence.
+Direction fields are not interchangeable:
+
+- `rejected_directions`: the user explicitly does not want this direction (“不要 timer”).
+- `negative_directions`: a wrong sense or ambiguity confirmed during search (“DOM focus 不是我要的”).
+- `target_direction` / `add_exploration_directions`: a new positive direction the user wants (“更想看行为干预”).
+
+Do not write a new positive preference into `negative_directions` or `rejected_directions`. Discovered terms are not searched and do not become mechanisms until listed in `promote_discovered_terms` or `add_exploration_directions` and later matched by description, Topics, or README evidence.
+
+Restore a session with `muse-shroom observe --search-id SEARCH_ID` before deciding to iterate again. That command is read-only: no GitHub requests, no new iteration, no boundary writes.
 
 `strategies` may include `keyword`, `relationship`, `seed`, `code`, and `owner`. Omit it to run keyword reformulation only; supplying `seeds` or `filenames` also enables the matching retrieval strategy.
 

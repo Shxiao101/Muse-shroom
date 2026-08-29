@@ -20,7 +20,7 @@ from .models import (
     DEFAULT_CONSECUTIVE_NO_GAIN, DEFAULT_DEEP_CANDIDATE_LIMIT,
     DEFAULT_MAX_ITERATIONS, DEFAULT_QUERIES_PER_ITERATION,
     DEFAULT_QUICK_CANDIDATE_LIMIT, DEFAULT_README_ENRICH_PER_ITERATION,
-    DEFAULT_SESSION_QUERY_BUDGET,
+    DEFAULT_SESSION_QUERY_BUDGET, HARD_STOP_REASONS,
     Refinement, SearchHypothesis, SearchRequest, repo_key,
 )
 from .queries import (
@@ -313,7 +313,7 @@ def public_candidate(candidate: dict[str, Any], *, detailed: bool = False) -> di
 
 
 class SearchEngine:
-    def __init__(self, store: Store, github: GitHubClient, *,
+    def __init__(self, store: Store, github: GitHubClient | None = None, *,
                  candidate_limit: int | None = None,
                  enrich_limit: int = 30, relation_budget: int = 40,
                  max_iterations: int = DEFAULT_MAX_ITERATIONS,
@@ -754,6 +754,77 @@ class SearchEngine:
 
     def iterate(self, search_id: str, refinement: dict[str, Any]) -> dict[str, Any]:
         return self._run_iteration(search_id, SearchHypothesis.from_dict(refinement), stage="iterate")
+
+    def observe(self, search_id: str) -> dict[str, Any]:
+        session = self.store.load_search(search_id)
+        request = SearchRequest.from_dict(session["request"])
+        for candidate in session["candidates"]:
+            annotate_candidate_mechanisms(candidate, request)
+        selected = [item for item in session["candidates"] if item.get("selected_for_assessment")]
+        snapshot = self.store.latest_boundary_snapshot(search_id) or {}
+        state = self.store.get_session_state(search_id)
+        boundary = build_boundary(
+            session["candidates"], selected, request,
+            rejected_directions=(snapshot.get("boundary") or {}).get("rejected_directions", []),
+            negative_directions=state.get("negative_directions") or [],
+        ).to_dict()
+        remaining = remaining_budget(
+            iteration=int(state.get("iteration") or 0),
+            queries_used=self.store.query_count(search_id),
+            relation_calls_used=int(state.get("relation_calls_used") or 0),
+            max_iterations=self.max_iterations,
+            queries_per_iteration=self.queries_per_iteration,
+            session_query_budget=self.session_query_budget,
+            readme_enrich_per_iteration=self.readme_enrich_per_iteration,
+            relation_budget=self.relation_budget,
+        )
+        coverage = {
+            "queries_executed": self.store.query_count(search_id),
+            "mechanism_count": len(boundary.get("recalled_mechanisms") or []),
+            "presented_mechanism_count": len(boundary.get("presented_mechanisms") or []),
+            "direction_coverage": round(
+                len(boundary.get("explored_directions") or [])
+                / max(1, len(boundary.get("explored_directions") or [])
+                      + len(boundary.get("unexplored_directions") or [])),
+                3,
+            ),
+        }
+        stop_reason = state.get("stop_reason")
+        hard = stop_reason in HARD_STOP_REASONS
+        observation = build_observation(
+            iteration=int(state.get("iteration") or 0),
+            boundary=boundary,
+            boundary_delta=snapshot.get("boundary_delta") or {},
+            coverage=coverage,
+            query_summary={"executed": [], "skipped": [], "executed_count": 0},
+            candidates=session["candidates"], selected=selected, request=request,
+            remaining=remaining,
+            stop_reasons=[stop_reason] if hard and stop_reason else [],
+            hard_stop=hard,
+            exploration_additions=list(state.get("exploration_additions") or []),
+            consecutive_no_gain=int(state.get("consecutive_no_gain") or 0),
+        )
+        mode = str(session.get("mode") or "quick")
+        if self.store.get_ranking(search_id):
+            next_action = "done"
+        elif mode != "deep":
+            next_action = "rank"
+        elif hard or remaining["iterations"] <= 0 or remaining["queries"] <= 0:
+            next_action = "rank"
+        else:
+            next_action = "iterate"
+        return {
+            "schema_version": 2,
+            "search_id": search_id,
+            "mode": mode,
+            "iteration": int(state.get("iteration") or 0),
+            "observation": observation,
+            "boundary": boundary,
+            "remaining_budget": remaining,
+            "next_action": next_action,
+            "stale": bool(session["stale"]),
+            "incomplete_phase": session.get("incomplete_phase"),
+        }
 
     def _run_iteration(self, search_id: str, hypothesis: SearchHypothesis, *, stage: str) -> dict[str, Any]:
         session = self.store.load_search(search_id)

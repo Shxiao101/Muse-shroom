@@ -105,6 +105,14 @@ class StorageAndCliTests(unittest.TestCase):
             self.assertEqual(saved["next_action"], "rank")
             self.assertEqual(receipt["next_action"], "rank")
             self.assertLessEqual(len(saved["candidates"][0]["evidence"]), 3)
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                code = main(["--data-dir", directory, "observe", "--search-id", saved["search_id"]])
+            self.assertEqual(code, 0)
+            observed = json.loads(stdout.getvalue())
+            self.assertEqual(observed["search_id"], saved["search_id"])
+            self.assertEqual(observed["next_action"], "rank")
+            self.assertNotIn("candidates", observed)
 
     def test_identical_search_is_reused_without_github(self):
         from muse_shroom.search import SearchEngine

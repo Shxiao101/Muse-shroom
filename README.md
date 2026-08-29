@@ -36,6 +36,7 @@ v0.4 请求把语义拆成 `problem_concepts`、`mechanisms`、`exploration_dire
 
 ```console
 muse-shroom search --request examples/music-ai.request.json --mode quick --output search.json
+muse-shroom observe --search-id SEARCH_ID --output observe.json
 muse-shroom iterate --search-id SEARCH_ID --refinement examples/focus-tools.hypothesis.json --output iterate.json
 muse-shroom rank --search-id SEARCH_ID --assessments assessments.json --output rank.json
 ```

@@ -26,7 +26,7 @@ Separate the surface phrase from the underlying symptom. “Codex overthinks” 
 
 ## 3. Authenticate
 
-When the host supports scoped approval, run `muse-shroom auth status` first in the host/local user context with network. If `configured=true`, run `search`, `iterate`, and `rank` in that same context. Never copy the token into a prompt, file, argument, or environment variable. Direct the user to `muse-shroom auth login` only when host `auth status` says no credential is configured or GitHub rejected it.
+When the host supports scoped approval, run `muse-shroom auth status` first in the host/local user context with network. If `configured=true`, run `search`, `observe`, `iterate`, and `rank` in that same context. Never copy the token into a prompt, file, argument, or environment variable. Direct the user to `muse-shroom auth login` only when host `auth status` says no credential is configured or GitHub rejected it.
 
 ## 4. Build SearchRequest
 
@@ -48,7 +48,9 @@ Each continue picks a few directions only, in this order: correct obvious semant
 
 Write a hypothesis per [hypothesis-contract.md](references/hypothesis-contract.md). `muse-shroom iterate --search-id ID --refinement HYPOTHESIS`. On stop, still call iterate with `decision=stop` so the session records the ending.
 
-If the user later says “还有吗”, “再找一些”, or “换点不同的”, reuse this `search_id`, read the current observation, and iterate. Start a new search only when the need itself changed. If they reject a direction (“不要 timer”, “更想看行为干预”), put it in `rejected_directions` or `negative_directions` and continue the same session. Do not keep that only in chat. After rank, do not start another iteration unless they ask.
+If the user later says “还有吗”, “再找一些”, or “换点不同的”, reuse this `search_id`. First run `muse-shroom observe --search-id ID` (read-only; no GitHub calls). Then decide from that observation: iterate if budget remains, otherwise explain why the session should stop. Start a new search only when the need itself changed.
+
+Map follow-up preferences into the hypothesis fields in [hypothesis-contract.md](references/hypothesis-contract.md), not chat memory. Do not write a new positive preference into `negative_directions` or `rejected_directions`. After rank, `observe` reports `next_action=done`; do not iterate unless the user asks for more.
 
 ## 7. Assess
 

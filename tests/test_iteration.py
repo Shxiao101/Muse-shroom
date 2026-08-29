@@ -413,6 +413,42 @@ class AgenticLoopTests(unittest.TestCase):
         self.assertLess(loop["duplicate_query_rate"], len(skipped) / max(1, len(history)))
         self.assertEqual(loop["skipped_by_reason"].get("round_budget"), 2)
 
+    def test_observe_restores_session_without_github_or_writes(self):
+        item = repo("focus/timer", 4, description="Pomodoro timer")
+        github = FrozenGitHub(
+            [("focus", [item]), ("pomodoro", [item])],
+            readmes={"focus/timer": "# Timer\nPomodoro.\n## Usage\nRun it."},
+        )
+        request = SearchRequest.from_dict({
+            "request": "focus",
+            "problem_concepts": ["focus"],
+            "mechanisms": ["pomodoro"],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                engine = SearchEngine(store, github, relation_budget=0)
+                first = engine.search(request, "deep")
+                snapshots_before = len(store.boundary_snapshots(first["search_id"]))
+                queries_before = store.query_count(first["search_id"])
+                calls_before = dict(github.request_counts)
+                viewed = SearchEngine(store, None).observe(first["search_id"])
+                snapshots_after = len(store.boundary_snapshots(first["search_id"]))
+                queries_after = store.query_count(first["search_id"])
+            finally:
+                store.close()
+
+        self.assertEqual(viewed["search_id"], first["search_id"])
+        self.assertEqual(viewed["mode"], "deep")
+        self.assertEqual(viewed["next_action"], "iterate")
+        self.assertIn("observation", viewed)
+        self.assertIn("remaining_budget", viewed)
+        self.assertIn("boundary", viewed)
+        self.assertNotIn("candidates", viewed)
+        self.assertEqual(github.request_counts, calls_before)
+        self.assertEqual(snapshots_after, snapshots_before)
+        self.assertEqual(queries_after, queries_before)
+
     def test_deep_mode_uses_a_larger_candidate_pool_than_quick(self):
         item = repo("focus/timer", 4, description="Pomodoro timer")
         github = FrozenGitHub(

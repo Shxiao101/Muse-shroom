@@ -6,7 +6,8 @@ CLI implementation notes. Agent Skills should follow `skills/github-inspiration-
 - Search output is schema v2: `candidate_count` is full recall, `candidates` is the assessment shortlist of at most 12 rows.
 - `boundary.recalled_mechanisms` covers the full pool; `presented_mechanisms` covers the shortlist or final ranking. Mechanism labels need description, Topics, or README evidence.
 - `discovered_terms` stay unconfirmed until a hypothesis promotes them and later evidence matches.
-- `negative_directions` are session-level wrong senses; `rejected_directions` are user refusals.
+- `negative_directions` are session-level wrong senses; `rejected_directions` are user refusals; new positive directions go to `add_exploration_directions`.
+- `muse-shroom observe --search-id` restores observation without GitHub calls or writes.
 - Deep mode: at most 3 iterates after search, 6 new queries per round, 30 session search queries, candidate pool 250 (quick 100). `stop.reasons` are hard stops; `stop.signals` are advisory.
 - Rank explanations follow `display_order` (popular, gems, adjacent). `selection_order` is internal pick order.
 - Probe stage: at most 2 repos per owner. Deep shortlist uses a boundary lane so one mechanism cannot fill the list.

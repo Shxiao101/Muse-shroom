@@ -102,6 +102,9 @@ def build_parser() -> argparse.ArgumentParser:
     iterate.add_argument("--search-id", required=True)
     iterate.add_argument("--refinement", required=True, help="hypothesis JSON path or - for stdin")
     iterate.add_argument("--output", help="write full JSON to this UTF-8 file and print a short receipt")
+    observe = sub.add_parser("observe", help="read-only restore of session observation")
+    observe.add_argument("--search-id", required=True)
+    observe.add_argument("--output", help="write full JSON to this UTF-8 file and print a short receipt")
     rank = sub.add_parser("rank")
     rank.add_argument("--search-id", required=True)
     rank.add_argument("--assessments", required=True, help="assessment JSON path or - for stdin")
@@ -179,6 +182,8 @@ def run(args: argparse.Namespace) -> Any:
                 "credential_source": credential.source if credential else None,
                 "credential_error": auth_error,
             }
+        if args.command == "observe":
+            return SearchEngine(store, None).observe(args.search_id)
         if args.command in {"search", "expand", "iterate"}:
             github = GitHubClient(store)
             engine = SearchEngine(store, github)
