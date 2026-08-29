@@ -1,11 +1,14 @@
 {
   "request": "寻找有意思、上手难度低的音乐 + AI 小工具",
-  "core_concepts": [
+  "problem_concepts": [
     {"term": "music AI", "weight": 1.0},
-    {"term": "optical music recognition", "aliases": ["OMR"], "weight": 0.9},
     {"term": "sheet music", "weight": 0.7}
   ],
-  "adjacent_concepts": ["OMR", "music transcription", "MIDI visualization"],
+  "mechanisms": [
+    {"term": "optical music recognition", "aliases": ["OMR"], "weight": 0.9},
+    "music transcription"
+  ],
+  "exploration_directions": ["MIDI visualization", "generative composition", "audio reactive"],
   "artifact_types": ["application", "plugin"],
   "constraints": {"include_archived": false},
   "exclusions": ["awesome list", "course"],

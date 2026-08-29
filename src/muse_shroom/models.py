@@ -47,9 +47,15 @@ class Concept:
     @classmethod
     def from_value(cls, value: Any) -> "Concept":
         if isinstance(value, str):
-            return cls(value.strip())
+            term = value.strip()
+            if not term or len(term) > 160 or "\n" in term or "\r" in term:
+                raise ContractError("concept terms must be non-empty single-line strings up to 160 characters")
+            return cls(term)
         if not isinstance(value, dict) or not str(value.get("term", "")).strip():
             raise ContractError("concepts must be strings or objects containing term")
+        term = str(value["term"]).strip()
+        if len(term) > 160 or "\n" in term or "\r" in term:
+            raise ContractError("concept terms must be single-line strings up to 160 characters")
         weight = float(value.get("weight", 1.0))
         if not 0 <= weight <= 1:
             raise ContractError("concept weight must be from 0 to 1")
@@ -60,37 +66,69 @@ class Concept:
             raise ContractError("concept aliases must be an array of strings")
         aliases: list[str] = []
         for item in aliases_raw:
-            if not isinstance(item, str) or not item.strip():
-                raise ContractError("concept aliases must be non-empty strings")
+            if (
+                not isinstance(item, str) or not item.strip() or len(item.strip()) > 160
+                or "\n" in item or "\r" in item
+            ):
+                raise ContractError("concept aliases must be single-line strings up to 160 characters")
             aliases.append(item.strip())
         if len(aliases) > MAX_CONCEPT_ALIASES:
             raise ContractError(f"each concept may have at most {MAX_CONCEPT_ALIASES} aliases")
-        return cls(str(value["term"]).strip(), weight, aliases)
+        return cls(term, weight, aliases)
 
 
 @dataclass(slots=True)
 class SearchRequest:
     request: str
-    core_concepts: list[Concept]
-    adjacent_concepts: list[Concept] = field(default_factory=list)
+    problem_concepts: list[Concept]
+    mechanisms: list[Concept] = field(default_factory=list)
+    exploration_directions: list[Concept] = field(default_factory=list)
     artifact_types: list[str] = field(default_factory=list)
     constraints: dict[str, Any] = field(default_factory=dict)
     exclusions: list[str] = field(default_factory=list)
     exploration_level: float = 0.35
+    legacy_schema: bool = field(default=False, repr=False)
+
+    @property
+    def core_concepts(self) -> list[Concept]:
+        """v0.3 compatibility view used by the unchanged selection formula."""
+        return self.problem_concepts + self.mechanisms
+
+    @property
+    def adjacent_concepts(self) -> list[Concept]:
+        """v0.3 compatibility view used by the unchanged adjacent lane."""
+        return self.exploration_directions
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SearchRequest":
         if not isinstance(data, dict) or not str(data.get("request", "")).strip():
             raise ContractError("request is required")
-        core = [Concept.from_value(v) for v in data.get("core_concepts", [])]
-        if not core:
-            raise ContractError("core_concepts must contain at least one concept")
+        new_fields = any(
+            name in data for name in ("problem_concepts", "mechanisms", "exploration_directions")
+        )
+        problem_values = data.get("problem_concepts", data.get("core_concepts", []))
+        mechanism_values = data.get("mechanisms", [])
+        direction_values = data.get("exploration_directions", data.get("adjacent_concepts", []))
+        if new_fields and "problem_concepts" not in data and "core_concepts" in data:
+            problem_values = data["core_concepts"]
+        for name, values in (
+            ("problem_concepts", problem_values),
+            ("mechanisms", mechanism_values),
+            ("exploration_directions", direction_values),
+        ):
+            if not isinstance(values, list):
+                raise ContractError(f"{name} must be an array")
+        problem = [Concept.from_value(v) for v in problem_values]
+        if not problem:
+            name = "problem_concepts" if new_fields else "core_concepts"
+            raise ContractError(f"{name} must contain at least one concept")
         exploration = float(data.get("exploration_level", 0.35))
         if not 0 <= exploration <= 1:
             raise ContractError("exploration_level must be from 0 to 1")
-        constraints = data.get("constraints", {})
-        if not isinstance(constraints, dict):
+        raw_constraints = data.get("constraints", {})
+        if not isinstance(raw_constraints, dict):
             raise ContractError("constraints must be an object")
+        constraints = dict(raw_constraints)
         if constraints.get("pushed_after") and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(constraints["pushed_after"])):
             raise ContractError("constraints.pushed_after must use YYYY-MM-DD")
         for key in ("min_stars", "max_stars"):
@@ -105,20 +143,48 @@ class SearchRequest:
             raise ContractError("constraints.min_stars cannot exceed max_stars")
         return cls(
             request=str(data["request"]).strip(),
-            core_concepts=core,
-            adjacent_concepts=[Concept.from_value(v) for v in data.get("adjacent_concepts", [])],
+            problem_concepts=problem,
+            mechanisms=[Concept.from_value(v) for v in mechanism_values],
+            exploration_directions=[Concept.from_value(v) for v in direction_values],
             artifact_types=[str(v).strip().lower() for v in data.get("artifact_types", []) if str(v).strip()],
-            constraints=dict(constraints),
+            constraints=constraints,
             exclusions=[str(v).strip() for v in data.get("exclusions", []) if str(v).strip()],
             exploration_level=exploration,
+            legacy_schema=not new_fields,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload.pop("legacy_schema", None)
+        return payload
 
     def fingerprint(self, mode: str) -> str:
         payload = {"mode": mode, "request": self.to_dict()}
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+@dataclass(slots=True)
+class SearchBoundary:
+    recalled_mechanisms: list[str] = field(default_factory=list)
+    presented_mechanisms: list[str] = field(default_factory=list)
+    explored_directions: list[str] = field(default_factory=list)
+    unexplored_directions: list[str] = field(default_factory=list)
+    rejected_directions: list[str] = field(default_factory=list)
+    discovered_terms: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class BoundaryDelta:
+    new_mechanisms: list[str] = field(default_factory=list)
+    new_presented_mechanisms: list[str] = field(default_factory=list)
+    new_directions: list[str] = field(default_factory=list)
+    new_terms: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(slots=True)
@@ -129,6 +195,7 @@ class Refinement:
     seeds: list[str] = field(default_factory=list)
     filenames: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
+    rejected_directions: list[str] = field(default_factory=list)
 
     @staticmethod
     def _strings(data: dict[str, Any], name: str, limit: int) -> list[str]:
@@ -153,6 +220,7 @@ class Refinement:
             seeds=cls._strings(data, "seeds", 8),
             filenames=cls._strings(data, "filenames", 5),
             exclude=cls._strings(data, "exclude", 10),
+            rejected_directions=cls._strings(data, "rejected_directions", 10),
         )
         repo_pattern = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
         if any(not repo_pattern.fullmatch(seed) for seed in result.seeds):

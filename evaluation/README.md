@@ -46,4 +46,8 @@ The release gate passes when all eight prompts are rated, the candidate wins at 
 
 This v1 harness evaluates the 12-repository assessment shortlist and its evidence, which is the stage changed most heavily in v0.3.3. Final Agent-authored semantic assessments and ranking prose remain a separate human-in-the-loop evaluation.
 
+Raw v0.4 results also include `boundary`, `boundary_delta`, and diagnostic-only `boundary_diagnostics`: mechanism count, presented mechanism count, mechanism redundancy, boundary gain, and direction coverage. They are intentionally excluded from the existing release gate until enough replay data exists to calibrate thresholds. Cassette replay must reproduce the same boundary for the same request and recorded responses.
+
+The prompt fixture retains a duplicate `core_concepts` field solely so historical fixture validators can still inspect it. `version_worker.py` detects the checked-out request model: current versions consume the v0.4 fields, while older baseline worktrees receive a generated v0.3 request with problem concepts and mechanisms combined as core concepts.
+
 The probe and shortlist stages cap a single repository owner at two entries. This keeps ecosystems such as a release tool plus its plugins discoverable without allowing one owner to dominate the Agent's review budget.

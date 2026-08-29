@@ -36,6 +36,8 @@ muse-shroom --help
 4. Agent 只根据候选中的 evidence IDs 生成语义评价，功能结论必须引用 README 片段。
 5. CLI 合并元数据、关系证据、类型质量规则和评价，输出热门、宝藏、跨界三个榜。
 
+v0.4 的 request 将语义拆成三层：`problem_concepts` 描述真正要解决的问题，`mechanisms` 描述具体解决机制，`exploration_directions` 描述值得继续外扩的方向。旧版 `core_concepts` / `adjacent_concepts` 仍可读取，并会转换为新结构。
+
 ```console
 muse-shroom search --request examples/music-ai.request.json --mode quick --output search.json
 muse-shroom expand --search-id SEARCH_ID --refinement examples/music-ai.refinement.json --output expand.json
@@ -52,6 +54,10 @@ muse-shroom feedback Quackone/homr_gui --relevant yes --interesting yes --too-ha
 
 - 快搜最多生成 12 条受控查询；别名不会扩大 API 预算。同一概念组的多次字段查询会增强可信度，但 RRF 按概念组封顶。
 - 搜索输出使用 schema v2；`candidate_count` 是完整召回数，`candidates` 只包含最多 12 个评审短名单。
+- `boundary.recalled_mechanisms` 统计完整候选池中有证据的机制，`presented_mechanisms` 只统计当前短名单或最终榜单；同一机制下多个仓库只计一次。
+- mechanism 只根据 description、Topics 或 README 的实际文本匹配，候选中的 `mechanisms` 会给出来源、命中词和证据；仓库名与 Star 不作为机制证据。
+- `explored_directions` / `unexplored_directions` 描述探索边界，`discovered_terms` 保存少量有机制证据的候选 Topics，供下一次人工 refinement 使用，但不会自动继续搜索。
+- search、每次 expand、rank 都会在 SQLite 中追加 boundary snapshot；输出的 `boundary_delta` 是相对前一 snapshot 的新增机制、展示机制、方向和术语。
 - 探针阶段同一 owner 最多 2 个；短名单按核心代表 3、小众宝藏 4、跨界灵感 2、概念桥接 3 分配。
 - 低 Star 不能单独成为宝藏或桥接理由；必须有非泛化查询来源和 README/元数据相关证据。
 - 搜索 JSON 不超过 30KB；超限时只压缩次要字段，并保留每个候选的首条概念证据及其 README SHA/行号。每个候选默认 3 条证据：metadata、concept_match（或有效 overview）、usage/installation。Release 放在 `latest_release`，不占 evidence 槽。
@@ -73,7 +79,7 @@ python -m unittest discover -s tests -v
 
 设置 `MUSE_SHROOM_LIVE_SMOKE=1` 后可选运行实时 API 认证/契约 smoke test；稳定测试不会执行它。
 
-人工盲测协议和 8 个模糊需求位于 `evaluation/`。运行 `python evaluation/run_ab.py capture` 可在隔离源码树中录制 v0.2/v0.3 的共同 GitHub 响应并生成匿名评审包，`replay` 可完全离线复跑。诊断仓库只记录命中情况，不参与发布通过判定。
+人工盲测协议和 8 个模糊需求位于 `evaluation/`。运行 `python evaluation/run_ab.py capture` 可在隔离源码树中录制基线与当前版本的共同 GitHub 响应并生成匿名评审包，`replay` 可完全离线复跑。原始结果同时记录 mechanism count、presented mechanism count、mechanism redundancy、boundary gain 和 direction coverage；这些目前仅作诊断，不改变 release gate。诊断仓库只记录命中情况，不参与发布通过判定。
 
 ## 首版边界
 

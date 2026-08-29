@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .boundary import boundary_delta
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -68,6 +70,13 @@ class Store:
             CREATE TABLE IF NOT EXISTS rankings (
                 search_id TEXT PRIMARY KEY, ranking_json TEXT NOT NULL, created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS boundary_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                search_id TEXT NOT NULL, stage TEXT NOT NULL,
+                boundary_json TEXT NOT NULL, delta_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(search_id) REFERENCES searches(id)
+            );
             CREATE TABLE IF NOT EXISTS feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, full_name TEXT NOT NULL,
                 relevant INTEGER, interesting INTEGER, too_hard INTEGER,
@@ -83,6 +92,9 @@ class Store:
             self.db.execute("ALTER TABLE searches ADD COLUMN fingerprint TEXT")
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_searches_fingerprint ON searches(fingerprint, mode)"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_boundary_search ON boundary_snapshots(search_id, id)"
         )
         self.db.commit()
 
@@ -184,6 +196,63 @@ class Store:
     def get_ranking(self, search_id: str) -> dict[str, Any] | None:
         row = self.db.execute("SELECT ranking_json FROM rankings WHERE search_id=?", (search_id,)).fetchone()
         return json.loads(row[0]) if row else None
+
+    def save_boundary_snapshot(self, search_id: str, stage: str,
+                               boundary: dict[str, Any]) -> dict[str, Any]:
+        previous = self.latest_boundary_snapshot(search_id)
+        delta = boundary_delta(boundary, previous["boundary"] if previous else None).to_dict()
+        self.db.execute(
+            """INSERT INTO boundary_snapshots
+               (search_id, stage, boundary_json, delta_json, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                search_id, stage, json.dumps(boundary, ensure_ascii=False),
+                json.dumps(delta, ensure_ascii=False), utc_now(),
+            ),
+        )
+        self.db.commit()
+        return delta
+
+    def boundary_snapshots(self, search_id: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": int(row["id"]), "stage": row["stage"],
+                "boundary": json.loads(row["boundary_json"]),
+                "boundary_delta": json.loads(row["delta_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in self.db.execute(
+                """SELECT id,stage,boundary_json,delta_json,created_at
+                   FROM boundary_snapshots WHERE search_id=? ORDER BY id""",
+                (search_id,),
+            )
+        ]
+
+    def latest_boundary_snapshot(self, search_id: str,
+                                 stages: tuple[str, ...] = ()) -> dict[str, Any] | None:
+        if stages:
+            placeholders = ",".join("?" for _ in stages)
+            row = self.db.execute(
+                f"""SELECT id,stage,boundary_json,delta_json,created_at
+                    FROM boundary_snapshots
+                    WHERE search_id=? AND stage IN ({placeholders})
+                    ORDER BY id DESC LIMIT 1""",
+                (search_id, *stages),
+            ).fetchone()
+        else:
+            row = self.db.execute(
+                """SELECT id,stage,boundary_json,delta_json,created_at
+                   FROM boundary_snapshots WHERE search_id=? ORDER BY id DESC LIMIT 1""",
+                (search_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row["id"]), "stage": row["stage"],
+            "boundary": json.loads(row["boundary_json"]),
+            "boundary_delta": json.loads(row["delta_json"]),
+            "created_at": row["created_at"],
+        }
 
     def get_cache(self, key: str) -> tuple[Any, str] | None:
         with self._lock:

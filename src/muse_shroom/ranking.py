@@ -6,7 +6,8 @@ from dataclasses import asdict
 from typing import Any
 
 from .analyze import age_days
-from .models import Assessment, ContractError, repo_key
+from .boundary import build_boundary
+from .models import Assessment, ContractError, SearchRequest, repo_key
 from .storage import Store
 
 
@@ -156,6 +157,7 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
             "repo": candidate["full_name"], "url": candidate.get("html_url"),
             "description": candidate.get("description"), "stars": stars,
             "topics": candidate.get("topics", []), "assessment": asdict(assessment),
+            "mechanisms": candidate.get("mechanisms", []),
             "discovery_paths": candidate.get("discovery_paths", []),
             "evidence": candidate.get("evidence", []),
             "scores": {
@@ -192,14 +194,56 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
     used.update(item["repo"].lower() for item in popular)
     gem_pool = [item for item in eligible if item["repo"].lower() not in used and item["scores"]["components"]["underexposure"] >= 20]
     gems = _mmr_select(gem_pool, 4, adjacent + popular, "gem")
+    returned_names = {
+        item["repo"].lower() for item in popular + gems + adjacent
+    }
+    previous_boundary = store.latest_boundary_snapshot(search_id)
+    rejected = list((previous_boundary or {}).get("boundary", {}).get("rejected_directions", []))
+    try:
+        boundary_request = SearchRequest.from_dict(session["request"])
+    except ContractError:
+        # Rankings created by v0.2/v0.3 tests or persisted sessions may only
+        # contain the original request string.
+        boundary_request = SearchRequest.from_dict({
+            "request": str(session["request"].get("request") or "legacy search"),
+            "problem_concepts": [str(session["request"].get("request") or "legacy search")],
+        })
+    boundary = build_boundary(
+        candidates, [by_name[name] for name in returned_names],
+        boundary_request, rejected_directions=rejected,
+    ).to_dict()
+    delta = store.save_boundary_snapshot(search_id, "rank", boundary)
     result = {
         "schema_version": 2, "search_id": search_id,
         "stale": bool(session["stale"]), "incomplete_phase": session["incomplete_phase"],
         "buckets": {"popular": popular, "gems": gems, "adjacent": adjacent},
+        "boundary": boundary, "boundary_delta": delta,
         "coverage": {
             "recalled": len(candidates), "assessed": len(assessments), "eligible": len(eligible),
             "returned": len(popular) + len(gems) + len(adjacent),
             "adjacent_share": round(len(adjacent) / max(1, len(popular) + len(gems) + len(adjacent)), 3),
+            "mechanism_count": len(boundary["recalled_mechanisms"]),
+            "presented_mechanism_count": len(boundary["presented_mechanisms"]),
+            "mechanism_redundancy": round(
+                max(
+                    0,
+                    sum(len(by_name[item["repo"].lower()].get("mechanisms") or [])
+                        for item in popular + gems + adjacent)
+                    - len(boundary["presented_mechanisms"]),
+                )
+                / max(
+                    1,
+                    sum(len(by_name[item["repo"].lower()].get("mechanisms") or [])
+                        for item in popular + gems + adjacent),
+                ),
+                3,
+            ),
+            "boundary_gain": len(delta["new_mechanisms"]),
+            "direction_coverage": round(
+                len(boundary["explored_directions"])
+                / max(1, len(boundary["explored_directions"]) + len(boundary["unexplored_directions"])),
+                3,
+            ),
         },
     }
     store.save_ranking(search_id, result)

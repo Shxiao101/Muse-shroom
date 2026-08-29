@@ -274,6 +274,10 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(candidate["muse_shroom_version"], muse_shroom_version)
             self.assertEqual(baseline["results"][0]["candidates"][0]["repo"], "owner/music-tool")
             self.assertEqual(candidate["results"][0]["candidates"][0]["repo"], "owner/music-tool")
+            self.assertEqual(set(candidate["results"][0]["boundary_diagnostics"]), {
+                "mechanism_count", "presented_mechanism_count", "mechanism_redundancy",
+                "boundary_gain", "direction_coverage",
+            })
 
 
 if __name__ == "__main__":

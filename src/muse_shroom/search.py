@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Iterable
 
 from .analyze import _is_thin_overview, github_links, make_evidence, safe_readme
+from .boundary import annotate_candidate_mechanisms, build_boundary
 from .github import (
     ApiResult, GitHubAuthenticationError, GitHubClient, GitHubError,
     GitHubNotFoundError,
@@ -26,6 +27,7 @@ PUBLIC_CANDIDATE_FIELDS = {
     "discovery_paths", "matched_kinds", "evidence", "selection_lanes",
     "selection_score_components",
     "concept_matches", "selection_reason",
+    "mechanisms",
 }
 
 CONCEPT_MATCH_CHARS = 240
@@ -150,6 +152,17 @@ def _compact_search_output(output: dict[str, Any], limit: int = SEARCH_OUTPUT_MA
         (item, "concept_matches", item["concept_matches"][:1])
         for item in candidates
         if isinstance(item.get("concept_matches"), list) and len(item["concept_matches"]) > 1
+    ])
+    stages.append([
+        (item, "mechanisms", item["mechanisms"][:2])
+        for item in candidates
+        if isinstance(item.get("mechanisms"), list) and len(item["mechanisms"]) > 2
+    ])
+    stages.append([
+        (mechanism["evidence"], "text", str(mechanism["evidence"].get("text") or "")[:100])
+        for item in candidates for mechanism in item.get("mechanisms") or []
+        if isinstance(mechanism.get("evidence"), dict)
+        and len(str(mechanism["evidence"].get("text") or "")) > 100
     ])
     stages.append([
         (item, "selection_lanes", item["selection_lanes"][:1])
@@ -306,8 +319,9 @@ class SearchEngine:
                 else:
                     existing_path["position"] = min(position, int(existing_path.get("position", position)))
                 kinds = candidate.setdefault("matched_kinds", [])
-                if query_spec["kind"] not in kinds:
-                    kinds.append(query_spec["kind"])
+                lane_kind = query_spec.get("lane_kind", query_spec["kind"])
+                if lane_kind not in kinds:
+                    kinds.append(lane_kind)
                 if len(candidates) >= self.candidate_limit:
                     return stale, cached_at
         return stale, cached_at
@@ -570,6 +584,7 @@ class SearchEngine:
         output = self._finish(
             search_id, candidates, request, stale, cached_at, incomplete,
             enriched_count=enriched_count, relation_calls=0, code_calls=0,
+            stage="search", rejected_directions=[],
         )
         output["next_action"] = "expand" if mode == "deep" else "rank"
         _compact_search_output(output)
@@ -649,7 +664,12 @@ class SearchEngine:
         output = self._finish(
             search_id, candidates, request, stale, cached_at, incomplete,
             enriched_count=first_enriched + second_enriched,
-            relation_calls=calls, code_calls=code_calls,
+            relation_calls=calls, code_calls=code_calls, stage="expand",
+            rejected_directions=list(dict.fromkeys(
+                list((self.store.latest_boundary_snapshot(search_id) or {}).get("boundary", {}).get(
+                    "rejected_directions", []
+                )) + parsed_refinement.rejected_directions
+            )),
         )
         output["next_action"] = "rank"
         _compact_search_output(output)
@@ -677,7 +697,8 @@ class SearchEngine:
 
     def _finish(self, search_id: str, candidates: dict[str, dict[str, Any]], request: SearchRequest,
                 stale: bool, cached_at: str | None, incomplete: str | None, *,
-                enriched_count: int, relation_calls: int, code_calls: int) -> dict[str, Any]:
+                enriched_count: int, relation_calls: int, code_calls: int,
+                stage: str, rejected_directions: list[str]) -> dict[str, Any]:
         candidates = {
             name: item for name, item in candidates.items()
             if candidate_allowed(item, request, include_readme="readme" in item)
@@ -688,6 +709,7 @@ class SearchEngine:
                 candidate, "", False, concept_terms=concept_terms,
                 artifact_types=request.artifact_types,
             ))
+            annotate_candidate_mechanisms(candidate, request)
             candidate["matched_kinds"] = sorted(set(candidate.get("matched_kinds", [])))
             candidate["selected_for_assessment"] = False
         assessable = [item for item in candidates.values() if "readme" in item]
@@ -715,8 +737,22 @@ class SearchEngine:
             enriched_count=enriched_count, relation_calls=relation_calls,
             code_calls=code_calls, lane_counts=lane_counts,
         )
+        boundary = build_boundary(
+            candidates.values(), selected, request, rejected_directions=rejected_directions,
+        ).to_dict()
+        coverage.update({
+            "mechanism_count": len(boundary["recalled_mechanisms"]),
+            "presented_mechanism_count": len(boundary["presented_mechanisms"]),
+            "direction_coverage": round(
+                len(boundary["explored_directions"])
+                / max(1, len(boundary["explored_directions"]) + len(boundary["unexplored_directions"])),
+                3,
+            ),
+        })
+        boundary_delta = self.store.save_boundary_snapshot(search_id, stage, boundary)
         return self._search_output(
-            search_id, candidates.values(), selected, stale, cached_at, incomplete, coverage
+            search_id, candidates.values(), selected, stale, cached_at, incomplete, coverage,
+            boundary, boundary_delta,
         )
 
     def _reused_output(self, search_id: str, mode: str) -> dict[str, Any]:
@@ -735,9 +771,19 @@ class SearchEngine:
         )
         coverage["reused"] = True
         coverage["api_calls"] = {}
+        snapshot = self.store.latest_boundary_snapshot(search_id, ("search", "expand")) or {}
+        boundary = snapshot.get("boundary", {})
+        explored = boundary.get("explored_directions", [])
+        unexplored = boundary.get("unexplored_directions", [])
+        coverage.update({
+            "mechanism_count": len(boundary.get("recalled_mechanisms", [])),
+            "presented_mechanism_count": len(boundary.get("presented_mechanisms", [])),
+            "direction_coverage": round(len(explored) / max(1, len(explored) + len(unexplored)), 3),
+        })
         output = self._search_output(
             search_id, session["candidates"], selected, bool(session["stale"]),
             session.get("updated_at"), session.get("incomplete_phase"), coverage,
+            boundary, snapshot.get("boundary_delta", {}),
         )
         output["reused"] = True
         output["next_action"] = "expand" if mode == "deep" else "rank"
@@ -748,7 +794,8 @@ class SearchEngine:
     def _search_output(search_id: str, all_candidates: Iterable[dict[str, Any]],
                        selected: Iterable[dict[str, Any]], stale: bool,
                        cached_at: str | None, incomplete: str | None,
-                       coverage: dict[str, Any]) -> dict[str, Any]:
+                       coverage: dict[str, Any], boundary: dict[str, Any],
+                       boundary_delta: dict[str, Any]) -> dict[str, Any]:
         # Full GitHub responses and README text stay in SQLite for later expansion
         # and ranking, while the wire response exposes only the stable fields the
         # host agent needs for assessment.
@@ -766,5 +813,6 @@ class SearchEngine:
             "cache_time": cached_at, "incomplete_phase": incomplete,
             "candidate_count": len(all_candidates), "assessment_candidate_count": len(items),
             "candidates": items, "coverage": coverage,
+            "boundary": boundary, "boundary_delta": boundary_delta,
         }
         return output

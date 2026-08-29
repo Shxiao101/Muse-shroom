@@ -13,7 +13,7 @@ Before invoking Muse-shroom, read [request-contract.md](references/request-contr
 
 ### Interaction 1: confirm semantic expansion when unresolved
 
-Translate the user's surface phrase into a proposed search interpretation. Show the core concepts, adjacent concepts, likely artifact types, important constraints, and exclusions in concise user-facing language. Ask whether this interpretation is correct or should be changed, then wait for the user's response. Do not search GitHub yet.
+Translate the user's surface phrase into a proposed search interpretation. Show the problem concepts, common solution mechanisms, exploration directions, likely artifact types, important constraints, and exclusions in concise user-facing language. Ask whether this interpretation is correct or should be changed, then wait for the user's response. Do not search GitHub yet.
 
 Apply the user's corrections before continuing. Treat semantic confirmation as resolved when the user already gave a specific interpretation or says “就搜这个”, “直接搜”, “无需确认”, or an equivalent explicit instruction. Do not ask them to reconfirm it.
 
@@ -42,13 +42,14 @@ Use the interpretation confirmed in Interaction 1. Separate the surface phrase f
 
 Include:
 
-- two to five search-sized concepts, with core concepts that must match;
-- adjacent concepts that create useful surprise;
+- two to five search-sized problem concepts that describe what must be solved;
+- concrete common mechanisms that may solve it;
+- exploration directions that create useful surprise without claiming they are already covered;
 - likely artifact types;
 - constraints and explicit exclusions;
 - an exploration level reflecting how far the user wants to roam.
 
-Do not write GitHub qualifiers yourself. Supply plain concepts through the request contract. Keep problem/domain terms in `core_concepts`; put generic forms such as skill, MCP, plugin, tool, AI, and agent in `artifact_types`.
+Do not write GitHub qualifiers yourself. Supply plain concepts through the request contract. Keep problem/domain terms in `problem_concepts`, solution approaches in `mechanisms`, and not-yet-covered alternatives in `exploration_directions`. Put generic forms such as skill, MCP, plugin, tool, AI, and agent in `artifact_types`.
 
 Keep Chinese concepts as concise intact capability phrases such as `正文配图`, `文章配图`, `专注管理`, or `自控训练`; do not split them by character, whitespace, or Latin-word rules, and do not add special-case handling for particles such as `于`. For English, prefer one-to-three meaningful words per concept. For a non-English need, attach at least one GitHub-common English expression on the same concept as `aliases` (at most four). Do not consult a fixed translation dictionary, and do not put `skill`, `tool`, `AI`, or `agent` in aliases.
 
@@ -60,9 +61,9 @@ Default CLI JSON keeps at most three evidence items per candidate: metadata, a c
 
 If `coverage.output_compacted=true`, the CLI removed optional secondary fields to honor the wire-size budget. Do not interpret an omitted secondary excerpt, Topic, score component, or alternate discovery path as evidence that the repository lacks that property; assess only what remains and mark unsupported claims as unknown.
 
-For deep mode, inspect first-round `coverage` and only fill uncovered directions: core concepts listed in `uncovered_core_concepts`, professional terms that appeared but still lack README evidence, and adjacent directions with a clearly different mechanism. Do not expand just to fetch more repositories. Add only terminology supported by first-round evidence: domain terms, aliases, project anchors, characteristic filenames, and exclusions. Invoke `muse-shroom expand --search-id ID --refinement REFINEMENT` once. After expand, the CLI regenerates at most 12 shortlist rows; do not increase the assessment count. Do not inject a repository name the user asked the workflow to rediscover blindly.
+For deep mode, inspect first-round `boundary`, `boundary_delta`, and `coverage`. Expand only toward `unexplored_directions`, problem concepts listed in `uncovered_core_concepts`, or professional terms that appeared but still lack README evidence. Do not expand just to fetch more repositories. Add only terminology supported by first-round evidence: domain terms, aliases, project anchors, characteristic filenames, and exclusions. Invoke `muse-shroom expand --search-id ID --refinement REFINEMENT` once. After expand, the CLI regenerates at most 12 shortlist rows; do not increase the assessment count. Do not inject a repository name the user asked the workflow to rediscover blindly.
 
-Search schema v2 returns a concept-bridged assessment shortlist in `candidates` (core 3, gems 4, adjacent 2, concept_bridge 3). `candidate_count` reports the full recalled set. Read `concept_matches` and `selection_reason` when explaining a surprising pick. Do not assume omitted candidates were rejected as irrelevant.
+Search schema v2 returns a concept-bridged assessment shortlist in `candidates` (core 3, gems 4, adjacent 2, concept_bridge 3). `candidate_count` reports the full recalled set. `boundary.recalled_mechanisms` covers the full candidate pool, while `boundary.presented_mechanisms` covers only the shortlist or final ranked output. Mechanism labels must carry description, Topic, or README evidence; a repository name or Star count is never mechanism evidence. Read `concept_matches`, `mechanisms`, and `selection_reason` when explaining a surprising pick. Do not assume omitted candidates were rejected as irrelevant.
 
 If output is stale or has `incomplete_phase`, disclose it. Do not silently treat cached or partial coverage as current and complete.
 

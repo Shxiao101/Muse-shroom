@@ -102,7 +102,7 @@ def _take(result: list[dict[str, Any]], seen: set[str],
         added += 1
 
 
-def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, Any]]:
+def _build_legacy_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, Any]]:
     """Build validated repository-search queries; agents never construct GitHub syntax."""
     core_groups = indexed_groups(request.core_concepts, "core")
     adjacent_groups = indexed_groups(request.adjacent_concepts, "adjacent")
@@ -225,6 +225,87 @@ def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, Any
     _take(result, seen, alias_typed, limit)
     _take(result, seen, adjacent_queries, limit)
     _take(result, seen, surface_queries, limit)
+    return result
+
+
+def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, Any]]:
+    """Build a bounded plan with explicit v0.4 problem/mechanism/exploration sources."""
+    if request.legacy_schema:
+        return _build_legacy_queries(request, limit)
+
+    suffix = _qualifiers(request)
+    problem_groups = indexed_groups(request.problem_concepts, "core")
+    mechanism_groups = [
+        (f"core:{len(request.problem_concepts) + index}", concept, _search_terms(concept))
+        for index, concept in enumerate(request.mechanisms)
+        if _search_terms(concept)
+    ]
+    exploration_groups = indexed_groups(request.exploration_directions, "adjacent")
+    type_terms: list[str] = []
+    for artifact_type in request.artifact_types:
+        type_terms.extend(TYPE_TERMS.get(artifact_type, [artifact_type]))
+
+    def bucket(groups: list[tuple[str, Concept, list[str]]], kind: str,
+               *, aliases: bool) -> list[tuple[str, str, str, str, str]]:
+        values: list[tuple[str, str, str, str, str]] = []
+        for concept_id, _concept, terms in groups:
+            selected_terms = terms if aliases else terms[:1]
+            for term in selected_terms:
+                values.append((
+                    f"{_quote(term)} in:name,description,topics,readme {suffix}",
+                    kind, "stars", concept_id, term,
+                ))
+        return values
+
+    problem = bucket(problem_groups, "problem", aliases=False)
+    mechanisms = bucket(mechanism_groups, "mechanism", aliases=True)
+    exploration = bucket(exploration_groups, "exploration", aliases=True)
+
+    primary_term = problem_groups[0][2][0] if problem_groups else ""
+    primary_id = problem_groups[0][0] if problem_groups else ""
+    gem = []
+    if primary_term:
+        primary = _quote(primary_term)
+        gem = [
+            (f"{primary} in:name,description,topics,readme stars:1..500 {suffix}",
+             "gem", "updated", primary_id, primary_term),
+            (f"{primary} in:name,description,topics,readme stars:0..50 {suffix}",
+             "gem", "updated", primary_id, primary_term),
+        ]
+
+    typed: list[tuple[str, str, str, str, str]] = []
+    left_groups = problem_groups[:2] + mechanism_groups[:2]
+    for concept_id, _concept, terms in left_groups:
+        for right in (type_terms[:2] or ["tool"]):
+            if _typed_redundant(terms[0], right):
+                continue
+            typed.append((
+                f"{_quote(terms[0])} {_quote(right)} in:name,description,topics,readme {suffix}",
+                "typed", "stars", concept_id, terms[0],
+            ))
+
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+
+    def take(values: list[tuple[str, str, str, str, str]], n: int | None = None) -> None:
+        before = len(result)
+        _take(result, seen, values, limit, n=n)
+        lane_by_kind = {
+            "problem": "core", "mechanism": "core", "exploration": "adjacent",
+            "typed": "typed", "gem": "gem",
+        }
+        for item in result[before:]:
+            item["lane_kind"] = lane_by_kind[item["kind"]]
+
+    # Reserve distinct sources first; remaining slots admit all mechanism aliases.
+    take(problem, min(3, len(problem)))
+    take(mechanisms, min(4, len(mechanisms)))
+    take(exploration, min(3, len(exploration)))
+    take(gem, min(2, len(gem)))
+    take(typed)
+    take(mechanisms)
+    take(exploration)
+    take(problem)
     return result
 
 

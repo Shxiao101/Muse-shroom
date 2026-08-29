@@ -38,6 +38,7 @@ def _compact(candidate: dict[str, Any]) -> dict[str, Any]:
         "selection_score_components": candidate.get("selection_score_components", {}),
         "discovery_paths": candidate.get("discovery_paths", []),
         "evidence": candidate.get("evidence", []),
+        "mechanisms": candidate.get("mechanisms", []),
     }
 
 
@@ -66,10 +67,27 @@ def main(argv: list[str] | None = None) -> int:
     results = []
     try:
         for index, prompt in enumerate(prompts, 1):
-            request = models_module.SearchRequest.from_dict(prompt["request"])
+            request_payload = prompt["request"]
+            fields = getattr(models_module.SearchRequest, "__dataclass_fields__", {})
+            if "problem_concepts" in request_payload and "problem_concepts" not in fields:
+                # Historical baselines only understand the v0.3 contract.
+                legacy_payload = {
+                    **request_payload,
+                    "core_concepts": list(request_payload.get("problem_concepts") or [])
+                    + list(request_payload.get("mechanisms") or []),
+                    "adjacent_concepts": list(request_payload.get("exploration_directions") or []),
+                }
+                for field in ("problem_concepts", "mechanisms", "exploration_directions"):
+                    legacy_payload.pop(field, None)
+                request = models_module.SearchRequest.from_dict(legacy_payload)
+            else:
+                request = models_module.SearchRequest.from_dict(request_payload)
             output = engine.search(request, "quick")
             candidates = list(output.get("candidates", []))[:args.candidate_limit]
             session = store.load_search(output["search_id"])
+            boundary = dict(output.get("boundary") or {})
+            assignments = sum(len(item.get("mechanisms") or []) for item in candidates)
+            presented_count = len(boundary.get("presented_mechanisms") or [])
             results.append({
                 "prompt_id": prompt["id"], "category": prompt["category"],
                 "request": prompt["request"],
@@ -77,6 +95,21 @@ def main(argv: list[str] | None = None) -> int:
                 "candidate_count": output.get("candidate_count", len(candidates)),
                 "assessment_candidate_count": output.get("assessment_candidate_count", len(candidates)),
                 "coverage": output.get("coverage", {}),
+                "boundary": boundary,
+                "boundary_delta": output.get("boundary_delta", {}),
+                "boundary_diagnostics": {
+                    "mechanism_count": len(boundary.get("recalled_mechanisms") or []),
+                    "presented_mechanism_count": presented_count,
+                    "mechanism_redundancy": round(
+                        max(0, assignments - presented_count) / max(1, assignments), 3
+                    ),
+                    "boundary_gain": len(
+                        (output.get("boundary_delta") or {}).get("new_mechanisms") or []
+                    ),
+                    "direction_coverage": (output.get("coverage") or {}).get(
+                        "direction_coverage", 0.0
+                    ),
+                },
                 "stale": bool(output.get("stale", False)),
                 "incomplete_phase": output.get("incomplete_phase"),
                 "candidates": [_compact(candidate) for candidate in candidates],
