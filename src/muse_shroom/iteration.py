@@ -6,6 +6,7 @@ from typing import Any, Iterable
 from .boundary import _normalized, mechanism_distribution
 from .selection import concept_coverage
 from .models import (
+    DEFAULT_CONSECUTIVE_NO_GAIN,
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_QUERIES_PER_ITERATION,
     DEFAULT_README_ENRICH_PER_ITERATION,
@@ -76,20 +77,28 @@ def hard_stop_reason(*, iteration: int, queries_used: int, max_iterations: int,
 def iteration_stop_reasons(*, hard_reason: str | None, delta: dict[str, Any],
                            boundary: dict[str, Any], skipped_all: bool,
                            executed: bool, previous_origins: dict[str, Any] | None,
-                           current_origins: dict[str, Any] | None) -> list[str]:
-    reasons: list[str] = []
+                           current_origins: dict[str, Any] | None,
+                           consecutive_no_gain: int = 0,
+                           consecutive_limit: int = DEFAULT_CONSECUTIVE_NO_GAIN
+                           ) -> tuple[list[str], list[str]]:
+    hard: list[str] = []
+    signals: list[str] = []
     if hard_reason:
-        reasons.append(hard_reason)
-    if skipped_all and not executed and hard_reason != "agent_stop":
-        if "duplicate_queries" not in reasons:
-            reasons.append("duplicate_queries")
+        hard.append(hard_reason)
+    if skipped_all and not executed and hard_reason not in {
+        "agent_stop", "max_iterations", "query_budget_exhausted", "consecutive_no_gain",
+    }:
+        if "duplicate_queries" not in hard:
+            hard.append("duplicate_queries")
     if executed and not (delta.get("new_mechanisms") or []):
-        reasons.append("no_new_mechanism")
+        signals.append("no_new_mechanism")
     if executed and not meaningful_gain(delta, previous_origins, current_origins):
-        reasons.append("no_boundary_gain")
+        signals.append("no_boundary_gain")
     if not (boundary.get("unexplored_directions") or []):
-        reasons.append("directions_covered")
-    return list(dict.fromkeys(reasons))
+        signals.append("directions_covered")
+    if consecutive_no_gain >= consecutive_limit and "consecutive_no_gain" not in hard:
+        hard.append("consecutive_no_gain")
+    return list(dict.fromkeys(hard)), list(dict.fromkeys(signals))
 
 
 def evidence_anchors(selected: Iterable[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
@@ -203,8 +212,9 @@ def build_observation(*, iteration: int, boundary: dict[str, Any],
                       query_summary: dict[str, Any], candidates: Iterable[dict[str, Any]],
                       selected: Iterable[dict[str, Any]], request: SearchRequest,
                       remaining: dict[str, int], stop_reasons: list[str],
-                      hard_stop: bool, exploration_additions: list[dict[str, Any]] | None = None
-                      ) -> dict[str, Any]:
+                      hard_stop: bool, exploration_additions: list[dict[str, Any]] | None = None,
+                      stop_signals: list[str] | None = None,
+                      consecutive_no_gain: int = 0) -> dict[str, Any]:
     candidate_list = list(candidates)
     selected_list = list(selected)
     distribution = mechanism_distribution(candidate_list)
@@ -245,9 +255,11 @@ def build_observation(*, iteration: int, boundary: dict[str, Any],
         "anchors": evidence_anchors(selected_list),
         "remaining_budget": remaining,
         "stop": {
-            "should_stop": bool(stop_reasons),
-            "hard": hard_stop,
-            "reasons": stop_reasons,
+            "should_stop": hard_stop or bool(stop_reasons),
+            "hard": hard_stop or bool(stop_reasons),
+            "reasons": list(stop_reasons),
+            "signals": list(stop_signals or []),
+            "consecutive_no_gain": consecutive_no_gain,
         },
     }
 
@@ -305,7 +317,17 @@ def session_loop_diagnostics(store: Any, search_id: str) -> dict[str, Any]:
     iterations = store.list_iterations(search_id) if hasattr(store, "list_iterations") else []
     iterate_snaps = [item for item in snapshots if item.get("stage") in {"iterate", "expand"}]
     executed = [item for item in history if not item.get("skipped")]
-    skipped = [item for item in history if item.get("skipped")]
+    duplicates = [
+        item for item in history
+        if item.get("skip_reason") == "duplicate" or (
+            item.get("skipped") and not item.get("skip_reason")
+        )
+    ]
+    skipped_by_reason: dict[str, int] = {}
+    for item in history:
+        reason = str(item.get("skip_reason") or "")
+        if item.get("skipped") and reason:
+            skipped_by_reason[reason] = skipped_by_reason.get(reason, 0) + 1
     per_iteration: list[dict[str, Any]] = []
     for snapshot in iterate_snaps:
         delta = snapshot.get("boundary_delta") or {}
@@ -326,16 +348,26 @@ def session_loop_diagnostics(store: Any, search_id: str) -> dict[str, Any]:
     except (KeyError, TypeError):
         novelty = {}
     max_seen = max(novelty) if novelty else 0
+    executed_events = [
+        item for item in iterations
+        if item.get("event") in {None, "iterate", "expand", "search"}
+    ]
     return {
-        "iterations_used": max((item.get("iteration") or 0) for item in iterations) if iterations else 0,
+        "iterations_used": max(
+            (item.get("iteration") or 0) for item in executed_events
+        ) if executed_events else 0,
         "queries_per_iteration": _counts_by_iteration(executed),
         "new_mechanisms_per_iteration": [
             len(item["new_mechanisms"]) for item in per_iteration
         ],
         "boundary_gain_per_iteration": [item["boundary_gain"] for item in per_iteration],
-        "duplicate_query_rate": round(len(skipped) / max(1, len(history)), 3),
+        "duplicate_query_rate": round(len(duplicates) / max(1, len(history)), 3),
+        "skipped_by_reason": skipped_by_reason,
         "candidate_novelty_per_iteration": [novelty.get(index, 0) for index in range(max_seen + 1)],
-        "stop_reason": (iterations[-1].get("stop_reason") if iterations else None),
+        "stop_reason": next(
+            (item.get("stop_reason") for item in reversed(iterations) if item.get("stop_reason")),
+            None,
+        ),
         "unexplored_directions_at_stop": list(latest.get("unexplored_directions") or []),
         "mode": "agentic-loop" if iterate_snaps else "single-pass",
     }

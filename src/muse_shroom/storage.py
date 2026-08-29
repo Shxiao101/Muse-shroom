@@ -87,14 +87,16 @@ class Store:
                 query TEXT NOT NULL, kind TEXT NOT NULL,
                 fingerprint TEXT NOT NULL, result_count INTEGER NOT NULL DEFAULT 0,
                 skipped INTEGER NOT NULL DEFAULT 0,
+                skip_reason TEXT,
                 FOREIGN KEY(search_id) REFERENCES searches(id)
             );
             CREATE TABLE IF NOT EXISTS search_iterations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 search_id TEXT NOT NULL, iteration INTEGER NOT NULL,
+                event TEXT NOT NULL DEFAULT 'iterate',
                 stage TEXT NOT NULL, hypothesis_json TEXT,
                 query_summary_json TEXT, stop_reason TEXT,
                 created_at TEXT NOT NULL,
-                PRIMARY KEY(search_id, iteration),
                 FOREIGN KEY(search_id) REFERENCES searches(id)
             );
             CREATE TABLE IF NOT EXISTS feedback (
@@ -127,6 +129,13 @@ class Store:
         )
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_query_history_search ON query_history(search_id, id)"
+        )
+        history_columns = {row[1] for row in self.db.execute("PRAGMA table_info(query_history)")}
+        if "skip_reason" not in history_columns:
+            self.db.execute("ALTER TABLE query_history ADD COLUMN skip_reason TEXT")
+        self._migrate_search_iterations()
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_search_iterations_search ON search_iterations(search_id, id)"
         )
         self.db.commit()
 
@@ -164,13 +173,48 @@ class Store:
         )
         self.db.commit()
 
+    def _migrate_search_iterations(self) -> None:
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(search_iterations)")}
+        if not columns or ("id" in columns and "event" in columns):
+            return
+        self.db.execute(
+            """CREATE TABLE search_iterations_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                search_id TEXT NOT NULL, iteration INTEGER NOT NULL,
+                event TEXT NOT NULL DEFAULT 'iterate',
+                stage TEXT NOT NULL, hypothesis_json TEXT,
+                query_summary_json TEXT, stop_reason TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(search_id) REFERENCES searches(id)
+            )"""
+        )
+        self.db.execute(
+            """INSERT INTO search_iterations_new
+               (search_id, iteration, event, stage, hypothesis_json, query_summary_json,
+                stop_reason, created_at)
+               SELECT search_id, iteration,
+                      CASE
+                        WHEN stop_reason = 'agent_stop' THEN 'stop'
+                        WHEN stop_reason IN ('max_iterations', 'query_budget_exhausted') THEN 'refuse'
+                        ELSE COALESCE(stage, 'iterate')
+                      END,
+                      stage, hypothesis_json, query_summary_json, stop_reason, created_at
+               FROM search_iterations"""
+        )
+        self.db.execute("DROP TABLE search_iterations")
+        self.db.execute("ALTER TABLE search_iterations_new RENAME TO search_iterations")
+
     def add_query_history(self, search_id: str, query: str, kind: str, result_count: int,
-                          *, iteration: int = 0, fingerprint: str, skipped: bool = False) -> None:
+                          *, iteration: int = 0, fingerprint: str, skipped: bool = False,
+                          skip_reason: str | None = None) -> None:
         self.db.execute(
             """INSERT INTO query_history
-               (search_id, iteration, query, kind, fingerprint, result_count, skipped)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (search_id, iteration, query, kind, fingerprint, result_count, int(skipped)),
+               (search_id, iteration, query, kind, fingerprint, result_count, skipped, skip_reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                search_id, iteration, query, kind, fingerprint, result_count,
+                int(skipped), skip_reason,
+            ),
         )
         self.db.commit()
 
@@ -183,9 +227,10 @@ class Store:
                 "fingerprint": row["fingerprint"],
                 "result_count": int(row["result_count"]),
                 "skipped": bool(row["skipped"]),
+                "skip_reason": row["skip_reason"],
             }
             for row in self.db.execute(
-                """SELECT iteration, query, kind, fingerprint, result_count, skipped
+                """SELECT iteration, query, kind, fingerprint, result_count, skipped, skip_reason
                    FROM query_history WHERE search_id=? ORDER BY id""",
                 (search_id,),
             )
@@ -229,13 +274,14 @@ class Store:
 
     def save_iteration(self, search_id: str, iteration: int, stage: str,
                        hypothesis: dict[str, Any] | None, query_summary: dict[str, Any],
-                       stop_reason: str | None) -> None:
+                       stop_reason: str | None, *, event: str = "iterate") -> None:
         self.db.execute(
-            """INSERT OR REPLACE INTO search_iterations
-               (search_id, iteration, stage, hypothesis_json, query_summary_json, stop_reason, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO search_iterations
+               (search_id, iteration, event, stage, hypothesis_json, query_summary_json,
+                stop_reason, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                search_id, iteration, stage,
+                search_id, iteration, event, stage,
                 json.dumps(hypothesis, ensure_ascii=False) if hypothesis is not None else None,
                 json.dumps(query_summary, ensure_ascii=False),
                 stop_reason, utc_now(),
@@ -246,7 +292,9 @@ class Store:
     def list_iterations(self, search_id: str) -> list[dict[str, Any]]:
         return [
             {
+                "id": int(row["id"]),
                 "iteration": int(row["iteration"]),
+                "event": row["event"],
                 "stage": row["stage"],
                 "hypothesis": json.loads(row["hypothesis_json"]) if row["hypothesis_json"] else None,
                 "query_summary": json.loads(row["query_summary_json"]) if row["query_summary_json"] else {},
@@ -254,8 +302,9 @@ class Store:
                 "created_at": row["created_at"],
             }
             for row in self.db.execute(
-                """SELECT iteration, stage, hypothesis_json, query_summary_json, stop_reason, created_at
-                   FROM search_iterations WHERE search_id=? ORDER BY iteration""",
+                """SELECT id, iteration, event, stage, hypothesis_json, query_summary_json,
+                          stop_reason, created_at
+                   FROM search_iterations WHERE search_id=? ORDER BY id""",
                 (search_id,),
             )
         ]

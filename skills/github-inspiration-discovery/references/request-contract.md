@@ -67,7 +67,7 @@ To stop, pass:
 
 `strategies` may include `keyword`, `relationship`, `seed`, `code`, and `owner`. Omit it to run keyword reformulation only; supplying `seeds` or `filenames` also enables the matching retrieval strategy. The CLI skips queries that match history after normalizing case and token order, and it skips terms covered by `negative_directions`.
 
-Default deep-mode budget: 3 iterations after the initial search, 6 keyword queries per iteration, 30 session search queries, 15 README enrichments per iteration, and the existing relationship-call budget. Observation includes `remaining_budget` and `stop.reasons`. Hard stops are `max_iterations`, `query_budget_exhausted`, `duplicate_queries`, and `agent_stop`.
+Default deep-mode budget: 3 iterations after the initial search, 6 keyword queries per iteration, 30 session search queries, 15 README enrichments per iteration, a 250-candidate pool (quick mode stays at 100), and the existing relationship-call budget. Observation `stop.reasons` are hard stops; `stop.signals` are advisory. Hard stops are `agent_stop`, `max_iterations`, `query_budget_exhausted`, `duplicate_queries`, and `consecutive_no_gain` (two successive rounds without meaningful boundary gain). `no_new_mechanism`, a single `no_boundary_gain`, and `directions_covered` stay in `stop.signals` and do not set `should_stop`. Query history stores `skip_reason`; `duplicate_query_rate` counts only `skip_reason=duplicate`. Stop and refused-continue events are appended to iteration history and do not replace an executed round.
 
 The older `expand` command still accepts:
 

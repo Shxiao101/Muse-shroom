@@ -241,6 +241,13 @@ DEFAULT_MAX_ITERATIONS = 3
 DEFAULT_QUERIES_PER_ITERATION = 6
 DEFAULT_SESSION_QUERY_BUDGET = 30
 DEFAULT_README_ENRICH_PER_ITERATION = 15
+DEFAULT_QUICK_CANDIDATE_LIMIT = 100
+DEFAULT_DEEP_CANDIDATE_LIMIT = 250
+DEFAULT_CONSECUTIVE_NO_GAIN = 2
+HARD_STOP_REASONS = (
+    "agent_stop", "max_iterations", "query_budget_exhausted",
+    "duplicate_queries", "consecutive_no_gain",
+)
 
 
 @dataclass(slots=True)

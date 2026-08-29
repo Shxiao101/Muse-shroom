@@ -13,11 +13,14 @@ from .github import (
 )
 from .iteration import (
     apply_hypothesis_to_request, build_observation, default_session_state,
-    hard_stop_reason, iteration_stop_reasons, merge_unique, remaining_budget,
+    hard_stop_reason, iteration_stop_reasons, meaningful_gain, merge_unique,
+    remaining_budget,
 )
 from .models import (
+    DEFAULT_CONSECUTIVE_NO_GAIN, DEFAULT_DEEP_CANDIDATE_LIMIT,
     DEFAULT_MAX_ITERATIONS, DEFAULT_QUERIES_PER_ITERATION,
-    DEFAULT_README_ENRICH_PER_ITERATION, DEFAULT_SESSION_QUERY_BUDGET,
+    DEFAULT_QUICK_CANDIDATE_LIMIT, DEFAULT_README_ENRICH_PER_ITERATION,
+    DEFAULT_SESSION_QUERY_BUDGET,
     Refinement, SearchHypothesis, SearchRequest, repo_key,
 )
 from .queries import (
@@ -310,12 +313,14 @@ def public_candidate(candidate: dict[str, Any], *, detailed: bool = False) -> di
 
 
 class SearchEngine:
-    def __init__(self, store: Store, github: GitHubClient, *, candidate_limit: int = 100,
+    def __init__(self, store: Store, github: GitHubClient, *,
+                 candidate_limit: int | None = None,
                  enrich_limit: int = 30, relation_budget: int = 40,
                  max_iterations: int = DEFAULT_MAX_ITERATIONS,
                  queries_per_iteration: int = DEFAULT_QUERIES_PER_ITERATION,
                  session_query_budget: int = DEFAULT_SESSION_QUERY_BUDGET,
-                 readme_enrich_per_iteration: int = DEFAULT_README_ENRICH_PER_ITERATION) -> None:
+                 readme_enrich_per_iteration: int = DEFAULT_README_ENRICH_PER_ITERATION,
+                 consecutive_no_gain_limit: int = DEFAULT_CONSECUTIVE_NO_GAIN) -> None:
         self.store = store
         self.github = github
         self.candidate_limit = candidate_limit
@@ -325,6 +330,17 @@ class SearchEngine:
         self.queries_per_iteration = queries_per_iteration
         self.session_query_budget = session_query_budget
         self.readme_enrich_per_iteration = readme_enrich_per_iteration
+        self.consecutive_no_gain_limit = consecutive_no_gain_limit
+        self._pool_cap = candidate_limit or DEFAULT_QUICK_CANDIDATE_LIMIT
+
+    def _limit_for(self, mode: str | None = None, state: dict[str, Any] | None = None) -> int:
+        if self.candidate_limit is not None:
+            return self.candidate_limit
+        if state and state.get("candidate_limit"):
+            return int(state["candidate_limit"])
+        if mode == "deep":
+            return DEFAULT_DEEP_CANDIDATE_LIMIT
+        return DEFAULT_QUICK_CANDIDATE_LIMIT
 
     @staticmethod
     def _items(result: ApiResult) -> list[dict[str, Any]]:
@@ -349,6 +365,7 @@ class SearchEngine:
                 self.store.add_query_history(
                     search_id, item["query"], item["kind"], 0,
                     iteration=iteration, fingerprint=fingerprint, skipped=True,
+                    skip_reason="duplicate",
                 )
                 continue
             known.add(fingerprint)
@@ -409,7 +426,7 @@ class SearchEngine:
                 lane_kind = query_spec.get("lane_kind", query_spec["kind"])
                 if lane_kind not in kinds:
                     kinds.append(lane_kind)
-                if len(candidates) >= self.candidate_limit:
+                if len(candidates) >= self._pool_cap:
                     return stale, cached_at, executable, skipped
         return stale, cached_at, executable, skipped
 
@@ -542,7 +559,7 @@ class SearchEngine:
             return
         if not candidate_allowed(repo, request, include_readme=False):
             return
-        if key not in candidates and len(candidates) >= self.candidate_limit:
+        if key not in candidates and len(candidates) >= self._pool_cap:
             return
         candidate = candidates.setdefault(key, dict(repo))
         if "first_seen_iteration" not in candidate:
@@ -668,7 +685,11 @@ class SearchEngine:
             ],
             "executed_count": len(executed),
             "skipped_count": len(skipped),
-            "duplicate_rate": round(len(skipped) / max(1, len(executed) + len(skipped)), 3),
+            "duplicate_rate": round(
+                sum(1 for item in skipped if item.get("skip_reason", "duplicate") == "duplicate")
+                / max(1, len(executed) + len(skipped)),
+                3,
+            ),
         }
 
     def search(self, request: SearchRequest, mode: str, *, refresh: bool = False) -> dict[str, Any]:
@@ -681,7 +702,10 @@ class SearchEngine:
                 return self._reused_output(existing, mode)
         search_id = uuid.uuid4().hex
         self.store.create_search(search_id, request.to_dict(), mode, fingerprint)
-        self.store.save_session_state(search_id, default_session_state())
+        state = default_session_state()
+        self._pool_cap = self._limit_for(mode)
+        state["candidate_limit"] = self._pool_cap
+        self.store.save_session_state(search_id, state)
         candidates: dict[str, dict[str, Any]] = {}
         stale = False
         cached_at = None
@@ -750,6 +774,7 @@ class SearchEngine:
             readme_enrich_per_iteration=self.readme_enrich_per_iteration,
             relation_budget=self.relation_budget,
         )
+        self._pool_cap = self._limit_for(session.get("mode"), state)
         hard = hard_stop_reason(
             iteration=state["iteration"], queries_used=queries_used,
             max_iterations=self.max_iterations,
@@ -757,26 +782,16 @@ class SearchEngine:
             decision=hypothesis.decision,
         )
         if hard:
+            event = "stop" if hypothesis.decision == "stop" else "refuse"
             state["stop_reason"] = hard
             self.store.save_session_state(search_id, state)
             self.store.save_iteration(
-                search_id, state["iteration"], stage, hypothesis.to_dict(),
-                self._query_summary([], []), hard,
+                search_id, int(state["iteration"]), stage, hypothesis.to_dict(),
+                self._query_summary([], []), hard, event=event,
             )
-            output = self._finish(
-                search_id, candidates, request, bool(session["stale"]), None,
-                session.get("incomplete_phase"),
-                enriched_count=0, relation_calls=0, code_calls=0, stage=stage,
-                rejected_directions=list(previous_boundary.get("rejected_directions") or []),
-                iteration=state["iteration"],
-                negative_directions=list(state.get("negative_directions") or []),
-                hypothesis=hypothesis.to_dict(),
-                query_summary=self._query_summary([], []),
-                stop_reasons=[hard], hard_stop=True, remaining=remaining,
-                exploration_additions=list(state.get("exploration_additions") or []),
+            output = self._decision_event_output(
+                search_id, session, request, candidates, hypothesis, remaining, hard,
             )
-            output["next_action"] = "rank"
-            output["stop_reason"] = hard
             _compact_search_output(output)
             return output
 
@@ -807,6 +822,7 @@ class SearchEngine:
                 self.store.add_query_history(
                     search_id, item["query"], item["kind"], 0,
                     iteration=iteration, fingerprint=item["fingerprint"], skipped=True,
+                    skip_reason=str(item.get("skip_reason") or "duplicate"),
                 )
             skipped.extend(blocked)
             try:
@@ -916,42 +932,91 @@ class SearchEngine:
         delta = output.get("boundary_delta") or {}
         executed_any = bool(executed) or calls > 0 or code_calls > 0
         skipped_all = bool(skipped) and not executed_any
-        reasons = iteration_stop_reasons(
-            hard_reason=("duplicate_queries" if skipped_all else None),
+        gained = meaningful_gain(
+            delta, previous_origins, (output.get("boundary") or {}).get("mechanism_origins"),
+        )
+        if executed_any and not gained:
+            state["consecutive_no_gain"] = int(state.get("consecutive_no_gain") or 0) + 1
+        elif executed_any:
+            state["consecutive_no_gain"] = 0
+        pre_hard = "duplicate_queries" if skipped_all else None
+        if after_remaining["iterations"] <= 0:
+            pre_hard = pre_hard or "max_iterations"
+        hard_reasons, signals = iteration_stop_reasons(
+            hard_reason=pre_hard,
             delta=delta, boundary=output.get("boundary") or {},
             skipped_all=skipped_all, executed=executed_any,
             previous_origins=previous_origins,
             current_origins=(output.get("boundary") or {}).get("mechanism_origins"),
+            consecutive_no_gain=int(state.get("consecutive_no_gain") or 0),
+            consecutive_limit=self.consecutive_no_gain_limit,
         )
-        if "no_boundary_gain" in reasons:
-            state["consecutive_no_gain"] = int(state.get("consecutive_no_gain") or 0) + 1
-        else:
-            state["consecutive_no_gain"] = 0
-        hard_after = any(reason in reasons for reason in (
-            "duplicate_queries", "max_iterations", "query_budget_exhausted", "agent_stop",
-        ))
-        next_action = "rank" if (
-            stage == "expand" or hard_after or "directions_covered" in reasons
-            or after_remaining["iterations"] <= 0
-        ) else "iterate"
-        stop_reason = reasons[0] if (next_action == "rank" and reasons) else None
+        hard_after = bool(hard_reasons)
+        next_action = "rank" if (stage == "expand" or hard_after) else "iterate"
+        stop_reason = hard_reasons[0] if hard_after else None
         state["stop_reason"] = stop_reason
         self.store.save_session_state(search_id, state)
         self.store.save_iteration(
             search_id, iteration, stage, hypothesis.to_dict(),
-            self._query_summary(executed, skipped), stop_reason,
+            self._query_summary(executed, skipped), stop_reason, event=stage,
         )
         if output.get("observation"):
             output["observation"]["stop"] = {
-                "should_stop": bool(reasons),
+                "should_stop": hard_after,
                 "hard": hard_after,
-                "reasons": reasons,
+                "reasons": hard_reasons,
+                "signals": signals,
+                "consecutive_no_gain": int(state.get("consecutive_no_gain") or 0),
             }
             output["observation"]["remaining_budget"] = after_remaining
         output["next_action"] = next_action
         if stop_reason:
             output["stop_reason"] = stop_reason
         _compact_search_output(output)
+        return output
+
+    def _decision_event_output(self, search_id: str, session: dict[str, Any],
+                               request: SearchRequest, candidates: dict[str, dict[str, Any]],
+                               hypothesis: SearchHypothesis, remaining: dict[str, int],
+                               reason: str) -> dict[str, Any]:
+        selected = [item for item in candidates.values() if item.get("selected_for_assessment")]
+        if not selected:
+            selected = list(candidates.values())[:12]
+        snapshot = self.store.latest_boundary_snapshot(search_id) or {}
+        boundary = snapshot.get("boundary") or {}
+        delta = snapshot.get("boundary_delta") or {}
+        state = self.store.get_session_state(search_id)
+        coverage = self._coverage(
+            search_id, candidates.values(), selected, request,
+            enriched_count=0, relation_calls=0, code_calls=0, lane_counts={},
+        )
+        coverage.update({
+            "iteration": int(state.get("iteration") or 0),
+            "mechanism_count": len(boundary.get("recalled_mechanisms") or []),
+            "presented_mechanism_count": len(boundary.get("presented_mechanisms") or []),
+            "direction_coverage": round(
+                len(boundary.get("explored_directions") or [])
+                / max(1, len(boundary.get("explored_directions") or [])
+                      + len(boundary.get("unexplored_directions") or [])),
+                3,
+            ),
+        })
+        output = self._search_output(
+            search_id, candidates.values(), selected, bool(session["stale"]),
+            session.get("updated_at"), session.get("incomplete_phase"), coverage,
+            boundary, delta,
+        )
+        output["iteration"] = int(state.get("iteration") or 0)
+        output["observation"] = build_observation(
+            iteration=output["iteration"], boundary=boundary, boundary_delta=delta,
+            coverage=coverage, query_summary=self._query_summary([], []),
+            candidates=candidates.values(), selected=selected, request=request,
+            remaining=remaining, stop_reasons=[reason], hard_stop=True,
+            exploration_additions=list(state.get("exploration_additions") or []),
+            consecutive_no_gain=int(state.get("consecutive_no_gain") or 0),
+        )
+        output["next_action"] = "rank"
+        output["stop_reason"] = reason
         return output
 
     def _coverage(self, search_id: str, candidates: Iterable[dict[str, Any]],

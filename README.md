@@ -61,7 +61,7 @@ muse-shroom feedback Quackone/homr_gui --relevant yes --interesting yes --too-ha
 - `explored_directions` / `unexplored_directions` 描述探索边界，`discovered_terms` 保存少量有机制证据的候选 Topics。Agent 必须把术语写入 hypothesis 才会进入下一轮搜索，命中 description / Topics / README 后才升级为 mechanism。
 - `negative_directions` 记录本 session 已确认的错误语义，与用户拒绝的 `rejected_directions` 分开保存，并会避免继续消耗这些方向的 query 预算。
 - search、每次 iterate / expand、rank 都会在 SQLite 中追加 boundary snapshot；iterate 快照带有 `iteration`、hypothesis 和 query summary。输出的 `boundary_delta` 是相对前一 snapshot 的新增机制、展示机制、方向和术语。
-- 深搜默认最多 3 轮 iterate；每轮最多 6 条新 query，整个 session 最多 30 条 search query。observation 给出 remaining budget 与 stop reasons。
+- 深搜默认最多 3 轮 iterate；每轮最多 6 条新 query，整个 session 最多 30 条 search query，候选池默认 250（快搜 100）。observation 的 `stop.reasons` 是硬停止，`stop.signals` 只是建议；连续两轮没有 meaningful boundary gain 才会硬停止。
 - 探针阶段同一 owner 最多 2 个；短名单按核心代表 3、小众宝藏 4、跨界灵感 2、概念桥接 3 分配。
 - 低 Star 不能单独成为宝藏或桥接理由；必须有非泛化查询来源和 README/元数据相关证据。
 - 搜索 JSON 不超过 30KB；超限时只压缩次要字段，并保留每个候选的首条概念证据及其 README SHA/行号。每个候选默认最多 3 条证据：metadata、concept_match（或有效 overview），以及检测到的 mechanism_match；没有 mechanism 时第三条保留 usage/installation。Release 放在 `latest_release`，不占 evidence 槽。

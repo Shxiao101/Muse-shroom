@@ -259,16 +259,22 @@ class AgenticLoopTests(unittest.TestCase):
                     "concepts": ["biofeedback"],
                 })
                 queries_after_loop = store.query_count(first["search_id"])
+                events = store.list_iterations(first["search_id"])
             finally:
                 store.close()
 
-        self.assertIn("directions_covered", covered["observation"]["stop"]["reasons"])
+        self.assertIn("directions_covered", covered["observation"]["stop"]["signals"])
+        self.assertNotIn("directions_covered", covered["observation"]["stop"]["reasons"])
         self.assertEqual(agent_stopped["stop_reason"], "agent_stop")
         self.assertEqual(agent_stopped["next_action"], "rank")
         self.assertEqual(refused["stop_reason"], "max_iterations")
         self.assertEqual(refused["next_action"], "rank")
         self.assertEqual(queries_after_loop, queries_after_search + 1)
         self.assertEqual(budget_stop["stop_reason"], "query_budget_exhausted")
+        self.assertEqual([item["event"] for item in events], ["iterate", "stop", "refuse"])
+        self.assertEqual(events[0]["hypothesis"]["concepts"], ["pomodoro timer"])
+        self.assertEqual(events[1]["hypothesis"]["decision"], "stop")
+        self.assertEqual(events[2]["hypothesis"]["concepts"], ["deep work"])
 
     def test_duplicate_queries_are_skipped_and_can_stop_the_loop(self):
         item = repo("focus/timer", 4, description="Pomodoro timer")
@@ -296,7 +302,141 @@ class AgenticLoopTests(unittest.TestCase):
 
         self.assertGreaterEqual(second["observation"]["query_summary"]["skipped_count"], 1)
         self.assertIn("duplicate_queries", second["observation"]["stop"]["reasons"])
+        self.assertTrue(second["observation"]["stop"]["should_stop"])
         self.assertEqual(second["next_action"], "rank")
+
+    def test_stop_does_not_overwrite_executed_iteration_history(self):
+        item = repo("focus/timer", 4, description="Pomodoro timer")
+        github = FrozenGitHub(
+            [("focus", [item]), ("wellbeing", [item]), ("pomodoro", [item])],
+            readmes={"focus/timer": "# Timer\nPomodoro.\n## Usage\nRun it."},
+        )
+        request = SearchRequest.from_dict({
+            "request": "focus",
+            "problem_concepts": ["focus"],
+            "mechanisms": ["pomodoro"],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                engine = SearchEngine(store, github, relation_budget=0)
+                first = engine.search(request, "deep")
+                continued = engine.iterate(first["search_id"], {
+                    "decision": "continue",
+                    "reason": "try a new wording",
+                    "concepts": ["digital wellbeing"],
+                })
+                stopped = engine.iterate(first["search_id"], {
+                    "decision": "stop",
+                    "stop_reason": "enough coverage",
+                })
+                events = store.list_iterations(first["search_id"])
+            finally:
+                store.close()
+
+        self.assertEqual([item["event"] for item in events], ["iterate", "stop"])
+        self.assertEqual(events[0]["hypothesis"]["concepts"], ["digital wellbeing"])
+        self.assertEqual(events[1]["event"], "stop")
+        self.assertEqual(stopped["stop_reason"], "agent_stop")
+        self.assertNotEqual(events[0]["hypothesis"], events[1]["hypothesis"])
+        self.assertEqual(continued["iteration"], events[0]["iteration"])
+        self.assertEqual(events[1]["iteration"], events[0]["iteration"])
+
+    def test_single_low_gain_round_is_advisory_until_it_repeats(self):
+        item = repo("focus/timer", 4, description="Pomodoro timer")
+        github = FrozenGitHub(
+            [("focus", [item]), ("pomodoro", [item]), ("timer", [item]), ("interval", [item])],
+            readmes={"focus/timer": "# Timer\nPomodoro.\n## Usage\nRun it."},
+        )
+        request = SearchRequest.from_dict({
+            "request": "focus",
+            "problem_concepts": ["focus"],
+            "mechanisms": ["pomodoro"],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                engine = SearchEngine(store, github, relation_budget=0, max_iterations=3)
+                first = engine.search(request, "deep")
+                second = engine.iterate(first["search_id"], {
+                    "decision": "continue",
+                    "reason": "same mechanism, new wording",
+                    "concepts": ["pomodoro timer"],
+                })
+                third = engine.iterate(first["search_id"], {
+                    "decision": "continue",
+                    "reason": "still the same mechanism",
+                    "concepts": ["interval timer"],
+                })
+            finally:
+                store.close()
+
+        self.assertIn("no_new_mechanism", second["observation"]["stop"]["signals"])
+        self.assertFalse(second["observation"]["stop"]["should_stop"])
+        self.assertEqual(second["next_action"], "iterate")
+        self.assertEqual(second["observation"]["stop"]["consecutive_no_gain"], 1)
+        self.assertTrue(third["observation"]["stop"]["should_stop"])
+        self.assertIn("consecutive_no_gain", third["observation"]["stop"]["reasons"])
+        self.assertEqual(third["next_action"], "rank")
+
+    def test_duplicate_query_rate_ignores_round_budget_skips(self):
+        item = repo("focus/timer", 4, description="Pomodoro timer")
+        github = FrozenGitHub(
+            [("focus", [item]), ("pomodoro", [item]), ("wellbeing", [item]), ("biofeedback", [item])],
+            readmes={"focus/timer": "# Timer\nPomodoro.\n## Usage\nRun it."},
+        )
+        request = SearchRequest.from_dict({
+            "request": "focus",
+            "problem_concepts": ["focus"],
+            "mechanisms": ["pomodoro"],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                engine = SearchEngine(store, github, relation_budget=0, queries_per_iteration=1)
+                first = engine.search(request, "deep")
+                engine.iterate(first["search_id"], {
+                    "decision": "continue",
+                    "reason": "one executed, extras are round budget",
+                    "concepts": ["digital wellbeing", "biofeedback", "commitment device"],
+                })
+                history = store.query_history(first["search_id"])
+                loop = session_loop_diagnostics(store, first["search_id"])
+            finally:
+                store.close()
+
+        reasons = {item.get("skip_reason") for item in history if item.get("skipped")}
+        self.assertIn("round_budget", reasons)
+        skipped = [item for item in history if item.get("skipped")]
+        duplicates = [item for item in history if item.get("skip_reason") == "duplicate"]
+        self.assertEqual(loop["duplicate_query_rate"], round(len(duplicates) / max(1, len(history)), 3))
+        self.assertLess(loop["duplicate_query_rate"], len(skipped) / max(1, len(history)))
+        self.assertEqual(loop["skipped_by_reason"].get("round_budget"), 2)
+
+    def test_deep_mode_uses_a_larger_candidate_pool_than_quick(self):
+        item = repo("focus/timer", 4, description="Pomodoro timer")
+        github = FrozenGitHub(
+            [("focus", [item]), ("pomodoro", [item])],
+            readmes={"focus/timer": "# Timer\nPomodoro.\n## Usage\nRun it."},
+        )
+        request = SearchRequest.from_dict({
+            "request": "focus",
+            "problem_concepts": ["focus"],
+            "mechanisms": ["pomodoro"],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                engine = SearchEngine(store, github, relation_budget=0)
+                deep = engine.search(request, "deep")
+                quick = engine.search(request, "quick", refresh=True)
+                deep_limit = store.get_session_state(deep["search_id"])["candidate_limit"]
+                quick_limit = store.get_session_state(quick["search_id"])["candidate_limit"]
+            finally:
+                store.close()
+
+        self.assertEqual(deep_limit, 250)
+        self.assertEqual(quick_limit, 100)
 
     def test_cassette_replay_matches_iterate_output(self):
         class Delegate:
