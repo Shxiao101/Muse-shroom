@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muse-shroom"
-version = "0.3.2"
+version = "0.3.3"
 description = "Evidence-backed GitHub discovery for popular projects and hidden gems"
 readme = "README.md"
 requires-python = ">=3.10"

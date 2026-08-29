@@ -66,6 +66,65 @@ class ContractAndQueryTests(unittest.TestCase):
         self.assertIn('"writing skill"', joined)
         self.assertNotIn('"writing skill" "skill"', joined)
 
+    def test_concept_aliases_are_optional_and_capped(self):
+        parsed = SearchRequest.from_dict({
+            "request": "focus",
+            "core_concepts": [{"term": "自控", "aliases": ["self-control", "self regulation"], "weight": 1.0}],
+        })
+        self.assertEqual(parsed.core_concepts[0].terms(), ["自控", "self-control", "self regulation"])
+        queries = build_queries(parsed)
+        self.assertLessEqual(len(queries), 12)
+        self.assertTrue(all("concept_id" in item for item in queries))
+        self.assertTrue(any(item.get("term") == "self-control" for item in queries))
+        with self.assertRaises(ContractError):
+            SearchRequest.from_dict({
+                "request": "focus",
+                "core_concepts": [{"term": "自控", "aliases": ["a", "b", "c", "d", "e"]}],
+            })
+
+    def test_query_plan_reserves_gem_and_adjacent_slots_when_aliases_exist(self):
+        request = SearchRequest.from_dict({
+            "request": "focus",
+            "core_concepts": [
+                {"term": "专注", "aliases": ["focus management"]},
+                {"term": "自控", "aliases": ["self-control"]},
+                {"term": "减少分心", "aliases": ["distraction blocking"]},
+            ],
+            "adjacent_concepts": [
+                {"term": "拖延", "aliases": ["procrastination"]},
+                {"term": "行为约束", "weight": 0.65},
+                {"term": "commitment device", "weight": 0.6},
+            ],
+            "artifact_types": ["application"],
+            "exploration_level": 0.6,
+        })
+        queries = build_queries(request)
+        kinds = [item["kind"] for item in queries]
+        terms = [item.get("term") for item in queries]
+        self.assertLessEqual(len(queries), 12)
+        self.assertEqual(kinds.count("gem"), 2)
+        self.assertGreaterEqual(kinds.count("adjacent"), 2)
+        self.assertTrue(any(term in {"self-control", "focus management", "distraction blocking"} for term in terms))
+        self.assertTrue(any(item["kind"] == "core" and item.get("term") == "自控" for item in queries))
+        self.assertTrue(any('"自控" "app"' in item["query"] for item in queries))
+
+    def test_aliases_do_not_expand_the_query_budget(self):
+        request = SearchRequest.from_dict({
+            "request": "focus",
+            "core_concepts": [
+                {"term": "专注管理", "aliases": ["focus management", "deep work", "attention", "flow state"]},
+                {"term": "自控", "aliases": ["self-control", "self regulation", "willpower", "impulse control"]},
+                {"term": "减少分心", "aliases": ["distraction blocking", "focus mode", "website blocker", "app blocker"]},
+            ],
+            "adjacent_concepts": [
+                {"term": "commitment device", "aliases": ["precommitment", "temptation bundling"]},
+            ],
+            "artifact_types": ["application"],
+        })
+        queries = build_queries(request)
+        self.assertLessEqual(len(queries), 12)
+        self.assertTrue(all(item.get("concept_id") for item in queries))
+
     def test_request_rejects_missing_core_concepts(self):
         with self.assertRaises(ContractError):
             SearchRequest.from_dict({"request": "anything"})

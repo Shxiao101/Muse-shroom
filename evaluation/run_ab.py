@@ -14,6 +14,7 @@ from typing import Iterator
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = "5cc5621"
+REVIEW_CHUNK_SIZE = 6
 
 
 def _run(command: list[str], *, cwd: Path) -> None:
@@ -54,8 +55,70 @@ def _worker(source: Path, *, label: str, mode: str, prompts: Path,
     _run(command, cwd=ROOT)
 
 
+def _review_candidate(candidate: dict) -> dict:
+    evidence = []
+    for item in candidate.get("evidence") or []:
+        if item.get("kind") != "readme_excerpt":
+            continue
+        facts = item.get("facts") or {}
+        evidence.append({
+            "id": item.get("id"),
+            "kind": "readme_excerpt",
+            "facts": {
+                key: facts[key] for key in (
+                    "snippet_type", "line_start", "line_end", "sha",
+                    "parent_evidence_id", "text", "untrusted_source",
+                ) if facts.get(key) is not None
+            },
+        })
+        if len(evidence) >= 2:
+            break
+    return {
+        "repo": candidate.get("repo"),
+        "url": candidate.get("url"),
+        "description": candidate.get("description"),
+        "stars": int(candidate.get("stars", 0)),
+        "topics": list(candidate.get("topics") or [])[:6],
+        "language": candidate.get("language"),
+        "archived": bool(candidate.get("archived", False)),
+        "pushed_at": candidate.get("pushed_at"),
+        "evidence": evidence,
+    }
+
+
+def _write_case_chunks(case_dir: Path, cases: list[dict]) -> None:
+    case_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {"schema_version": 1, "stage": "assessment_shortlist", "cases": []}
+    for case in cases:
+        entry = {
+            "prompt_id": case["prompt_id"], "category": case["category"],
+            "request": case["request"], "files": {"A": [], "B": []},
+        }
+        for label in ("A", "B"):
+            candidates = case["lists"][label]
+            for start in range(0, len(candidates), REVIEW_CHUNK_SIZE):
+                part = start // REVIEW_CHUNK_SIZE + 1
+                filename = f"{case['prompt_id']}-{label}-{part}.json"
+                payload = {
+                    "schema_version": 1, "stage": "assessment_shortlist",
+                    "prompt_id": case["prompt_id"], "category": case["category"],
+                    "request": case["request"], "list": label, "part": part,
+                    "candidates": candidates[start:start + REVIEW_CHUNK_SIZE],
+                }
+                (case_dir / filename).write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8",
+                )
+                entry["files"][label].append(filename)
+        manifest["cases"].append(entry)
+    (case_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+
+
 def build_blind_pack(baseline_path: Path, candidate_path: Path, *,
-                     blind_path: Path, key_path: Path, seed: str) -> None:
+                     blind_path: Path, key_path: Path, seed: str,
+                     shortlist_limit: int | None = None,
+                     case_dir: Path | None = None) -> None:
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
     candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
     baseline_results = {item["prompt_id"]: item for item in baseline["results"]}
@@ -70,21 +133,31 @@ def build_blind_pack(baseline_path: Path, candidate_path: Path, *,
         rng.shuffle(order)
         sources = {"baseline": baseline_results[prompt_id], "candidate": candidate_results[prompt_id]}
         mappings[prompt_id] = {"A": order[0], "B": order[1]}
+        lists = {
+            "A": list(sources[order[0]].get("candidates") or []),
+            "B": list(sources[order[1]].get("candidates") or []),
+        }
+        if shortlist_limit is not None:
+            lists = {label: items[:shortlist_limit] for label, items in lists.items()}
+            lists = {
+                label: [_review_candidate(item) for item in items]
+                for label, items in lists.items()
+            }
         case = {
             "prompt_id": prompt_id,
             "category": sources["baseline"]["category"],
             "request": sources["baseline"]["request"],
             "stage": "assessment_shortlist",
-            "lists": {
-                "A": sources[order[0]]["candidates"],
-                "B": sources[order[1]]["candidates"],
-            },
+            "comparison": "standard" if shortlist_limit is not None else "natural",
+            "lists": lists,
         }
         cases.append(case)
     blind_path.parent.mkdir(parents=True, exist_ok=True)
     blind_path.write_text(json.dumps({
         "schema_version": 1, "stage": "assessment_shortlist", "cases": cases,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
+    if case_dir is not None:
+        _write_case_chunks(case_dir, cases)
     key_path.parent.mkdir(parents=True, exist_ok=True)
     key_path.write_text(json.dumps({
         "schema_version": 1,
@@ -116,15 +189,24 @@ def execute(args: argparse.Namespace) -> None:
                 cassette=cassette, output=candidate_output,
                 data_dir=data_root / "candidate", search_interval=args.search_interval,
             )
+    key_path = output_dir / "blind-key.json"
     build_blind_pack(
         baseline_output, candidate_output,
         blind_path=output_dir / "blind-review.json",
-        key_path=output_dir / "blind-key.json", seed=args.seed,
+        key_path=key_path, seed=args.seed,
+    )
+    build_blind_pack(
+        baseline_output, candidate_output,
+        blind_path=output_dir / "blind-review-standard.json",
+        key_path=key_path, seed=args.seed, shortlist_limit=12,
+        case_dir=output_dir / "blind-cases",
     )
     print(json.dumps({
         "ok": True, "mode": args.action, "cassette": str(cassette),
         "blind_review": str(output_dir / "blind-review.json"),
-        "blind_key": str(output_dir / "blind-key.json"),
+        "blind_review_standard": str(output_dir / "blind-review-standard.json"),
+        "blind_case_manifest": str(output_dir / "blind-cases" / "manifest.json"),
+        "blind_key": str(key_path),
     }, ensure_ascii=False, indent=2))
 
 

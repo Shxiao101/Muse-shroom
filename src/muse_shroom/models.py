@@ -20,10 +20,29 @@ def _score(value: Any, name: str) -> float:
     return result
 
 
+MAX_CONCEPT_ALIASES = 4
+
+
 @dataclass(slots=True)
 class Concept:
     term: str
     weight: float = 1.0
+    aliases: list[str] = field(default_factory=list)
+
+    def terms(self) -> list[str]:
+        """Unique surface term plus aliases; one group is one scoring identity."""
+        values: list[str] = []
+        seen: set[str] = set()
+        for raw in [self.term, *self.aliases]:
+            term = str(raw).strip()
+            if not term:
+                continue
+            key = term.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            values.append(term)
+        return values
 
     @classmethod
     def from_value(cls, value: Any) -> "Concept":
@@ -34,7 +53,19 @@ class Concept:
         weight = float(value.get("weight", 1.0))
         if not 0 <= weight <= 1:
             raise ContractError("concept weight must be from 0 to 1")
-        return cls(str(value["term"]).strip(), weight)
+        aliases_raw = value.get("aliases", [])
+        if aliases_raw is None:
+            aliases_raw = []
+        if not isinstance(aliases_raw, list):
+            raise ContractError("concept aliases must be an array of strings")
+        aliases: list[str] = []
+        for item in aliases_raw:
+            if not isinstance(item, str) or not item.strip():
+                raise ContractError("concept aliases must be non-empty strings")
+            aliases.append(item.strip())
+        if len(aliases) > MAX_CONCEPT_ALIASES:
+            raise ContractError(f"each concept may have at most {MAX_CONCEPT_ALIASES} aliases")
+        return cls(str(value["term"]).strip(), weight, aliases)
 
 
 @dataclass(slots=True)

@@ -50,17 +50,19 @@ Include:
 
 Do not write GitHub qualifiers yourself. Supply plain concepts through the request contract. Keep problem/domain terms in `core_concepts`; put generic forms such as skill, MCP, plugin, tool, AI, and agent in `artifact_types`.
 
-Keep Chinese concepts as concise intact phrases such as `正文配图` or `文章配图`; do not split them by character, whitespace, or Latin-word rules. For English, prefer one-to-three meaningful words per concept.
+Keep Chinese concepts as concise intact capability phrases such as `正文配图`, `文章配图`, `专注管理`, or `自控训练`; do not split them by character, whitespace, or Latin-word rules, and do not add special-case handling for particles such as `于`. For English, prefer one-to-three meaningful words per concept. For a non-English need, attach at least one GitHub-common English expression on the same concept as `aliases` (at most four). Do not consult a fixed translation dictionary, and do not put `skill`, `tool`, `AI`, or `agent` in aliases.
 
 ## Retrieve and refine
 
 Write request, refinement, and assessment JSON as UTF-8 files. On Windows, never pipe `Get-Content` into Muse-shroom; use `-` only with a known non-interactive UTF-8 stdin stream. Invoke `muse-shroom search --request REQUEST --mode quick|deep --output SEARCH.json` and retain its `search_id`. If a complete `search_id` for the same request already exists and the user did not ask to refresh, do not search again.
 
-Default CLI JSON keeps at most three evidence items per candidate. Read the `--output` file for assessment. Use `muse-shroom candidates --search-id ID --scope all` only when broader debugging is necessary.
+Default CLI JSON keeps at most three evidence items per candidate: metadata, a concept_match excerpt (or a useful overview), and usage or installation. Latest Release is on `latest_release` with an `evidence_id` and does not occupy an evidence slot. Read the `--output` file for assessment. Use `muse-shroom candidates --search-id ID --scope all` only when broader debugging is necessary.
 
-For deep mode, examine descriptions, Topics, discovery paths, and README evidence from the first round. Add only terminology supported by that evidence: domain terms, aliases, project anchors, characteristic filenames, and exclusions. Invoke `muse-shroom expand --search-id ID --refinement REFINEMENT` once. Do not inject a repository name the user asked the workflow to rediscover blindly.
+If `coverage.output_compacted=true`, the CLI removed optional secondary fields to honor the wire-size budget. Do not interpret an omitted secondary excerpt, Topic, score component, or alternate discovery path as evidence that the repository lacks that property; assess only what remains and mark unsupported claims as unknown.
 
-Search schema v2 returns a balanced assessment shortlist in `candidates`; `candidate_count` reports the full recalled set. Do not assume omitted candidates were rejected as irrelevant.
+For deep mode, inspect first-round `coverage` and only fill uncovered directions: core concepts listed in `uncovered_core_concepts`, professional terms that appeared but still lack README evidence, and adjacent directions with a clearly different mechanism. Do not expand just to fetch more repositories. Add only terminology supported by first-round evidence: domain terms, aliases, project anchors, characteristic filenames, and exclusions. Invoke `muse-shroom expand --search-id ID --refinement REFINEMENT` once. After expand, the CLI regenerates at most 12 shortlist rows; do not increase the assessment count. Do not inject a repository name the user asked the workflow to rediscover blindly.
+
+Search schema v2 returns a concept-bridged assessment shortlist in `candidates` (core 3, gems 4, adjacent 2, concept_bridge 3). `candidate_count` reports the full recalled set. Read `concept_matches` and `selection_reason` when explaining a surprising pick. Do not assume omitted candidates were rejected as irrelevant.
 
 If output is stale or has `incomplete_phase`, disclose it. Do not silently treat cached or partial coverage as current and complete.
 

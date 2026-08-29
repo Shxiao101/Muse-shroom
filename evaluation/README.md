@@ -30,7 +30,13 @@ Replay performs no network calls and fails explicitly if a required API call is 
 python evaluation/run_ab.py replay
 ```
 
-Open only `blind-review.json` while rating. For every prompt, rate lists A and B from 1 to 5 on `relevance`, `interesting`, `evidence`, `actionability`, and `diversity`, then choose `A`, `B`, or `tie`. Save ratings using `ratings.example.json`; do not inspect `blind-key.json` until ratings are final.
+Capture and replay each write two review packs from the same raw results:
+
+- `blind-review.json`: natural length (the real shortlist the user would see);
+- `blind-review-standard.json`: both lists truncated to 12 rows and projected to the same reviewer-visible fields;
+- `blind-cases/manifest.json`: routes reviewers through six-candidate chunks so no single tool read must load the full pack.
+
+Model reviewers should read `blind-cases/manifest.json` and every listed A/B chunk, not the monolithic pack. The standard projection removes internal selection scores, lanes, and discovery paths while retaining repository metadata and README evidence. For every prompt, rate lists A and B from 1 to 5 on `relevance`, `interesting`, `evidence`, `actionability`, and `diversity`, then choose `A`, `B`, or `tie`. Save each reviewer's ratings under a distinct name such as `ratings-grok.json` or `ratings-codex.json`; do not inspect `blind-key.json` until ratings are final. Raw cassette replays belong under `evaluation/results/` (gitignored).
 
 ```console
 python evaluation/score_ab.py RATINGS.json --key evaluation/results/blind-key.json --output evaluation/results/summary.json
@@ -38,6 +44,6 @@ python evaluation/score_ab.py RATINGS.json --key evaluation/results/blind-key.js
 
 The release gate passes when all eight prompts are rated, the candidate wins at least 60%, its median evidence score improves by at least 0.5, and median relevance and diversity do not decrease. Probe repositories may be recorded separately but never affect this calculation.
 
-This v1 harness evaluates the 24-repository assessment shortlist and its evidence, which is the stage changed most heavily in v0.3. Final Agent-authored semantic assessments and ranking prose remain a separate human-in-the-loop evaluation.
+This v1 harness evaluates the 12-repository assessment shortlist and its evidence, which is the stage changed most heavily in v0.3.3. Final Agent-authored semantic assessments and ranking prose remain a separate human-in-the-loop evaluation.
 
-The assessment shortlist caps a single repository owner at three entries. This keeps ecosystems such as a release tool plus its plugins discoverable without allowing one owner to dominate the Agent's review budget.
+The probe and shortlist stages cap a single repository owner at two entries. This keeps ecosystems such as a release tool plus its plugins discoverable without allowing one owner to dominate the Agent's review budget.

@@ -132,6 +132,87 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(len(revealed["evaluations"]), 8)
             self.assertTrue(all(item["preferred"] in {"baseline", "candidate"} for item in revealed["evaluations"]))
 
+    def test_standard_blind_pack_equalizes_shortlist_length(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / "baseline.json"
+            candidate = root / "candidate.json"
+            blind = root / "blind.json"
+            key = root / "key.json"
+            baseline.write_text(json.dumps({
+                "muse_shroom_version": "0.3.2",
+                "results": [{
+                    "prompt_id": "one", "category": "test", "request": {"request": "x"},
+                    "candidates": [{"repo": f"old/{index}"} for index in range(24)],
+                }],
+            }), encoding="utf-8")
+            candidate.write_text(json.dumps({
+                "muse_shroom_version": "0.3.3",
+                "results": [{
+                    "prompt_id": "one", "category": "test", "request": {"request": "x"},
+                    "candidates": [{"repo": f"new/{index}"} for index in range(12)],
+                }],
+            }), encoding="utf-8")
+            build_blind_pack(
+                baseline, candidate, blind_path=blind, key_path=key, seed="fixed",
+                shortlist_limit=12, case_dir=root / "blind-cases",
+            )
+            case = json.loads(blind.read_text(encoding="utf-8"))["cases"][0]
+            self.assertEqual(case["comparison"], "standard")
+            self.assertEqual(len(case["lists"]["A"]), 12)
+            self.assertEqual(len(case["lists"]["B"]), 12)
+            manifest = json.loads((root / "blind-cases" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["cases"]), 1)
+            files = manifest["cases"][0]["files"]
+            self.assertEqual(len(files["A"]), 2)
+            self.assertEqual(len(files["B"]), 2)
+            for label in ("A", "B"):
+                for filename in files[label]:
+                    payload = json.loads((root / "blind-cases" / filename).read_text(encoding="utf-8"))
+                    self.assertEqual(payload["list"], label)
+                    self.assertLessEqual(len(payload["candidates"]), 6)
+
+    def test_standard_pack_hides_internal_selection_fields_but_keeps_readme_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / "baseline.json"
+            candidate = root / "candidate.json"
+            blind = root / "blind.json"
+            key = root / "key.json"
+            row = {
+                "repo": "owner/tool", "url": "https://github.com/owner/tool",
+                "description": "Useful tool", "stars": 3, "topics": ["tool"],
+                "language": "Python", "archived": False, "pushed_at": "2026-08-01T00:00:00Z",
+                "selection_lanes": ["core"], "selection_score_components": {"recall": 99},
+                "discovery_paths": [{"kind": "query"}],
+                "evidence": [
+                    {"id": "metadata", "kind": "github_metadata", "facts": {}},
+                    {"id": "readme", "kind": "readme_excerpt", "facts": {
+                        "snippet_type": "concept_match", "line_start": 2, "line_end": 3,
+                        "sha": "abc", "parent_evidence_id": "parent", "text": "Specific behavior",
+                        "untrusted_source": True,
+                    }},
+                ],
+            }
+            payload = {
+                "muse_shroom_version": "test", "results": [{
+                    "prompt_id": "one", "category": "test", "request": {"request": "x"},
+                    "candidates": [row],
+                }],
+            }
+            baseline.write_text(json.dumps(payload), encoding="utf-8")
+            candidate.write_text(json.dumps(payload), encoding="utf-8")
+            build_blind_pack(
+                baseline, candidate, blind_path=blind, key_path=key, seed="fixed",
+                shortlist_limit=12,
+            )
+            public = json.loads(blind.read_text(encoding="utf-8"))["cases"][0]["lists"]["A"][0]
+            self.assertNotIn("selection_lanes", public)
+            self.assertNotIn("selection_score_components", public)
+            self.assertNotIn("discovery_paths", public)
+            self.assertEqual(len(public["evidence"]), 1)
+            self.assertEqual(public["evidence"][0]["facts"]["sha"], "abc")
+
     @unittest.skipUnless((ROOT / ".git").exists(), "requires the v0.2 Git revision")
     def test_replay_runs_v02_and_current_from_one_cassette(self):
         class ApiResult:

@@ -62,7 +62,32 @@ def _plain_line(line: str) -> str:
     return " ".join(line.split())
 
 
-def _section_snippet(lines: list[str], start: int, max_chars: int = 220) -> tuple[str, int]:
+LANGUAGE_SWITCH_RE = re.compile(
+    r"^(?:english|chinese|中文|日本語|日本語版|한국어|français|deutsch|español|readme|documentation|wiki)"
+    r"(?:\s*[|／/·,-]\s*(?:english|chinese|中文|日本語|한국어|français|deutsch|español|readme|documentation|wiki))+$",
+    re.I,
+)
+
+
+def _is_thin_overview(text: str) -> bool:
+    compact = re.sub(r"https?://\S+", " ", text)
+    compact = re.sub(r"[\[\]()!|#*`\-–—_/\\|]+", " ", compact)
+    compact = " ".join(compact.split())
+    if len(compact) < 40:
+        return True
+    if LANGUAGE_SWITCH_RE.fullmatch(compact.casefold()):
+        return True
+    tokens = compact.casefold().split()
+    language_tokens = {
+        "english", "chinese", "中文", "日本語", "한국어", "français", "deutsch", "español",
+        "readme", "wiki", "docs", "documentation", "toc",
+    }
+    if tokens and all(token in language_tokens or len(token) <= 2 for token in tokens):
+        return True
+    return False
+
+
+def _section_snippet(lines: list[str], start: int, max_chars: int = 260) -> tuple[str, int]:
     parts: list[str] = []
     end = start
     for index in range(start, min(len(lines), start + 16)):
@@ -88,10 +113,14 @@ def readme_snippets(readme: str, concept_terms: list[str] | None = None,
         if match:
             headings.append((index, match.group(2).strip().lower()))
 
-    first_content = next((index for index, line in enumerate(lines)
-                          if _plain_line(line) and not HEADING_RE.match(line)), None)
-    if first_content is not None:
-        candidates.append(("overview", first_content))
+    for index, line in enumerate(lines):
+        plain = _plain_line(line)
+        if not plain or HEADING_RE.match(line):
+            continue
+        if _is_thin_overview(plain):
+            continue
+        candidates.append(("overview", index))
+        break
 
     terms = [term.casefold() for term in (concept_terms or []) if term.strip()]
     for index, line in enumerate(lines):
@@ -124,6 +153,8 @@ def readme_snippets(readme: str, concept_terms: list[str] | None = None,
 
     snippets: list[dict[str, Any]] = []
     seen_text: set[str] = set()
+    kind_order = {"concept_match": 0, "overview": 1, "installation": 2, "usage": 3, "type_risk": 4}
+    candidates.sort(key=lambda item: kind_order.get(item[0], 9))
     for kind, start in candidates:
         text, end = _section_snippet(lines, start)
         identity = text.casefold()

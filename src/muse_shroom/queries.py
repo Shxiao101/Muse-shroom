@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from typing import Any, Iterable
 
 from .models import Concept, Refinement, SearchRequest
 
@@ -39,11 +39,22 @@ def is_generic_term(term: str) -> bool:
     return bool(tokens) and all(token in GENERIC_TYPE_TOKENS for token in tokens)
 
 
-def _terms(concepts: Iterable[Concept], *, allow_generic: bool = False) -> list[str]:
-    values = [c.term for c in sorted(concepts, key=lambda item: item.weight, reverse=True) if c.term]
-    if allow_generic:
-        return values
-    return [term for term in values if not is_generic_term(term)]
+def _search_terms(concept: Concept, *, allow_generic: bool = False) -> list[str]:
+    values = []
+    for term in concept.terms():
+        if allow_generic or not is_generic_term(term):
+            values.append(term)
+    return values
+
+
+def indexed_groups(concepts: Iterable[Concept], prefix: str,
+                   *, allow_generic: bool = False) -> list[tuple[str, Concept, list[str]]]:
+    groups = []
+    for index, concept in enumerate(concepts):
+        terms = _search_terms(concept, allow_generic=allow_generic)
+        if terms:
+            groups.append((f"{prefix}:{index}", concept, terms))
+    return groups
 
 
 def _typed_redundant(left: str, right: str) -> bool:
@@ -71,69 +82,149 @@ def _qualifiers(request: SearchRequest) -> str:
     return " ".join(qualifiers)
 
 
-def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, str]]:
+def _take(result: list[dict[str, Any]], seen: set[str],
+          bucket: list[tuple[str, str, str, str, str]], limit: int,
+          *, n: int | None = None) -> None:
+    added = 0
+    for query, kind, sort, concept_id, term in bucket:
+        if len(result) >= limit:
+            return
+        if n is not None and added >= n:
+            return
+        normalized = " ".join(query.split())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append({
+            "query": normalized, "kind": kind, "sort": sort,
+            "concept_id": concept_id, "term": term,
+        })
+        added += 1
+
+
+def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, Any]]:
     """Build validated repository-search queries; agents never construct GitHub syntax."""
-    core = _terms(request.core_concepts)
-    adjacent = _terms(request.adjacent_concepts)
+    core_groups = indexed_groups(request.core_concepts, "core")
+    adjacent_groups = indexed_groups(request.adjacent_concepts, "adjacent")
     type_terms: list[str] = []
     for artifact_type in request.artifact_types:
         type_terms.extend(TYPE_TERMS.get(artifact_type, [artifact_type]))
     suffix = _qualifiers(request)
-    lefts = core[:2] or adjacent[:2]
-    primary_term = core[0] if core else (adjacent[0] if adjacent else "")
+    lefts = [(terms[0], concept_id) for concept_id, _concept, terms in (core_groups[:2] or adjacent_groups[:2])]
+    primary_term = core_groups[0][2][0] if core_groups else (adjacent_groups[0][2][0] if adjacent_groups else "")
+    primary_id = core_groups[0][0] if core_groups else (adjacent_groups[0][0] if adjacent_groups else "")
     primary = _quote(primary_term)
 
-    raw: list[tuple[str, str, str]] = []
-    for concept in core[:3]:
-        raw.append((f"{_quote(concept)} in:name,description,topics,readme {suffix}", "core", "stars"))
-    typed = []
-    for left in lefts:
-        for right in type_terms[:2] or ["tool"]:
+    core_queries: list[tuple[str, str, str, str, str]] = []
+    for concept_id, _concept, terms in core_groups[:3]:
+        core_queries.append((
+            f"{_quote(terms[0])} in:name,description,topics,readme {suffix}",
+            "core", "stars", concept_id, terms[0],
+        ))
+
+    typed_queries: list[tuple[str, str, str, str, str]] = []
+    rights = type_terms[:2] or ["tool"]
+    for right in rights[:1]:
+        for left, concept_id in lefts:
             if _typed_redundant(left, right):
                 continue
-            typed.append((f"{_quote(left)} {_quote(right)} in:name,description,topics,readme {suffix}", "typed", "stars"))
-    raw.extend(typed[:3])
+            typed_queries.append((
+                f"{_quote(left)} {_quote(right)} in:name,description,topics,readme {suffix}",
+                "typed", "stars", concept_id, left,
+            ))
+    for right in rights[1:]:
+        for left, concept_id in lefts:
+            if _typed_redundant(left, right):
+                continue
+            typed_queries.append((
+                f"{_quote(left)} {_quote(right)} in:name,description,topics,readme {suffix}",
+                "typed", "stars", concept_id, left,
+            ))
 
+    alias_queries: list[tuple[str, str, str, str, str]] = []
+    for concept_id, _concept, terms in core_groups:
+        for term in terms[1:2]:
+            alias_queries.append((
+                f"{_quote(term)} in:name,description,topics,readme {suffix}",
+                "core", "stars", concept_id, term,
+            ))
+    for concept_id, _concept, terms in adjacent_groups:
+        for term in terms[1:2]:
+            alias_queries.append((
+                f"{_quote(term)} in:name,description,topics,readme {suffix}",
+                "adjacent", "stars", concept_id, term,
+            ))
+    alias_typed: list[tuple[str, str, str, str, str]] = []
+    for concept_id, _concept, terms in core_groups:
+        for term in terms[1:2]:
+            for right in type_terms[:1] or ["tool"]:
+                if _typed_redundant(term, right):
+                    continue
+                alias_typed.append((
+                    f"{_quote(term)} {_quote(right)} in:name,description,topics,readme {suffix}",
+                    "typed", "stars", concept_id, term,
+                ))
+
+    gem_queries: list[tuple[str, str, str, str, str]] = []
     if primary:
-        raw.extend([
-            (f"{primary} in:name,description,topics,readme stars:1..500 {suffix}", "gem", "updated"),
-            (f"{primary} in:name,description,topics,readme stars:0..50 {suffix}", "gem", "updated"),
+        gem_queries.extend([
+            (f"{primary} in:name,description,topics,readme stars:1..500 {suffix}",
+             "gem", "updated", primary_id, primary_term),
+            (f"{primary} in:name,description,topics,readme stars:0..50 {suffix}",
+             "gem", "updated", primary_id, primary_term),
         ])
 
-    adjacent_queries = [
-        (f"{_quote(term)} in:name,description,topics,readme {suffix}", "adjacent", "stars")
-        for term in adjacent[:3]
-    ]
-    for left in core[:2]:
-        for right in adjacent[:3]:
+    adjacent_queries: list[tuple[str, str, str, str, str]] = []
+    for concept_id, _concept, terms in adjacent_groups[:3]:
+        adjacent_queries.append((
+            f"{_quote(terms[0])} in:name,description,topics,readme {suffix}",
+            "adjacent", "stars", concept_id, terms[0],
+        ))
+    for concept_id, _concept, terms in core_groups[:2]:
+        for adj_id, _adj, adj_terms in adjacent_groups[:3]:
             adjacent_queries.append((
-                f"{_quote(left)} {_quote(right)} in:name,description,topics,readme {suffix}", "adjacent", "stars"
+                f"{_quote(terms[0])} {_quote(adj_terms[0])} in:name,description,topics,readme {suffix}",
+                "adjacent", "stars", adj_id, adj_terms[0],
             ))
-    adjacent_quota = min(3, 2 + round(request.exploration_level)) if adjacent else 0
-    raw.extend(adjacent_queries[:adjacent_quota])
+    adjacent_quota = min(3, 2 + round(request.exploration_level)) if adjacent_groups else 0
 
-    # Ensure even a terse request explores distinct indexed surfaces. These are
-    # repository-search variants, not free-form syntax supplied by the agent.
+    surface_queries: list[tuple[str, str, str, str, str]] = []
     if primary:
         for scope, kind in (
             ("name,description", "core"), ("topics", "core"), ("readme", "core"),
             ("name,description,topics", "core"),
         ):
-            raw.append((f"{primary} in:{scope} {suffix}", kind, "stars"))
+            surface_queries.append((
+                f"{primary} in:{scope} {suffix}", kind, "stars", primary_id, primary_term,
+            ))
         for companion in ("tool", "app", "plugin"):
             if _typed_redundant(primary_term, companion):
                 continue
-            raw.append((f"{primary} {_quote(companion)} in:name,description,topics,readme {suffix}", "typed", "stars"))
+            surface_queries.append((
+                f"{primary} {_quote(companion)} in:name,description,topics,readme {suffix}",
+                "typed", "stars", primary_id, primary_term,
+            ))
+
+    n_core = min(3, len(core_queries))
+    n_gem = min(2, len(gem_queries))
+    n_adj = min(adjacent_quota, len(adjacent_queries))
+    room = max(0, limit - n_core - n_gem - n_adj)
+    if alias_queries and room:
+        n_alias = min(len(alias_queries), room if room <= 2 else max(1, room - 2))
+    else:
+        n_alias = 0
 
     seen: set[str] = set()
-    result = []
-    for query, kind, sort in raw:
-        normalized = " ".join(query.split())
-        if normalized and normalized not in seen:
-            result.append({"query": normalized, "kind": kind, "sort": sort})
-            seen.add(normalized)
-        if len(result) >= limit:
-            break
+    result: list[dict[str, Any]] = []
+    _take(result, seen, core_queries, limit, n=n_core)
+    _take(result, seen, gem_queries, limit, n=n_gem)
+    _take(result, seen, adjacent_queries, limit, n=n_adj)
+    _take(result, seen, alias_queries, limit, n=n_alias)
+    _take(result, seen, typed_queries, limit, n=3)
+    _take(result, seen, alias_queries, limit)
+    _take(result, seen, alias_typed, limit)
+    _take(result, seen, adjacent_queries, limit)
+    _take(result, seen, surface_queries, limit)
     return result
 
 
@@ -144,13 +235,22 @@ def refinement_queries(refinement: Refinement, request: SearchRequest,
     anchors = refinement.anchors
     suffix = _qualifiers(request)
     result = []
-    for term in concepts:
-        result.append({"query": f"{_quote(term)} in:name,description,topics,readme {suffix}", "kind": "refinement"})
+    for index, term in enumerate(concepts):
+        result.append({
+            "query": f"{_quote(term)} in:name,description,topics,readme {suffix}",
+            "kind": "refinement", "concept_id": f"refinement:{index}", "term": term,
+        })
     for left in concepts[:3]:
         for right in anchors[:3]:
-            result.append({"query": f"{_quote(left)} {_quote(right)} in:readme {suffix}", "kind": "anchor"})
-    for term in adjacent:
-        result.append({"query": f"{_quote(term)} in:name,description,topics,readme {suffix}", "kind": "adjacent"})
+            result.append({
+                "query": f"{_quote(left)} {_quote(right)} in:readme {suffix}",
+                "kind": "anchor", "concept_id": f"refinement:{concepts.index(left)}", "term": left,
+            })
+    for index, term in enumerate(adjacent):
+        result.append({
+            "query": f"{_quote(term)} in:name,description,topics,readme {suffix}",
+            "kind": "adjacent", "concept_id": f"adjacent:{index}", "term": term,
+        })
     unique = {item["query"]: item for item in result}
     return list(unique.values())[:limit]
 

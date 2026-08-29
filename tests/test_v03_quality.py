@@ -95,11 +95,11 @@ class V03QualityTests(unittest.TestCase):
             "adjacent_concepts": ["ambient sound"], "artifact_types": ["application"],
         }), "quick")
         self.assertEqual(result["schema_version"], 2)
-        self.assertGreater(result["candidate_count"], 24)
-        self.assertLessEqual(result["assessment_candidate_count"], 24)
+        self.assertGreater(result["candidate_count"], 12)
+        self.assertLessEqual(result["assessment_candidate_count"], 12)
         self.assertTrue(all("readme" not in item for item in result["candidates"]))
-        self.assertTrue(all(item.get("selected_for_assessment") for item in result["candidates"]))
-        self.assertLess(len(json.dumps(result, ensure_ascii=False)), 80_000)
+        self.assertTrue(all("selected_for_assessment" not in item for item in result["candidates"]))
+        self.assertLessEqual(len(json.dumps(result, ensure_ascii=False).encode("utf-8")), 30_000)
 
     def test_relation_expansion_respects_original_constraints(self):
         seed = repo("seed/tool", 100, description="python music tool", language="Python")

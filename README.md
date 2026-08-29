@@ -32,7 +32,7 @@ muse-shroom --help
 
 1. Agent 根据 [`examples/music-ai.request.json`](examples/music-ai.request.json) 生成结构化需求。
 2. 快搜调用一次 `search` 和一次 `rank`；深搜在两者之间调用 `expand`。
-3. CLI 从完整召回集合中平衡富化 30 个候选，默认只返回最多 24 个评审候选。
+3. CLI 先按概念覆盖探针富化最多 30 个候选的 README，再重排出最多 12 个短名单，只为短名单读取最新 Release。
 4. Agent 只根据候选中的 evidence IDs 生成语义评价，功能结论必须引用 README 片段。
 5. CLI 合并元数据、关系证据、类型质量规则和评价，输出热门、宝藏、跨界三个榜。
 
@@ -50,12 +50,14 @@ muse-shroom feedback Quackone/homr_gui --relevant yes --interesting yes --too-ha
 
 ## 结果约束
 
-- 快搜最多生成 12 条受控查询，首轮富化 30 个候选。
-- 搜索输出使用 schema v2；`candidate_count` 是完整召回数，`candidates` 只包含最多 24 个评审候选。
-- 评审候选中同一仓库 owner 默认最多出现 3 次，避免单一插件生态占满评审预算。
+- 快搜最多生成 12 条受控查询；别名不会扩大 API 预算。同一概念组的多次字段查询会增强可信度，但 RRF 按概念组封顶。
+- 搜索输出使用 schema v2；`candidate_count` 是完整召回数，`candidates` 只包含最多 12 个评审短名单。
+- 探针阶段同一 owner 最多 2 个；短名单按核心代表 3、小众宝藏 4、跨界灵感 2、概念桥接 3 分配。
+- 低 Star 不能单独成为宝藏或桥接理由；必须有非泛化查询来源和 README/元数据相关证据。
+- 搜索 JSON 不超过 30KB；超限时只压缩次要字段，并保留每个候选的首条概念证据及其 README SHA/行号。每个候选默认 3 条证据：metadata、concept_match（或有效 overview）、usage/installation。Release 放在 `latest_release`，不占 evidence 槽。
 - 深搜从种子沿 README 链接、README 反向引用、Fork 和作者仓库扩散，并受请求预算限制。
 - README 富化最多提取 5 条不可信证据片段；默认 JSON 每个候选最多保留 3 条证据。原文仅保存在 SQLite。
-- 单独的 `skill` / `AI` / `agent` 不会作为核心查询；形态词应放在 `artifact_types`。中文概念整词保留。
+- 单独的 `skill` / `AI` / `agent` 不会作为核心查询；形态词应放在 `artifact_types`。中文概念整词保留。概念可以带最多 4 个 GitHub 常用别名，同一组别名只计一次分。
 - 推荐理由必须引用已采集的 evidence ID；功能结论必须引用具体 README 片段，未知能力应写成 `unknown`。
 - 榜单上限为热门 4、宝藏 4、跨界 2；质量不足时少给，不填充。
 - Star 增长只有本地存在至少两个快照时才显示。

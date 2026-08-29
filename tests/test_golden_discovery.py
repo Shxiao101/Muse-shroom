@@ -38,7 +38,8 @@ class GoldenDiscoveryTests(unittest.TestCase):
         })
         target = next(item for item in result["candidates"] if item["full_name"].lower() == "quackone/homr_gui")
         self.assertTrue(any(path.get("relation") == "reverse_readme" for path in target["discovery_paths"]))
-        self.assertTrue(any(item["kind"] == "discovery_relation" for item in target["evidence"]))
+        stored = self.store.get_candidate("Quackone/homr_gui", result["search_id"])
+        self.assertTrue(any(item["kind"] == "discovery_relation" for item in stored["evidence"]))
 
     def test_lilith_mod_keeps_mod_and_adjacent_directions(self):
         mod = repo("community/lilith-modpack", 120, description="Mods for The NOexistenceN of Lilith", topics=["mod"])
@@ -57,15 +58,15 @@ class GoldenDiscoveryTests(unittest.TestCase):
             "artifact_types": ["mod"], "exploration_level": 1.0
         }), "quick")
         names = {item["full_name"] for item in result["candidates"]}
-        self.assertEqual(names, {
-            "community/lilith-modpack", "tools/lilith-audio", "tools/game-window-capture", "tools/codex-desktop-pet"
-        })
+        self.assertIn("community/lilith-modpack", names)
+        adjacent_pool = {
+            "tools/lilith-audio", "tools/game-window-capture", "tools/codex-desktop-pet"
+        }
         adjacent_names = {
             item["full_name"] for item in result["candidates"] if "adjacent" in item.get("matched_kinds", [])
         }
-        self.assertTrue({
-            "tools/lilith-audio", "tools/game-window-capture", "tools/codex-desktop-pet"
-        }.issubset(adjacent_names))
+        self.assertGreaterEqual(len(adjacent_names & adjacent_pool), 2)
+        self.assertLessEqual(sum(name.startswith("tools/") for name in names), 2)
 
     def test_archived_and_explicitly_excluded_results_are_removed(self):
         active = repo("tools/useful", 10, description="Useful music tool")
@@ -111,7 +112,9 @@ class GoldenDiscoveryTests(unittest.TestCase):
         result = engine.expand(first["search_id"], {"concepts": ["specific symptom"]})
 
         hidden = next(item for item in result["candidates"] if item["full_name"] == "tools/hidden-gem")
-        self.assertTrue(any(evidence["kind"] == "readme" for evidence in hidden["evidence"]))
+        self.assertTrue(any(item.get("kind") == "readme_excerpt" for item in hidden["evidence"]))
+        stored = self.store.get_candidate("tools/hidden-gem", result["search_id"])
+        self.assertIn("readme", stored)
 
     def test_repeated_recall_does_not_duplicate_discovery_paths(self):
         candidate = repo("tools/review", 3, description="Specific review skill")
