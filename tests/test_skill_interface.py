@@ -29,6 +29,7 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn("muse_rank", self.skill)
         self.assertIn("Otherwise use the CLI", self.skill)
         self.assertIn("Do not change the search strategy", self.skill)
+        self.assertNotIn("explorer", self.skill.lower())
         self.assertIn("stop.signals", self.skill)
         self.assertIn("should_stop", self.skill)
         self.assertIn("还有吗", self.skill)
@@ -58,6 +59,7 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn('python -m pip install -e ".[mcp]"', readme)
         self.assertIn("python -m unittest tests.test_mcp -v", readme)
         self.assertIn('python -m pip install -e ".[test]"', readme)
+        self.assertIn("muse-shroom explorer", readme)
 
 
 if __name__ == "__main__":

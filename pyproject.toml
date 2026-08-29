@@ -23,3 +23,6 @@ muse-shroom-mcp = "muse_shroom.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+muse_shroom = ["explorer/static/*"]

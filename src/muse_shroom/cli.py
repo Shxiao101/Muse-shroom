@@ -123,6 +123,10 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("relevant", "interesting", "too-hard"):
         feedback.add_argument(f"--{name}", choices=("yes", "no", "unknown"), default="unknown")
     feedback.add_argument("--note")
+    explorer = sub.add_parser("explorer", help="open the local read-only Boundary Explorer")
+    explorer.add_argument("--host", default="127.0.0.1", help="bind address")
+    explorer.add_argument("--port", type=int, default=8765, help="bind port")
+    explorer.add_argument("--no-browser", action="store_true", help="do not open a browser")
     return parser
 
 
@@ -264,6 +268,16 @@ def main(argv: list[str] | None = None) -> int:
     _configure_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "explorer":
+        from .explorer.server import run_explorer
+        try:
+            return run_explorer(
+                data_dir=args.data_dir, host=args.host, port=args.port,
+                open_browser=not args.no_browser,
+            )
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": "OSError", "message": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 2
     try:
         result = run(args)
         output_path = getattr(args, "output", None)

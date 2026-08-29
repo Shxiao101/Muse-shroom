@@ -46,6 +46,14 @@ muse-shroom rank --search-id SEARCH_ID --assessments assessments.json --output r
 
 所有命令默认输出 JSON。JSON 输入请保存为 UTF-8 文件；Windows 不要使用 `Get-Content | muse-shroom`。`--output` 把完整 JSON 写到文件，控制台只打印回执。相同 request 和 mode 默认复用已完成的 `search_id`，需要新召回时加 `--refresh`。`--data-dir` 可覆盖平台数据目录。MCP 与 CLI 共用同一凭据存储和 SQLite 目录；多轮工具必须显式传 `search_id`。
 
+本地只读 Explorer 浏览已有 session 的 Boundary、迭代和最终推荐，不发起 search / iterate / rank：
+
+```console
+muse-shroom explorer
+```
+
+默认打开 `http://127.0.0.1:8765/`。Explorer 子命令支持 `--host`、`--port`、`--no-browser`；数据目录仍用全局 `--data-dir`（`muse-shroom --data-dir DIR explorer`）。Skill / MCP / CLI 不依赖 Explorer。`?debug=1` 才显示 selection_order、score components 和 query history。
+
 ## MCP 宿主配置
 
 安装 `muse-shroom[mcp]` 后，本地 stdio 入口是 `muse-shroom-mcp`（或 `python -m muse_shroom.mcp_server`）。可选 `--data-dir`。进程只读取已有 GitHub 凭据，不返回 token。
@@ -105,4 +113,4 @@ python -m unittest tests.test_mcp -v
 
 ## 首版边界
 
-没有远程 MCP 服务、独立模型 API、Web UI、云服务、后台监控、自动安装项目或全量 GitHub 索引。`skills/github-inspiration-discovery` 可独立复制到支持 Skills 的宿主中。
+没有远程 MCP 服务、独立模型 API、云端 Web UI、账号系统、后台监控、自动安装项目或全量 GitHub 索引。本地 `muse-shroom explorer` 只读浏览已有 session。`skills/github-inspiration-discovery` 可独立复制到支持 Skills 的宿主中。

@@ -333,6 +333,41 @@ class Store:
             )
         self.db.commit()
 
+    def list_search_index(self) -> list[dict[str, Any]]:
+        rows = self.db.execute(
+            """SELECT id, request_json, mode, created_at, updated_at, stale,
+                      incomplete_phase, session_state_json
+               FROM searches ORDER BY updated_at DESC"""
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            search_id = str(row["id"])
+            ranked = self.db.execute(
+                "SELECT 1 FROM rankings WHERE search_id=?", (search_id,)
+            ).fetchone() is not None
+            candidate_count = int(self.db.execute(
+                "SELECT COUNT(*) FROM search_candidates WHERE search_id=?", (search_id,),
+            ).fetchone()[0])
+            result.append({
+                "id": search_id,
+                "request": json.loads(row["request_json"]),
+                "mode": row["mode"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "stale": bool(row["stale"]),
+                "incomplete_phase": row["incomplete_phase"],
+                "session_state": json.loads(row["session_state_json"]) if row["session_state_json"] else {},
+                "ranked": ranked,
+                "candidate_count": candidate_count,
+            })
+        return result
+
+    def candidate_count(self, search_id: str) -> int:
+        row = self.db.execute(
+            "SELECT COUNT(*) FROM search_candidates WHERE search_id=?", (search_id,),
+        ).fetchone()
+        return int(row[0])
+
     def load_search(self, search_id: str) -> dict[str, Any]:
         row = self.db.execute("SELECT * FROM searches WHERE id=?", (search_id,)).fetchone()
         if row is None:
