@@ -1065,7 +1065,12 @@ class SearchEngine:
             candidate["matched_kinds"] = sorted(set(candidate.get("matched_kinds", [])))
             candidate["selected_for_assessment"] = False
         assessable = [item for item in candidates.values() if "readme" in item]
-        selected, lane_counts = shortlist_select(assessable, request)
+        mode = "quick"
+        try:
+            mode = str(self.store.load_search(search_id).get("mode") or "quick")
+        except KeyError:
+            pass
+        selected, lane_counts = shortlist_select(assessable, request, mode=mode)
         selected = selected[:SHORTLIST_LIMIT]
         try:
             release_stale, release_cache, release_failed = self._enrich_releases(selected)

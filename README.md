@@ -62,7 +62,8 @@ muse-shroom feedback Quackone/homr_gui --relevant yes --interesting yes --too-ha
 - `negative_directions` 记录本 session 已确认的错误语义，与用户拒绝的 `rejected_directions` 分开保存，并会避免继续消耗这些方向的 query 预算。
 - search、每次 iterate / expand、rank 都会在 SQLite 中追加 boundary snapshot；iterate 快照带有 `iteration`、hypothesis 和 query summary。输出的 `boundary_delta` 是相对前一 snapshot 的新增机制、展示机制、方向和术语。
 - 深搜默认最多 3 轮 iterate；每轮最多 6 条新 query，整个 session 最多 30 条 search query，候选池默认 250（快搜 100）。observation 的 `stop.reasons` 是硬停止，`stop.signals` 只是建议；连续两轮没有 meaningful boundary gain 才会硬停止。
-- 探针阶段同一 owner 最多 2 个；短名单按核心代表 3、小众宝藏 4、跨界灵感 2、概念桥接 3 分配。
+- 探针阶段同一 owner 最多 2 个；短名单仍最多 12 条。Deep 会按当前机制覆盖动态分配席位（含 boundary lane），同一机制默认只占一个高优先级席位。
+- rank 仍输出 popular / gems / adjacent；每条推荐带 `boundary_role`（anchor / edge / leap / wildcard）、`new_mechanisms`、`why_different`，以及 `boundary_summary`。Novelty 只在有机制证据且 relevance 足够时加分，不会压过明显更相关的主流项目。
 - 低 Star 不能单独成为宝藏或桥接理由；必须有非泛化查询来源和 README/元数据相关证据。
 - 搜索 JSON 不超过 30KB；超限时只压缩次要字段，并保留每个候选的首条概念证据及其 README SHA/行号。每个候选默认最多 3 条证据：metadata、concept_match（或有效 overview），以及检测到的 mechanism_match；没有 mechanism 时第三条保留 usage/installation。Release 放在 `latest_release`，不占 evidence 槽。
 - 关系扩散（README 链接、反向引用、Fork、作者仓库）只在 hypothesis 选择 `relationship` / `seed` / `owner` 时运行，不再每轮默认全开。

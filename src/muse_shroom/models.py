@@ -441,6 +441,12 @@ class SearchHypothesis:
         )
 
 
+def _optional_score(value: Any, name: str) -> float | None:
+    if value is None:
+        return None
+    return _score(value, name)
+
+
 @dataclass(slots=True)
 class Assessment:
     repo: str
@@ -453,6 +459,10 @@ class Assessment:
     artifact_type: str
     reasons: list[dict[str, Any]] = field(default_factory=list)
     risks: list[dict[str, Any]] = field(default_factory=list)
+    mechanism: str = ""
+    mechanism_novelty: float | None = None
+    transferability: float | None = None
+    boundary_value: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], evidence: set[str] | dict[str, str]) -> "Assessment":
@@ -483,6 +493,9 @@ class Assessment:
                 raise ContractError(
                     f"verified use_case for {repo} must cite at least one readme excerpt"
                 )
+        mechanism = str(data.get("mechanism") or "").strip()
+        if mechanism and (len(mechanism) > 160 or "\n" in mechanism or "\r" in mechanism):
+            raise ContractError("assessment mechanism must be a single-line string up to 160 characters")
         return cls(
             repo=repo,
             relevance=_score(data.get("relevance"), "relevance"),
@@ -494,6 +507,13 @@ class Assessment:
             artifact_type=str(data.get("artifact_type", "unknown")).strip().lower() or "unknown",
             reasons=reasons,
             risks=risks,
+            mechanism=mechanism,
+            mechanism_novelty=_optional_score(data.get("mechanism_novelty"), "mechanism_novelty")
+            if "mechanism_novelty" in data else None,
+            transferability=_optional_score(data.get("transferability"), "transferability")
+            if "transferability" in data else None,
+            boundary_value=_optional_score(data.get("boundary_value"), "boundary_value")
+            if "boundary_value" in data else None,
         )
 
 

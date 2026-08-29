@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import math
 import re
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from .boundary_score import (
+    annotate_boundary_signals, candidate_mechanism_names, contribution_score,
+    exploration_terms, gated_boundary_value, novelty_score, recalled_mechanism_counts,
+    redundancy_penalty, shortlist_quotas,
+)
 from .models import Concept, SearchRequest, repo_key
 from .queries import indexed_groups, is_generic_term
 
@@ -266,6 +272,11 @@ def _reason_for_lane(lane: str, item: dict[str, Any]) -> str:
         label = next((match["label"] for match in matches if str(match.get("concept_id") or "").startswith("adjacent:")),
                      "adjacent concept")
         return f"Matched adjacent concept '{label}'"
+    if lane == "boundary":
+        names = candidate_mechanism_names(item)
+        if names:
+            return f"Adds mechanism coverage for '{names[0]}'"
+        return "Adds uncovered mechanism coverage"
     return "Filled remaining shortlist from global recall"
 
 
@@ -278,7 +289,7 @@ def concept_probe_score(candidate: dict[str, Any], concept: Concept, concept_id:
 
 
 def score_candidates(candidates: Iterable[dict[str, Any]], request: SearchRequest,
-                     *, enriched: bool) -> list[dict[str, Any]]:
+                     *, enriched: bool, mode: str = "deep") -> list[dict[str, Any]]:
     items = list(candidates)
     rrf = _normalized({repo_key(item): _rrf_raw(item) for item in items})
     popularity = _percentiles(items)
@@ -325,6 +336,7 @@ def score_candidates(candidates: Iterable[dict[str, Any]], request: SearchReques
                 + core * .25 + underexposure * .15 + evidence * .15 + rrf.get(key, 0.0) * .10
             ),
         }
+    annotate_boundary_signals(items, request, mode=mode)
     return items
 
 
@@ -345,33 +357,86 @@ def _owner_limited_add(selected: list[dict[str, Any]], selected_names: set[str],
     return True
 
 
+def _unseen_mechanisms(item: dict[str, Any], presented: set[str]) -> list[str]:
+    return [name for name in candidate_mechanism_names(item) if name.casefold() not in presented]
+
+
 def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest,
                     quotas: dict[str, int], *, enriched: bool,
-                    max_per_owner: int | None = None) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    items = score_candidates(candidates, request, enriched=enriched)
+                    max_per_owner: int | None = None, mode: str = "deep",
+                    mechanism_aware: bool = True, rescore: bool = True
+                    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    items = (
+        score_candidates(candidates, request, enriched=enriched, mode=mode)
+        if rescore else list(candidates)
+    )
     selected: list[dict[str, Any]] = []
     selected_names: set[str] = set()
     owner_counts: dict[str, int] = {}
     counts = {lane: 0 for lane in quotas}
+    presented: set[str] = set()
+    presented_counts: Counter[str] = Counter()
+    pool_counts = recalled_mechanism_counts(items)
+    exploration = exploration_terms(request)
+    weights = (items[0].get("_boundary_weights") if items else None) or (
+        {"novelty": 0.12, "contribution": 0.10, "redundancy": 0.18} if mode == "deep"
+        else {"novelty": 0.04, "contribution": 0.04, "redundancy": 0.08}
+    )
 
     def add(item: dict[str, Any], lane: str | None = None) -> bool:
-        return _owner_limited_add(selected, selected_names, owner_counts, item, max_per_owner, lane)
+        if not _owner_limited_add(selected, selected_names, owner_counts, item, max_per_owner, lane):
+            return False
+        for name in candidate_mechanism_names(item):
+            presented.add(name.casefold())
+            presented_counts[name.casefold()] += 1
+        return True
+
+    def live_score(item: dict[str, Any], lane: str) -> float:
+        base = float((item.get("_lane_scores") or {}).get(lane) or 0.0)
+        if not mechanism_aware:
+            return base
+        contrib = gated_boundary_value(
+            contribution_score(item, presented, exploration=exploration), item,
+        )
+        novelty = gated_boundary_value(
+            novelty_score(
+                item, presented=presented, recalled_counts=pool_counts, exploration=exploration,
+            ),
+            item,
+        )
+        red = redundancy_penalty(item, presented, presented_counts=presented_counts)
+        return base + contrib * weights["contribution"] + novelty * weights["novelty"] - red * weights["redundancy"]
+
+    def take(lane: str, quota: int, *, allow_repeat: bool) -> None:
+        while counts.get(lane, 0) < quota:
+            pool = [
+                item for item in items
+                if repo_key(item) not in selected_names
+                and lane in item.get("selection_lanes", [])
+            ]
+            if not allow_repeat:
+                unseen = [item for item in pool if _unseen_mechanisms(item, presented) or not candidate_mechanism_names(item)]
+                if unseen:
+                    pool = unseen
+            if not pool:
+                return
+            best = sorted(pool, key=lambda item: (-live_score(item, lane), repo_key(item)))[0]
+            if not add(best, lane):
+                selected_names.add(repo_key(best))
+                continue
+            counts[lane] = counts.get(lane, 0) + 1
 
     for lane, quota in quotas.items():
-        pool = sorted(
-            (item for item in items if lane in item.get("selection_lanes", [])),
-            key=lambda item: (-item["_lane_scores"][lane], repo_key(item)),
-        )
-        for item in pool:
-            if not add(item, lane):
-                continue
-            counts[lane] += 1
-            if counts[lane] >= quota:
-                break
+        take(lane, quota, allow_repeat=False)
+        if counts.get(lane, 0) < quota:
+            take(lane, quota, allow_repeat=True)
     target = sum(quotas.values())
     fallback = sorted(
         (item for item in items if repo_key(item) not in selected_names),
-        key=lambda item: (-max(item["_lane_scores"].values(), default=0.0), repo_key(item)),
+        key=lambda item: (
+            -live_score(item, next((lane for lane in quotas if lane in item.get("selection_lanes", [])), "core")),
+            repo_key(item),
+        ),
     )
     for item in fallback:
         if len(selected) >= target:
@@ -382,6 +447,7 @@ def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest
     counts["fallback"] = max(0, len(selected) - sum(counts.get(lane, 0) for lane in quotas))
     for item in items:
         item.pop("_lane_scores", None)
+        item.pop("_boundary_weights", None)
     return selected[:target], counts
 
 
@@ -475,10 +541,14 @@ def probe_select(candidates: Iterable[dict[str, Any]], request: SearchRequest,
     return selected[:limit], counts
 
 
-def shortlist_select(candidates: Iterable[dict[str, Any]], request: SearchRequest
-                     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+def shortlist_select(candidates: Iterable[dict[str, Any]], request: SearchRequest,
+                     *, mode: str = "deep") -> tuple[list[dict[str, Any]], dict[str, int]]:
+    items = list(candidates)
+    scored = score_candidates(items, request, enriched=True, mode=mode)
+    quotas = shortlist_quotas(scored, mode=mode)
     selected, counts = balanced_select(
-        candidates, request, SHORTLIST_QUOTAS, enriched=True, max_per_owner=SHORTLIST_MAX_OWNER,
+        scored, request, quotas, enriched=True, max_per_owner=SHORTLIST_MAX_OWNER, mode=mode,
+        rescore=False,
     )
     return selected[:SHORTLIST_LIMIT], counts
 

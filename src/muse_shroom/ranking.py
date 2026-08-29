@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import math
 import re
+from collections import Counter
 from dataclasses import asdict
 from typing import Any
 
 from .analyze import age_days
 from .boundary import annotate_candidate_mechanisms, build_boundary
+from .boundary_score import (
+    RANK_BOUNDARY_WEIGHTS, RELEVANCE_GATE, TYPE_QUALITY_GATE,
+    assign_boundary_role, boundary_summary, candidate_mechanism_names,
+    contribution_score, exploration_terms, gated_boundary_value,
+    inspiration_score, mechanism_overlap, new_mechanisms_for, novelty_score,
+    recalled_mechanism_counts, redundancy_penalty,
+)
 from .models import Assessment, ContractError, SearchRequest, repo_key
 from .storage import Store
 
@@ -88,18 +96,65 @@ def _similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
     return len(left_tokens & right_tokens) / len(union) if union else 0.0
 
 
+def _mechanism_penalty(item: dict[str, Any], peers: list[dict[str, Any]]) -> float:
+    return max((mechanism_overlap(item, other) for other in peers), default=0.0) * 100
+
+
 def _mmr_select(pool: list[dict[str, Any]], count: int, selected: list[dict[str, Any]],
-                score_name: str, diversity: float = 0.22) -> list[dict[str, Any]]:
+                score_name: str, diversity: float = 0.22,
+                *, boundary_ctx: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     chosen: list[dict[str, Any]] = []
     remaining = list(pool)
+    ctx = boundary_ctx or {}
+    presented = set(ctx.get("presented") or [])
+    presented_counts: Counter[str] = ctx.get("presented_counts") or Counter()
+    exploration = list(ctx.get("exploration") or [])
+    pool_counts = ctx.get("pool_counts") or Counter()
+    mode = str(ctx.get("mode") or "deep")
+    weights = RANK_BOUNDARY_WEIGHTS
+    if mode != "deep":
+        weights = {key: value * 0.4 for key, value in RANK_BOUNDARY_WEIGHTS.items()}
+
     while remaining and len(chosen) < count:
-        def value(item: dict[str, Any]) -> float:
+        def value(item: dict[str, Any]) -> tuple[float, str]:
             peers = selected + chosen
-            penalty = max((_similarity(item, other) for other in peers), default=0.0) * 100
-            return item["scores"][score_name] * (1 - diversity) - penalty * diversity
-        best = max(remaining, key=value)
+            text_penalty = max((_similarity(item, other) for other in peers), default=0.0) * 100
+            mech_penalty = _mechanism_penalty(item, peers)
+            penalty = mech_penalty * 0.65 + text_penalty * 0.35
+            contrib = gated_boundary_value(
+                contribution_score(item, presented, exploration=exploration),
+                item, relevance=float(item["assessment"]["relevance"]),
+                evidence_completeness=float(item["scores"]["components"].get("evidence_completeness") or 0),
+            )
+            novelty = gated_boundary_value(
+                novelty_score(
+                    item, presented=presented, recalled_counts=pool_counts, exploration=exploration,
+                ),
+                item, relevance=float(item["assessment"]["relevance"]),
+                evidence_completeness=float(item["scores"]["components"].get("evidence_completeness") or 0),
+            )
+            red = redundancy_penalty(item, presented, presented_counts=presented_counts)
+            transfer = item["assessment"].get("transferability")
+            transfer = 50.0 if transfer is None else float(transfer)
+            base = item["scores"][score_name]
+            live = (
+                base * (1 - diversity) - penalty * diversity
+                + contrib * weights["contribution"]
+                + novelty * weights["novelty"]
+                + (transfer - 50.0) * weights["transferability"]
+                - red * weights["redundancy"]
+            )
+            return live, str(item.get("repo") or "").lower()
+
+        best = sorted(remaining, key=lambda item: (-value(item)[0], str(item.get("repo") or "").lower()))[0]
         chosen.append(best)
         remaining.remove(best)
+        for name in candidate_mechanism_names(best):
+            presented.add(name.casefold())
+            presented_counts[name.casefold()] += 1
+    if boundary_ctx is not None:
+        boundary_ctx["presented"] = presented
+        boundary_ctx["presented_counts"] = presented_counts
     return chosen
 
 
@@ -136,6 +191,18 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
     if not assessments:
         raise ContractError("at least one assessment is required")
 
+    mode = str(session.get("mode") or "quick")
+    previous_boundary = store.latest_boundary_snapshot(search_id)
+    rejected = list((previous_boundary or {}).get("boundary", {}).get("rejected_directions", []))
+    negatives = list((previous_boundary or {}).get("boundary", {}).get("negative_directions", []))
+    presented_before = list((previous_boundary or {}).get("boundary", {}).get("presented_mechanisms") or [])
+    if (previous_boundary or {}).get("stage") == "rank":
+        presented_before = list(
+            ((store.latest_boundary_snapshot(search_id, ("search", "expand", "iterate")) or {}).get("boundary") or {})
+            .get("presented_mechanisms") or []
+        )
+    exploration = exploration_terms(boundary_request)
+    pool_counts = recalled_mechanism_counts(candidates)
     percentiles = _percentiles(candidates)
     scored = []
     for name, assessment in assessments.items():
@@ -164,6 +231,14 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
             assessment.relevance * .22 + assessment.uniqueness * .25 + assessment.usability * .14 +
             easy * .09 + type_quality * .09 + relation * .11 + evidence_completeness * .10 + personal
         )
+        novelty = novelty_score(
+            candidate, presented=presented_before, recalled_counts=pool_counts, exploration=exploration,
+        )
+        contribution = contribution_score(candidate, presented_before, exploration=exploration)
+        transfer = 50.0 if assessment.transferability is None else float(assessment.transferability)
+        inspiration = inspiration_score(
+            assessment.relevance, novelty, transfer, evidence_completeness,
+        )
         item = {
             "repo": candidate["full_name"], "url": candidate.get("html_url"),
             "description": candidate.get("description"), "stars": stars,
@@ -180,6 +255,9 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
                     "type_quality": round(type_quality, 2), "relationship": round(relation, 2),
                     "underexposure": round(exposure, 2), "personalization": round(personal, 2),
                     "evidence_completeness": round(evidence_completeness, 2),
+                    "mechanism_novelty": novelty,
+                    "boundary_contribution": contribution,
+                    "inspiration": inspiration,
                 },
             },
             "star_growth": None,
@@ -192,62 +270,94 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
             }
         scored.append(item)
 
-    eligible = [item for item in scored if item["assessment"]["relevance"] >= 45 and item["scores"]["components"]["type_quality"] >= 25]
-    adjacent_pool = [item for item in eligible if "adjacent" in by_name[item["repo"].lower()].get("matched_kinds", [])]
-    adjacent = _mmr_select(adjacent_pool, 2, [], "adjacent")
+    eligible = [
+        item for item in scored
+        if item["assessment"]["relevance"] >= RELEVANCE_GATE
+        and item["scores"]["components"]["type_quality"] >= TYPE_QUALITY_GATE
+    ]
+    boundary_ctx = {
+        "presented": {name.casefold() for name in presented_before},
+        "presented_counts": Counter(name.casefold() for name in presented_before),
+        "exploration": exploration,
+        "pool_counts": pool_counts,
+        "mode": mode,
+    }
+    adjacent_pool = []
+    for item in eligible:
+        kinds = set(by_name[item["repo"].lower()].get("matched_kinds", []))
+        transfer = item["assessment"].get("transferability")
+        transfer = 50.0 if transfer is None else float(transfer)
+        new = new_mechanisms_for(item, presented_before)
+        if "adjacent" in kinds or (new and transfer >= 70):
+            adjacent_pool.append(item)
+    adjacent = _mmr_select(adjacent_pool, 2, [], "adjacent", boundary_ctx=boundary_ctx)
     used = {item["repo"].lower() for item in adjacent}
     popular_pool = [
         item for item in eligible
         if item["repo"].lower() not in used
         and item["scores"]["components"]["popularity_percentile"] >= 60
     ]
-    popular = _mmr_select(popular_pool, 4, adjacent, "popular")
+    popular = _mmr_select(popular_pool, 4, adjacent, "popular", boundary_ctx=boundary_ctx)
     used.update(item["repo"].lower() for item in popular)
     gem_pool = [item for item in eligible if item["repo"].lower() not in used and item["scores"]["components"]["underexposure"] >= 20]
-    gems = _mmr_select(gem_pool, 4, adjacent + popular, "gem")
-    returned_names = {
-        item["repo"].lower() for item in popular + gems + adjacent
-    }
-    previous_boundary = store.latest_boundary_snapshot(search_id)
-    rejected = list((previous_boundary or {}).get("boundary", {}).get("rejected_directions", []))
-    negatives = list((previous_boundary or {}).get("boundary", {}).get("negative_directions", []))
+    gems = _mmr_select(gem_pool, 4, adjacent + popular, "gem", boundary_ctx=boundary_ctx)
+    ranked_items = popular + gems + adjacent
+    returned_names = {item["repo"].lower() for item in ranked_items}
+    for item in ranked_items:
+        kinds = by_name[item["repo"].lower()].get("matched_kinds", [])
+        role = assign_boundary_role(item, presented_before, matched_kinds=kinds)
+        fresh = new_mechanisms_for(item, presented_before)
+        transfer = item["assessment"].get("transferability")
+        reason = ""
+        reasons = item.get("assessment", {}).get("reasons") or []
+        if reasons and str(reasons[0].get("text") or "").strip():
+            reason = str(reasons[0]["text"]).strip()
+        if fresh:
+            lead = "introduces " + ", ".join(fresh)
+        else:
+            lead = "shares already presented mechanisms"
+        item["boundary_role"] = role
+        item["new_mechanisms"] = fresh
+        item["why_different"] = (f"{lead}; {reason}" if reason else lead)[:240]
+        item["transferability"] = 50.0 if transfer is None else float(transfer)
+        item["inspiration_score"] = item["scores"]["components"].get("inspiration")
     boundary = build_boundary(
         candidates, [by_name[name] for name in returned_names],
         boundary_request, rejected_directions=rejected,
         negative_directions=negatives,
     ).to_dict()
     delta = store.save_boundary_snapshot(search_id, "rank", boundary)
+    assignments = sum(len(by_name[item["repo"].lower()].get("mechanisms") or []) for item in ranked_items)
+    redundancy = round(
+        max(0, assignments - len(boundary["presented_mechanisms"])) / max(1, assignments), 3,
+    )
+    summary = boundary_summary(
+        ranked_items, presented_before, boundary["presented_mechanisms"], redundancy,
+    )
     result = {
         "schema_version": 2, "search_id": search_id,
         "stale": bool(session["stale"]), "incomplete_phase": session["incomplete_phase"],
         "buckets": {"popular": popular, "gems": gems, "adjacent": adjacent},
         "boundary": boundary, "boundary_delta": delta,
+        "boundary_summary": summary,
+        "newly_presented_mechanisms": summary["new_mechanisms_introduced"],
         "coverage": {
             "recalled": len(candidates), "assessed": len(assessments), "eligible": len(eligible),
-            "returned": len(popular) + len(gems) + len(adjacent),
-            "adjacent_share": round(len(adjacent) / max(1, len(popular) + len(gems) + len(adjacent)), 3),
+            "returned": len(ranked_items),
+            "adjacent_share": round(len(adjacent) / max(1, len(ranked_items)), 3),
             "mechanism_count": len(boundary["recalled_mechanisms"]),
             "presented_mechanism_count": len(boundary["presented_mechanisms"]),
-            "mechanism_redundancy": round(
-                max(
-                    0,
-                    sum(len(by_name[item["repo"].lower()].get("mechanisms") or [])
-                        for item in popular + gems + adjacent)
-                    - len(boundary["presented_mechanisms"]),
-                )
-                / max(
-                    1,
-                    sum(len(by_name[item["repo"].lower()].get("mechanisms") or [])
-                        for item in popular + gems + adjacent),
-                ),
-                3,
-            ),
+            "mechanism_redundancy": redundancy,
             "boundary_gain": len(delta["new_mechanisms"]),
             "direction_coverage": round(
                 len(boundary["explored_directions"])
                 / max(1, len(boundary["explored_directions"]) + len(boundary["unexplored_directions"])),
                 3,
             ),
+            "anchor_count": summary["anchor_count"],
+            "edge_count": summary["edge_count"],
+            "leap_count": summary["leap_count"],
+            "wildcard_count": summary["wildcard_count"],
         },
     }
     store.save_ranking(search_id, result)

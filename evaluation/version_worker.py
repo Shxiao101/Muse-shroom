@@ -122,6 +122,9 @@ def main(argv: list[str] | None = None) -> int:
                     "direction_coverage": (output.get("coverage") or {}).get(
                         "direction_coverage", 0.0
                     ),
+                    "newly_presented_mechanism_count": len(
+                        (output.get("boundary_delta") or {}).get("new_presented_mechanisms") or []
+                    ),
                 },
                 "loop_diagnostics": loop_diagnostics,
                 "stale": bool(output.get("stale", False)),
