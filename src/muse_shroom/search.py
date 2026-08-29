@@ -705,6 +705,11 @@ class SearchEngine:
         state = default_session_state()
         self._pool_cap = self._limit_for(mode)
         state["candidate_limit"] = self._pool_cap
+        state["max_iterations"] = self.max_iterations
+        state["session_query_budget"] = self.session_query_budget
+        state["queries_per_iteration"] = self.queries_per_iteration
+        state["readme_enrich_per_iteration"] = self.readme_enrich_per_iteration
+        state["relation_budget"] = self.relation_budget
         self.store.save_session_state(search_id, state)
         candidates: dict[str, dict[str, Any]] = {}
         stale = False
@@ -772,11 +777,20 @@ class SearchEngine:
             iteration=int(state.get("iteration") or 0),
             queries_used=self.store.query_count(search_id),
             relation_calls_used=int(state.get("relation_calls_used") or 0),
-            max_iterations=self.max_iterations,
-            queries_per_iteration=self.queries_per_iteration,
-            session_query_budget=self.session_query_budget,
-            readme_enrich_per_iteration=self.readme_enrich_per_iteration,
-            relation_budget=self.relation_budget,
+            max_iterations=int(state["max_iterations"]) if "max_iterations" in state else self.max_iterations,
+            queries_per_iteration=(
+                int(state["queries_per_iteration"]) if "queries_per_iteration" in state
+                else self.queries_per_iteration
+            ),
+            session_query_budget=(
+                int(state["session_query_budget"]) if "session_query_budget" in state
+                else self.session_query_budget
+            ),
+            readme_enrich_per_iteration=(
+                int(state["readme_enrich_per_iteration"]) if "readme_enrich_per_iteration" in state
+                else self.readme_enrich_per_iteration
+            ),
+            relation_budget=int(state["relation_budget"]) if "relation_budget" in state else self.relation_budget,
         )
         coverage = {
             "queries_executed": self.store.query_count(search_id),
@@ -805,11 +819,17 @@ class SearchEngine:
             consecutive_no_gain=int(state.get("consecutive_no_gain") or 0),
         )
         mode = str(session.get("mode") or "quick")
+        can_iterate = (
+            mode == "deep"
+            and remaining["iterations"] > 0
+            and remaining["queries"] > 0
+            and not hard
+        )
         if self.store.get_ranking(search_id):
             next_action = "done"
         elif mode != "deep":
             next_action = "rank"
-        elif hard or remaining["iterations"] <= 0 or remaining["queries"] <= 0:
+        elif not can_iterate:
             next_action = "rank"
         else:
             next_action = "iterate"
@@ -822,6 +842,7 @@ class SearchEngine:
             "boundary": boundary,
             "remaining_budget": remaining,
             "next_action": next_action,
+            "can_iterate": can_iterate,
             "stale": bool(session["stale"]),
             "incomplete_phase": session.get("incomplete_phase"),
         }

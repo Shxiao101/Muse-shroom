@@ -7,6 +7,7 @@ from muse_shroom import github as github_module
 from muse_shroom.iteration import session_loop_diagnostics
 from muse_shroom.models import ContractError, SearchHypothesis, SearchRequest
 from muse_shroom.queries import hypothesis_queries, query_fingerprint
+from muse_shroom.ranking import rank_search
 from muse_shroom.search import SearchEngine
 from muse_shroom.storage import Store
 
@@ -441,6 +442,7 @@ class AgenticLoopTests(unittest.TestCase):
         self.assertEqual(viewed["search_id"], first["search_id"])
         self.assertEqual(viewed["mode"], "deep")
         self.assertEqual(viewed["next_action"], "iterate")
+        self.assertTrue(viewed["can_iterate"])
         self.assertIn("observation", viewed)
         self.assertIn("remaining_budget", viewed)
         self.assertIn("boundary", viewed)
@@ -448,6 +450,55 @@ class AgenticLoopTests(unittest.TestCase):
         self.assertEqual(github.request_counts, calls_before)
         self.assertEqual(snapshots_after, snapshots_before)
         self.assertEqual(queries_after, queries_before)
+
+    def test_observe_allows_user_requested_iterate_after_rank(self):
+        item = repo("focus/timer", 4, description="Pomodoro timer")
+        github = FrozenGitHub(
+            [("focus", [item]), ("pomodoro", [item]), ("biofeedback", [item])],
+            readmes={"focus/timer": "# Timer\nPomodoro.\n## Usage\nRun it."},
+        )
+        request = SearchRequest.from_dict({
+            "request": "focus",
+            "problem_concepts": ["focus"],
+            "mechanisms": ["pomodoro"],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                engine = SearchEngine(store, github, relation_budget=0)
+                first = engine.search(request, "deep")
+                stored = store.get_candidate("focus/timer", first["search_id"])
+                excerpt = next(
+                    evidence["id"] for evidence in stored["evidence"]
+                    if evidence["kind"] == "readme_excerpt"
+                )
+                rank_search(store, first["search_id"], [{
+                    "repo": "focus/timer", "relevance": 90, "uniqueness": 70,
+                    "usability": 80, "difficulty": "easy", "use_case": "Pomodoro workflow",
+                    "category": "focus", "artifact_type": "application",
+                    "reasons": [{"text": "Documented workflow", "evidence_ids": [excerpt]}],
+                    "risks": [{
+                        "text": "Check metadata",
+                        "evidence_ids": ["repo:focus/timer:metadata"],
+                    }],
+                }])
+                after_rank = SearchEngine(store, None).observe(first["search_id"])
+                continued = engine.iterate(first["search_id"], {
+                    "decision": "continue",
+                    "reason": "user asked for more",
+                    "concepts": ["biofeedback"],
+                })
+                exhausted = SearchEngine(
+                    store, github, relation_budget=0, max_iterations=0,
+                ).search(request, "deep", refresh=True)
+                blocked = SearchEngine(store, None).observe(exhausted["search_id"])
+            finally:
+                store.close()
+
+        self.assertEqual(after_rank["next_action"], "done")
+        self.assertTrue(after_rank["can_iterate"])
+        self.assertEqual(continued["search_id"], first["search_id"])
+        self.assertFalse(blocked["can_iterate"])
 
     def test_deep_mode_uses_a_larger_candidate_pool_than_quick(self):
         item = repo("focus/timer", 4, description="Pomodoro timer")

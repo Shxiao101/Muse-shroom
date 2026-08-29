@@ -26,6 +26,7 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn("should_stop", self.skill)
         self.assertIn("还有吗", self.skill)
         self.assertIn("muse-shroom observe", self.skill)
+        self.assertIn("can_iterate", self.skill)
         self.assertIn("next_action", self.skill)
         self.assertIn("display_order", (REFERENCES / "result-contract.md").read_text(encoding="utf-8"))
         hypothesis = (REFERENCES / "hypothesis-contract.md").read_text(encoding="utf-8")
@@ -34,6 +35,7 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn("DOM focus", hypothesis)
         self.assertIn("行为干预", hypothesis)
         self.assertIn("observe --search-id", hypothesis)
+        self.assertIn("can_iterate", hypothesis)
 
     def test_hypothesis_contract_keeps_expand_as_compatibility_only(self):
         hypothesis = (REFERENCES / "hypothesis-contract.md").read_text(encoding="utf-8")

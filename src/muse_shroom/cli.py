@@ -63,6 +63,8 @@ def _persist_output(payload: Any, output_path: str) -> dict[str, Any]:
             receipt["assessment_candidate_count"] = payload["assessment_candidate_count"]
         if payload.get("next_action"):
             receipt["next_action"] = payload["next_action"]
+        if "can_iterate" in payload:
+            receipt["can_iterate"] = payload["can_iterate"]
         if "iteration" in payload:
             receipt["iteration"] = payload["iteration"]
         if payload.get("stop_reason"):

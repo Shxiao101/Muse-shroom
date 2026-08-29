@@ -112,6 +112,7 @@ class StorageAndCliTests(unittest.TestCase):
             observed = json.loads(stdout.getvalue())
             self.assertEqual(observed["search_id"], saved["search_id"])
             self.assertEqual(observed["next_action"], "rank")
+            self.assertFalse(observed["can_iterate"])
             self.assertNotIn("candidates", observed)
 
     def test_identical_search_is_reused_without_github(self):

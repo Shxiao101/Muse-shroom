@@ -46,7 +46,7 @@ Direction fields are not interchangeable:
 
 Do not write a new positive preference into `negative_directions` or `rejected_directions`. Discovered terms are not searched and do not become mechanisms until listed in `promote_discovered_terms` or `add_exploration_directions` and later matched by description, Topics, or README evidence.
 
-Restore a session with `muse-shroom observe --search-id SEARCH_ID` before deciding to iterate again. That command is read-only: no GitHub requests, no new iteration, no boundary writes.
+Restore a session with `muse-shroom observe --search-id SEARCH_ID` before deciding to iterate again. That command is read-only: no GitHub requests, no new iteration, no boundary writes. `next_action=done` means the default flow has finished and you must not continue automatically. `can_iterate=true` means a user request for more (还有吗 / 再找一些 / 换点不同的) may still `iterate` this `search_id`. `can_iterate` is true only for deep mode with remaining iterations, remaining queries, and no hard stop.
 
 `strategies` may include `keyword`, `relationship`, `seed`, `code`, and `owner`. Omit it to run keyword reformulation only; supplying `seeds` or `filenames` also enables the matching retrieval strategy.
 

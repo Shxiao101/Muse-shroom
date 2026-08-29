@@ -48,9 +48,9 @@ Each continue picks a few directions only, in this order: correct obvious semant
 
 Write a hypothesis per [hypothesis-contract.md](references/hypothesis-contract.md). `muse-shroom iterate --search-id ID --refinement HYPOTHESIS`. On stop, still call iterate with `decision=stop` so the session records the ending.
 
-If the user later says “还有吗”, “再找一些”, or “换点不同的”, reuse this `search_id`. First run `muse-shroom observe --search-id ID` (read-only; no GitHub calls). Then decide from that observation: iterate if budget remains, otherwise explain why the session should stop. Start a new search only when the need itself changed.
+If the user later says “还有吗”, “再找一些”, or “换点不同的”, reuse this `search_id`. First run `muse-shroom observe --search-id ID` (read-only; no GitHub calls). `next_action=done` means do not continue on your own. If the user explicitly asked for more and `can_iterate` is true, iterate the same session; if `can_iterate` is false, explain that the budget or a hard stop is exhausted. Start a new search only when the need itself changed.
 
-Map follow-up preferences into the hypothesis fields in [hypothesis-contract.md](references/hypothesis-contract.md), not chat memory. Do not write a new positive preference into `negative_directions` or `rejected_directions`. After rank, `observe` reports `next_action=done`; do not iterate unless the user asks for more.
+Map follow-up preferences into the hypothesis fields in [hypothesis-contract.md](references/hypothesis-contract.md), not chat memory. Do not write a new positive preference into `negative_directions` or `rejected_directions`.
 
 ## 7. Assess
 
