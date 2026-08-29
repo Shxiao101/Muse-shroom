@@ -239,6 +239,47 @@ class BoundaryRankingTests(unittest.TestCase):
         self.assertEqual(result["coverage"]["returned"], 1)
         self.assertEqual(ignored["coverage"]["returned"], 1)
 
+    def test_display_order_explanations_ignore_internal_selection_order(self):
+        adjacent = _item("adj/commit", 80, "Commitment device", kinds=["adjacent"])
+        popular = _item("big/commit", 25000, "Commitment device", kinds=["core"])
+        gem = _item("tiny/bio", 12, "Biofeedback focus sensor", kinds=["core"])
+        for item in (adjacent, popular, gem):
+            annotate_candidate_mechanisms(item, FOCUS_REQUEST)
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.create_search("s", FOCUS_REQUEST.to_dict(), "deep")
+            for item in (adjacent, popular, gem):
+                store.save_candidate("s", item)
+            result = rank_search(store, "s", [
+                _assess(adjacent, relevance=78, uniqueness=80, transferability=70),
+                _assess(popular, relevance=90, uniqueness=60),
+                _assess(gem, relevance=76, uniqueness=85, transferability=60),
+            ])
+            store.close()
+        buckets = result["buckets"]
+        display = [name.lower() for name in result["display_order"]]
+        expected = [
+            item["repo"].lower()
+            for name in ("popular", "gems", "adjacent")
+            for item in buckets[name]
+        ]
+        self.assertEqual(display, expected)
+        self.assertEqual(result["next_action"], "done")
+        self.assertTrue(result["selection_order"])
+        by_name = {
+            item["repo"].lower(): item
+            for bucket in buckets.values() for item in bucket
+        }
+        self.assertTrue(any(
+            "commitment" in name.casefold()
+            for name in by_name["big/commit"]["new_mechanisms"]
+        ))
+        self.assertEqual(by_name["adj/commit"]["new_mechanisms"], [])
+        self.assertEqual(
+            [name.casefold() for name in result["newly_presented_mechanisms"]],
+            [name.casefold() for name in result["boundary_summary"]["new_mechanisms_introduced"]],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

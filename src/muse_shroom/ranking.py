@@ -187,6 +187,22 @@ def _explain_ranked_items(items: list[dict[str, Any]], presented_before: Iterabl
             presented.add(name.casefold())
 
 
+def _display_mechanism_sequence(items: list[dict[str, Any]],
+                                presented_before: Iterable[str]) -> tuple[list[str], list[str]]:
+    keys = {str(name).casefold() for name in presented_before if str(name).strip()}
+    shown = [str(name) for name in presented_before if str(name).strip()]
+    introduced: list[str] = []
+    for item in items:
+        for name in candidate_mechanism_names(item):
+            key = name.casefold()
+            if key in keys:
+                continue
+            keys.add(key)
+            shown.append(name)
+            introduced.append(name)
+    return shown, introduced
+
+
 def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[str, Any]:
     session = store.load_search(search_id)
     candidates = session["candidates"]
@@ -336,9 +352,12 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
     used.update(item["repo"].lower() for item in popular)
     gem_pool = [item for item in eligible if item["repo"].lower() not in used and item["scores"]["components"]["underexposure"] >= 20]
     gems = _mmr_select(gem_pool, 4, adjacent + popular, "gem", boundary_ctx=boundary_ctx)
-    pick_order = adjacent + popular + gems
-    _explain_ranked_items(pick_order, presented_before, by_name)
-    ranked_items = popular + gems + adjacent
+    selection_items = adjacent + popular + gems
+    display_items = popular + gems + adjacent
+    _explain_ranked_items(display_items, presented_before, by_name)
+    ranked_items = display_items
+    selection_order = [item["repo"] for item in selection_items]
+    display_order = [item["repo"] for item in display_items]
     returned_names = {item["repo"].lower() for item in ranked_items}
     boundary = build_boundary(
         candidates, [by_name[name] for name in returned_names],
@@ -350,16 +369,20 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
     redundancy = round(
         max(0, assignments - len(boundary["presented_mechanisms"])) / max(1, assignments), 3,
     )
-    summary = boundary_summary(
-        ranked_items, presented_before, boundary["presented_mechanisms"], redundancy,
-    )
+    shown, introduced = _display_mechanism_sequence(display_items, presented_before)
+    summary = boundary_summary(ranked_items, presented_before, shown, redundancy)
+    summary["new_mechanisms_introduced"] = introduced
+    summary["mechanisms_shown"] = shown
     result = {
         "schema_version": 2, "search_id": search_id,
         "stale": bool(session["stale"]), "incomplete_phase": session["incomplete_phase"],
+        "next_action": "done",
         "buckets": {"popular": popular, "gems": gems, "adjacent": adjacent},
+        "display_order": display_order,
+        "selection_order": selection_order,
         "boundary": boundary, "boundary_delta": delta,
         "boundary_summary": summary,
-        "newly_presented_mechanisms": summary["new_mechanisms_introduced"],
+        "newly_presented_mechanisms": introduced,
         "coverage": {
             "recalled": len(candidates), "assessed": len(assessments), "eligible": len(eligible),
             "returned": len(ranked_items),

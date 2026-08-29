@@ -2,6 +2,8 @@
 
 Pass a JSON object to `muse-shroom search --request FILE --mode quick|deep`.
 
+Iterate hypotheses use [hypothesis-contract.md](hypothesis-contract.md). Assessments use [assessment-contract.md](assessment-contract.md). Rank output uses [result-contract.md](result-contract.md).
+
 ```json
 {
   "request": "the user's original request",
@@ -23,66 +25,10 @@ Pass a JSON object to `muse-shroom search --request FILE --mode quick|deep`.
 }
 ```
 
-`request` and at least one `problem_concepts` entry are required. Weights and `exploration_level` range from 0 to 1. Omit constraints the user did not state; do not invent minimum Star counts because low exposure is part of hidden-gem discovery. The v0.3 `core_concepts` and `adjacent_concepts` fields remain accepted and are converted to `problem_concepts` and `exploration_directions`, but new requests should use the v0.4 fields.
+`request` and at least one `problem_concepts` entry are required. Weights and `exploration_level` range from 0 to 1. Omit constraints the user did not state; do not invent minimum Star counts because low exposure is part of hidden-gem discovery.
 
-`term` is the concept the user understands. Terms and aliases are single-line strings up to 160 characters. `aliases` are GitHub-common expressions, English terms, or domain words for the same concept; at most four per concept. Aliases in one group count as one concept and must not be used to stack scores. Mechanism aliases receive their own bounded recall opportunities. Keep generic artifact words such as `skill`, `tool`, `AI`, and `agent` out of problem/mechanism concepts and aliases when a specific term is available. Put the desired form in `artifact_types`. The CLI ignores standalone generic problem terms and will not emit an isolated `"Skill"` query.
+`term` is the concept the user understands. Terms and aliases are single-line strings up to 160 characters. `aliases` are GitHub-common expressions, English terms, or domain words for the same concept; at most four per concept. Aliases in one group count as one concept and must not be used to stack scores. Keep generic artifact words such as `skill`, `tool`, `AI`, and `agent` out of problem/mechanism concepts and aliases when a specific term is available. Put the desired form in `artifact_types`. The CLI ignores standalone generic problem terms and will not emit an isolated `"Skill"` query.
 
-Preserve concise Chinese capability phrases verbatim, for example `正文配图`, `文章配图`, `专注管理`, and `自控训练`; do not split them by character, whitespace, or Latin-word rules, and do not add particle special cases. Keep English concepts to one to three meaningful words. For a non-English need, add at least one GitHub-common English expression as an alias. Do not use a fixed translation dictionary; choose the alias from the confirmed interpretation.
+Preserve concise Chinese capability phrases verbatim, for example `正文配图`, `文章配图`, `专注管理`, and `自控训练`. Keep English concepts to one to three meaningful words. For a non-English need, add at least one GitHub-common English expression as an alias. Do not use a fixed translation dictionary.
 
-For a deep-mode iteration, pass a search hypothesis to `muse-shroom iterate --search-id SEARCH_ID --refinement FILE`. `decision` must be exactly `continue` or `stop`.
-
-```json
-{
-  "decision": "continue",
-  "reason": "why this round is worth running",
-  "target_direction": "unexplored boundary direction",
-  "target_mechanism": "mechanism to verify",
-  "concepts": ["reformulated search term"],
-  "aliases": ["GitHub-common wording"],
-  "negative_directions": ["confirmed wrong sense, such as DOM focus"],
-  "anchors": ["term observed in evidence"],
-  "seeds": ["owner/repo selected from candidates"],
-  "filenames": ["distinctive filename observed in evidence"],
-  "exclude": ["newly observed irrelevant meaning"],
-  "rejected_directions": ["direction the user explicitly rejected"],
-  "promote_discovered_terms": ["digital wellbeing"],
-  "add_exploration_directions": [
-    {"term": "commitment device", "reason": "related blocking strategy", "evidence": "discovered_term"}
-  ],
-  "strategies": ["keyword"]
-}
-```
-
-To stop, pass:
-
-```json
-{
-  "decision": "stop",
-  "stop_reason": "low expected boundary gain",
-  "remaining_unexplored_directions": ["biofeedback"]
-}
-```
-
-`negative_directions` are session-level wrong senses produced by the Agent. They are not `rejected_directions`, which are user refusals. Discovered terms are not searched and do not become mechanisms until listed in `promote_discovered_terms` or `add_exploration_directions` and later matched by description, Topics, or README evidence.
-
-`strategies` may include `keyword`, `relationship`, `seed`, `code`, and `owner`. Omit it to run keyword reformulation only; supplying `seeds` or `filenames` also enables the matching retrieval strategy. The CLI skips queries that match history after normalizing case and token order, and it skips terms covered by `negative_directions`.
-
-Default deep-mode budget: 3 iterations after the initial search, 6 keyword queries per iteration, 30 session search queries, 15 README enrichments per iteration, a 250-candidate pool (quick mode stays at 100), and the existing relationship-call budget. Observation `stop.reasons` are hard stops; `stop.signals` are advisory. Hard stops are `agent_stop`, `max_iterations`, `query_budget_exhausted`, `duplicate_queries`, and `consecutive_no_gain` (two successive rounds without meaningful boundary gain). `no_new_mechanism`, a single `no_boundary_gain`, and `directions_covered` stay in `stop.signals` and do not set `should_stop`. Query history stores `skip_reason`; `duplicate_query_rate` counts only `skip_reason=duplicate`. Stop and refused-continue events are appended to iteration history and do not replace an executed round.
-
-The older `expand` command still accepts:
-
-```json
-{
-  "concepts": ["domain term or alias"],
-  "adjacent_concepts": ["supported nearby direction"],
-  "anchors": ["term observed in first-round evidence"],
-  "seeds": ["owner/repo selected from first-round candidates"],
-  "filenames": ["distinctive filename observed in first-round evidence"],
-  "exclude": ["newly observed irrelevant meaning"],
-  "rejected_directions": ["direction explicitly rejected by the user"]
-}
-```
-
-Keep all arrays short and evidence-driven. Muse-shroom generates and validates GitHub syntax.
-
-All hypothesis and refinement values must be arrays of strings except `decision`, `reason`, `stop_reason`, `target_direction`, `target_mechanism`, and `add_exploration_directions` objects. Seeds use `owner/repo`; filenames must be basenames such as `SKILL.md`, never paths or query fragments. Original search constraints remain active during iteration.
+The CLI still accepts v0.3 `core_concepts` / `adjacent_concepts` and converts them. New Agent requests must use the v0.4 fields above. Muse-shroom generates GitHub syntax; do not write qualifiers yourself.

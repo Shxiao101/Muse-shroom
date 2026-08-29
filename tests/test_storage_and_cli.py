@@ -102,6 +102,8 @@ class StorageAndCliTests(unittest.TestCase):
             self.assertEqual(receipt["output"], output_path)
             saved = json.loads(Path(output_path).read_text(encoding="utf-8"))
             self.assertEqual(saved["search_id"], receipt["search_id"])
+            self.assertEqual(saved["next_action"], "rank")
+            self.assertEqual(receipt["next_action"], "rank")
             self.assertLessEqual(len(saved["candidates"][0]["evidence"]), 3)
 
     def test_identical_search_is_reused_without_github(self):

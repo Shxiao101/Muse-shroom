@@ -30,49 +30,24 @@ muse-shroom --help
 
 ## 工作流
 
-1. Agent 根据 [`examples/music-ai.request.json`](examples/music-ai.request.json) 生成结构化需求。
-2. 快搜调用一次 `search` 和一次 `rank`；深搜在两者之间根据 `observation` 进行有限次 `iterate`。`expand` 仍可作为兼容入口。
-3. CLI 先按概念覆盖探针富化最多 30 个候选的 README，再重排出最多 12 个短名单，只为短名单读取最新 Release。
-4. Agent 只根据候选中的 evidence IDs 生成语义评价，功能结论必须引用 README 片段。
-5. CLI 合并元数据、关系证据、类型质量规则和评价，输出热门、宝藏、跨界三个榜。
+宿主 Agent 使用 [`skills/github-inspiration-discovery`](skills/github-inspiration-discovery/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → `rank`。快搜是 `search` 然后 `rank`。
 
-v0.4 的 request 将语义拆成三层：`problem_concepts` 描述真正要解决的问题，`mechanisms` 描述具体解决机制，`exploration_directions` 描述值得继续外扩的方向。旧版 `core_concepts` / `adjacent_concepts` 仍可读取，并会转换为新结构。
+v0.4 请求把语义拆成 `problem_concepts`、`mechanisms`、`exploration_directions`。契约在 Skill 的 `references/` 下。
 
 ```console
 muse-shroom search --request examples/music-ai.request.json --mode quick --output search.json
 muse-shroom iterate --search-id SEARCH_ID --refinement examples/focus-tools.hypothesis.json --output iterate.json
-muse-shroom expand --search-id SEARCH_ID --refinement examples/music-ai.refinement.json --output expand.json
 muse-shroom rank --search-id SEARCH_ID --assessments assessments.json --output rank.json
-muse-shroom inspect Quackone/homr_gui --search-id SEARCH_ID
-muse-shroom candidates --search-id SEARCH_ID --scope assessment
-muse-shroom candidates --search-id SEARCH_ID --scope all
-muse-shroom feedback Quackone/homr_gui --relevant yes --interesting yes --too-hard no
 ```
 
-所有命令默认输出 JSON。JSON 输入请保存为 UTF-8 文件；Windows 不要使用 `Get-Content | muse-shroom`。`-` 只接受非交互 stdin。`--output` 把完整 JSON 写到文件，控制台只打印回执。相同 request 和 mode 默认复用已完成的 `search_id`，需要新召回时加 `--refresh`。`--format text` 仅用于人工查看。`--data-dir` 可覆盖平台标准数据目录，便于隔离测试。
+所有命令默认输出 JSON。JSON 输入请保存为 UTF-8 文件；Windows 不要使用 `Get-Content | muse-shroom`。`--output` 把完整 JSON 写到文件，控制台只打印回执。相同 request 和 mode 默认复用已完成的 `search_id`，需要新召回时加 `--refresh`。`--data-dir` 可覆盖平台数据目录。
 
-## 结果约束
+## 结果
 
-- 快搜最多生成 12 条受控查询；别名不会扩大 API 预算。同一概念组的多次字段查询会增强可信度，但 RRF 按概念组封顶。
-- 搜索输出使用 schema v2；`candidate_count` 是完整召回数，`candidates` 只包含最多 12 个评审短名单。
-- `boundary.recalled_mechanisms` 统计完整候选池中有证据的机制，`presented_mechanisms` 只统计当前短名单或最终榜单；同一机制下多个仓库只计一次。
-- mechanism 只根据 description、Topics 或 README 的实际文本匹配；仓库名与 Star 不作为机制证据。公开候选使用统一的 `mechanism_match` evidence，`mechanisms[].evidence_ids` 可直接引用，不再内嵌第二套 evidence。
-- `boundary.mechanism_origins` 将有证据的请求机制与经证据确认的 exploration direction 分组；`discovered_terms` 仍是未确认术语，不会自动升级为 mechanism。
-- `explored_directions` / `unexplored_directions` 描述探索边界，`discovered_terms` 保存少量有机制证据的候选 Topics。Agent 必须把术语写入 hypothesis 才会进入下一轮搜索，命中 description / Topics / README 后才升级为 mechanism。
-- `negative_directions` 记录本 session 已确认的错误语义，与用户拒绝的 `rejected_directions` 分开保存，并会避免继续消耗这些方向的 query 预算。
-- search、每次 iterate / expand、rank 都会在 SQLite 中追加 boundary snapshot；iterate 快照带有 `iteration`、hypothesis 和 query summary。输出的 `boundary_delta` 是相对前一 snapshot 的新增机制、展示机制、方向和术语。
-- 深搜默认最多 3 轮 iterate；每轮最多 6 条新 query，整个 session 最多 30 条 search query，候选池默认 250（快搜 100）。observation 的 `stop.reasons` 是硬停止，`stop.signals` 只是建议；连续两轮没有 meaningful boundary gain 才会硬停止。
-- 探针阶段同一 owner 最多 2 个；短名单仍最多 12 条。Deep 会按当前机制覆盖动态分配席位（含 boundary lane），同一机制默认只占一个高优先级席位。
-- rank 仍输出 popular / gems / adjacent；每条推荐带 `boundary_role`（anchor / edge / leap / wildcard）、`new_mechanisms`、`why_different`，以及 `boundary_summary`。Novelty 只在有机制证据且 relevance 足够时加分，不会压过明显更相关的主流项目。
-- 低 Star 不能单独成为宝藏或桥接理由；必须有非泛化查询来源和 README/元数据相关证据。
-- 搜索 JSON 不超过 30KB；超限时只压缩次要字段，并保留每个候选的首条概念证据及其 README SHA/行号。每个候选默认最多 3 条证据：metadata、concept_match（或有效 overview），以及检测到的 mechanism_match；没有 mechanism 时第三条保留 usage/installation。Release 放在 `latest_release`，不占 evidence 槽。
-- 关系扩散（README 链接、反向引用、Fork、作者仓库）只在 hypothesis 选择 `relationship` / `seed` / `owner` 时运行，不再每轮默认全开。
-- README 富化最多提取 5 条不可信证据片段；默认 JSON 每个候选最多保留 3 条证据。原文仅保存在 SQLite。
-- 单独的 `skill` / `AI` / `agent` 不会作为核心查询；形态词应放在 `artifact_types`。中文概念整词保留。概念可以带最多 4 个 GitHub 常用别名，同一组别名只计一次分。
-- 推荐理由必须引用已采集的 evidence ID；功能结论必须引用具体 README 片段，未知能力应写成 `unknown`。
-- 榜单上限为热门 4、宝藏 4、跨界 2；质量不足时少给，不填充。
-- Star 增长只有本地存在至少两个快照时才显示。
-- 网络失败、5xx 或确认限流时，只有对应请求已有缓存才返回旧数据并标记 `stale`；401、404 和查询错误不会回退缓存。
+- 快搜一次 `search` 后 `rank`（`next_action` 为 `rank` 再为 `done`）；深搜在中间按 `observation` 做有限次 `iterate`。
+- rank 输出 `popular` / `gems` / `adjacent`，以及 `display_order`。按该顺序解释 `boundary_role`、`new_mechanisms`、`why_different`。
+- 评估必须引用候选上的 evidence ID；功能结论必须引用 README 片段。
+- 实现细节见 [`docs/search-internals.md`](docs/search-internals.md)。
 
 ## 开发验证
 
@@ -88,4 +63,4 @@ python -m unittest discover -s tests -v
 
 ## 首版边界
 
-首版没有 MCP、独立模型 API、Web UI、云服务、后台监控、自动安装项目或全量 GitHub 索引。`skills/github-inspiration-discovery` 可独立复制到支持 Skills 的宿主中。
+没有 MCP、独立模型 API、Web UI、云服务、后台监控、自动安装项目或全量 GitHub 索引。`skills/github-inspiration-discovery` 可独立复制到支持 Skills 的宿主中。
