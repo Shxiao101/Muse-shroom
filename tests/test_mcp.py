@@ -1,3 +1,4 @@
+import importlib.util
 import io
 import json
 import os
@@ -15,12 +16,36 @@ from muse_shroom.storage import Store
 
 from tests.helpers import FrozenGitHub, repo
 
-try:
+
+def _mcp_installed() -> bool:
+    return importlib.util.find_spec("mcp") is not None
+
+
+def _dedicated_mcp_run() -> bool:
+    args = sys.argv
+    if "discover" in args:
+        return False
+    return Path(sys.argv[0]).name == "test_mcp.py" or any(
+        token == "tests.test_mcp"
+        or token.startswith("tests.test_mcp.")
+        or Path(str(token)).name == "test_mcp.py"
+        for token in args
+    )
+
+
+# Skip only when the mcp package is absent during a full Core discover.
+# `python -m unittest tests.test_mcp` without the extra, or an installed but
+# incompatible SDK, must fail rather than skip.
+if not _mcp_installed():
+    if _dedicated_mcp_run():
+        raise ImportError(
+            "MCP tests require the optional extra. "
+            "Install with: python -m pip install -e '.[mcp]' "
+            "then run: python -m unittest tests.test_mcp -v"
+        )
+else:
     from mcp import Client, StdioServerParameters
     from muse_shroom.mcp_server import create_server
-    MCP_AVAILABLE = True
-except ImportError:
-    MCP_AVAILABLE = False
 
 
 SECRET = "ghp_TESTTOKEN_DO_NOT_LEAK_9x7k"
@@ -91,7 +116,11 @@ def _dump(value) -> str:
         return str(value)
 
 
-@unittest.skipUnless(MCP_AVAILABLE, "mcp extra is not installed")
+@unittest.skipUnless(
+    _mcp_installed(),
+    "mcp extra is not installed; Core tests do not require it. "
+    "For MCP tests: python -m pip install -e '.[mcp]' && python -m unittest tests.test_mcp -v",
+)
 class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_in_memory_lists_expected_tools(self):
         mcp = create_server(data_dir=tempfile.mkdtemp(), github=_github(), log_level="ERROR")

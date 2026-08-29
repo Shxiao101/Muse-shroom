@@ -50,6 +50,15 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn("iterate", hypothesis)
         self.assertIn("compatibility", hypothesis.lower())
 
+    def test_readme_documents_mcp_test_install_and_command(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('mcp = ["mcp>=2.0.0,<3"]', pyproject)
+        self.assertIn('test = ["mcp>=2.0.0,<3"]', pyproject)
+        self.assertIn('python -m pip install -e ".[mcp]"', readme)
+        self.assertIn("python -m unittest tests.test_mcp -v", readme)
+        self.assertIn('python -m pip install -e ".[test]"', readme)
+
 
 if __name__ == "__main__":
     unittest.main()

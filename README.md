@@ -84,11 +84,20 @@ Cursor（`.cursor/mcp.json`）：
 
 ## 开发验证
 
-稳定测试使用冻结的 GitHub 响应和行为断言，不把特定仓库视为唯一正确答案：
+稳定测试使用冻结的 GitHub 响应和行为断言，不把特定仓库视为唯一正确答案。Core 测试不强制安装 MCP extra：
 
 ```console
 python -m unittest discover -s tests -v
 ```
+
+MCP 是 CLI 用户的 optional extra。专项 MCP 测试必须先安装 extra；缺依赖或 SDK API 不兼容时应失败，而不是 skip：
+
+```console
+python -m pip install -e ".[mcp]"
+python -m unittest tests.test_mcp -v
+```
+
+完整本地验证也可 `python -m pip install -e ".[test]"` 后再跑 `discover`。后续若增加 CI，MCP job 需要显式安装 `.[mcp]` 并运行 `python -m unittest tests.test_mcp -v`。
 
 设置 `MUSE_SHROOM_LIVE_SMOKE=1` 后可选运行实时 API 认证/契约 smoke test；稳定测试不会执行它。
 

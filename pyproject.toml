@@ -15,6 +15,7 @@ dependencies = ["keyring>=25,<26"]
 
 [project.optional-dependencies]
 mcp = ["mcp>=2.0.0,<3"]
+test = ["mcp>=2.0.0,<3"]
 
 [project.scripts]
 muse-shroom = "muse_shroom.cli:main"
