@@ -11,8 +11,19 @@ from .github import (
     ApiResult, GitHubAuthenticationError, GitHubClient, GitHubError,
     GitHubNotFoundError,
 )
-from .models import Refinement, SearchRequest, repo_key
-from .queries import build_queries, code_filename_query, indexed_groups, refinement_queries, reverse_reference_query
+from .iteration import (
+    apply_hypothesis_to_request, build_observation, default_session_state,
+    hard_stop_reason, iteration_stop_reasons, merge_unique, remaining_budget,
+)
+from .models import (
+    DEFAULT_MAX_ITERATIONS, DEFAULT_QUERIES_PER_ITERATION,
+    DEFAULT_README_ENRICH_PER_ITERATION, DEFAULT_SESSION_QUERY_BUDGET,
+    Refinement, SearchHypothesis, SearchRequest, repo_key,
+)
+from .queries import (
+    build_queries, code_filename_query, hypothesis_queries, indexed_groups,
+    query_fingerprint, reverse_reference_query,
+)
 from .selection import (
     SHORTLIST_LIMIT, candidate_allowed, covered_core_ids, probe_select,
     shortlist_select, uncovered_core_terms,
@@ -300,12 +311,20 @@ def public_candidate(candidate: dict[str, Any], *, detailed: bool = False) -> di
 
 class SearchEngine:
     def __init__(self, store: Store, github: GitHubClient, *, candidate_limit: int = 100,
-                 enrich_limit: int = 30, relation_budget: int = 40) -> None:
+                 enrich_limit: int = 30, relation_budget: int = 40,
+                 max_iterations: int = DEFAULT_MAX_ITERATIONS,
+                 queries_per_iteration: int = DEFAULT_QUERIES_PER_ITERATION,
+                 session_query_budget: int = DEFAULT_SESSION_QUERY_BUDGET,
+                 readme_enrich_per_iteration: int = DEFAULT_README_ENRICH_PER_ITERATION) -> None:
         self.store = store
         self.github = github
         self.candidate_limit = candidate_limit
         self.enrich_limit = enrich_limit
         self.relation_budget = relation_budget
+        self.max_iterations = max_iterations
+        self.queries_per_iteration = queries_per_iteration
+        self.session_query_budget = session_query_budget
+        self.readme_enrich_per_iteration = readme_enrich_per_iteration
 
     @staticmethod
     def _items(result: ApiResult) -> list[dict[str, Any]]:
@@ -313,10 +332,30 @@ class SearchEngine:
         return list(data.get("items", [])) if isinstance(data, dict) else list(data)
 
     def _recall(self, search_id: str, queries: Iterable[dict[str, Any]],
-                candidates: dict[str, dict[str, Any]]) -> tuple[bool, str | None]:
+                candidates: dict[str, dict[str, Any]], *,
+                iteration: int = 0,
+                known_fingerprints: set[str] | None = None
+                ) -> tuple[bool, str | None, list[dict[str, Any]], list[dict[str, Any]]]:
         stale = False
         cached_at = None
-        query_list = list(queries)
+        known = set(known_fingerprints or [])
+        executable: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for spec in queries:
+            fingerprint = str(spec.get("fingerprint") or query_fingerprint(spec["query"]))
+            item = {**spec, "fingerprint": fingerprint}
+            if fingerprint in known:
+                skipped.append({**item, "skipped": True, "skip_reason": "duplicate"})
+                self.store.add_query_history(
+                    search_id, item["query"], item["kind"], 0,
+                    iteration=iteration, fingerprint=fingerprint, skipped=True,
+                )
+                continue
+            known.add(fingerprint)
+            executable.append(item)
+        query_list = executable
+        if not query_list:
+            return stale, cached_at, executable, skipped
         with ThreadPoolExecutor(max_workers=min(6, max(1, len(query_list)))) as pool:
             futures = {
                 pool.submit(self.github.search_repositories, spec["query"], 10, spec.get("sort", "stars")): index
@@ -334,6 +373,10 @@ class SearchEngine:
             cached_at = cached_at or result.cached_at
             items = self._items(result)
             self.store.add_query(search_id, query_spec["query"], query_spec["kind"], len(items))
+            self.store.add_query_history(
+                search_id, query_spec["query"], query_spec["kind"], len(items),
+                iteration=iteration, fingerprint=query_spec["fingerprint"], skipped=False,
+            )
             for position, repo in enumerate(items, 1):
                 if repo.get("private") or repo.get("visibility") not in {None, "public"}:
                     continue
@@ -341,6 +384,9 @@ class SearchEngine:
                 if not key:
                     continue
                 candidate = candidates.setdefault(key, dict(repo))
+                if "first_seen_iteration" not in candidate:
+                    candidate["first_seen_iteration"] = iteration
+                candidate["last_seen_iteration"] = iteration
                 path = {
                     "kind": "query", "query": query_spec["query"],
                     "query_kind": query_spec["kind"], "position": position,
@@ -364,8 +410,8 @@ class SearchEngine:
                 if lane_kind not in kinds:
                     kinds.append(lane_kind)
                 if len(candidates) >= self.candidate_limit:
-                    return stale, cached_at
-        return stale, cached_at
+                    return stale, cached_at, executable, skipped
+        return stale, cached_at, executable, skipped
 
     @staticmethod
     def _concept_terms(request: SearchRequest) -> list[str]:
@@ -487,7 +533,8 @@ class SearchEngine:
         return stale, cached_at, failed
 
     def _add_related(self, candidates: dict[str, dict[str, Any]], repo: dict[str, Any],
-                     parent: str, relation: str, detail: str, request: SearchRequest) -> None:
+                     parent: str, relation: str, detail: str, request: SearchRequest,
+                     *, iteration: int = 0) -> None:
         key = repo_key(repo)
         if repo.get("private") or repo.get("visibility") not in {None, "public"}:
             return
@@ -498,6 +545,9 @@ class SearchEngine:
         if key not in candidates and len(candidates) >= self.candidate_limit:
             return
         candidate = candidates.setdefault(key, dict(repo))
+        if "first_seen_iteration" not in candidate:
+            candidate["first_seen_iteration"] = iteration
+        candidate["last_seen_iteration"] = iteration
         path = {
             "kind": "relationship", "from": parent, "relation": relation, "detail": detail
         }
@@ -518,7 +568,8 @@ class SearchEngine:
             })
 
     def _expand_relations(self, search_id: str, candidates: dict[str, dict[str, Any]],
-                          request: SearchRequest, seed_names: list[str] | None = None) -> tuple[bool, str | None, int, bool]:
+                          request: SearchRequest, seed_names: list[str] | None = None,
+                          *, iteration: int = 0) -> tuple[bool, str | None, int, bool]:
         stale = False
         cached_at = None
         calls = 0
@@ -539,7 +590,10 @@ class SearchEngine:
                     result = self.github.repository(linked)
                     stale = stale or result.stale
                     cached_at = cached_at or result.cached_at
-                    self._add_related(candidates, result.data, full_name, "readme_link", linked, request)
+                    self._add_related(
+                        candidates, result.data, full_name, "readme_link", linked, request,
+                        iteration=iteration,
+                    )
                 except GitHubNotFoundError:
                     continue
                 except GitHubAuthenticationError:
@@ -555,8 +609,15 @@ class SearchEngine:
                     cached_at = cached_at or result.cached_at
                     items = self._items(result)
                     self.store.add_query(search_id, query, "reverse_readme", len(items))
+                    self.store.add_query_history(
+                        search_id, query, "reverse_readme", len(items),
+                        iteration=iteration, fingerprint=query_fingerprint(query), skipped=False,
+                    )
                     for item in items:
-                        self._add_related(candidates, item, full_name, "reverse_readme", query, request)
+                        self._add_related(
+                            candidates, item, full_name, "reverse_readme", query, request,
+                            iteration=iteration,
+                        )
                 except GitHubAuthenticationError:
                     raise
                 except GitHubError:
@@ -568,7 +629,10 @@ class SearchEngine:
                     stale = stale or result.stale
                     cached_at = cached_at or result.cached_at
                     for item in self._items(result):
-                        self._add_related(candidates, item, full_name, "fork", "GitHub forks endpoint", request)
+                        self._add_related(
+                            candidates, item, full_name, "fork", "GitHub forks endpoint", request,
+                            iteration=iteration,
+                        )
                 except GitHubAuthenticationError:
                     raise
                 except GitHubError:
@@ -581,12 +645,31 @@ class SearchEngine:
                     stale = stale or result.stale
                     cached_at = cached_at or result.cached_at
                     for item in self._items(result):
-                        self._add_related(candidates, item, full_name, "same_owner", owner, request)
+                        self._add_related(
+                            candidates, item, full_name, "same_owner", owner, request,
+                            iteration=iteration,
+                        )
                 except GitHubAuthenticationError:
                     raise
                 except GitHubError:
                     failed = True
         return stale, cached_at, calls, failed
+
+    @staticmethod
+    def _query_summary(executed: list[dict[str, Any]], skipped: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "executed": [
+                {key: item[key] for key in ("query", "kind", "term") if key in item}
+                for item in executed
+            ],
+            "skipped": [
+                {"query": item.get("query"), "reason": item.get("skip_reason", "duplicate")}
+                for item in skipped
+            ],
+            "executed_count": len(executed),
+            "skipped_count": len(skipped),
+            "duplicate_rate": round(len(skipped) / max(1, len(executed) + len(skipped)), 3),
+        }
 
     def search(self, request: SearchRequest, mode: str, *, refresh: bool = False) -> dict[str, Any]:
         if mode not in {"quick", "deep"}:
@@ -598,13 +681,18 @@ class SearchEngine:
                 return self._reused_output(existing, mode)
         search_id = uuid.uuid4().hex
         self.store.create_search(search_id, request.to_dict(), mode, fingerprint)
+        self.store.save_session_state(search_id, default_session_state())
         candidates: dict[str, dict[str, Any]] = {}
         stale = False
         cached_at = None
         incomplete = None
         enriched_count = 0
+        executed: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
         try:
-            s, cache_time = self._recall(search_id, build_queries(request), candidates)
+            s, cache_time, executed, skipped = self._recall(
+                search_id, build_queries(request), candidates, iteration=0,
+            )
             stale, cached_at = stale or s, cached_at or cache_time
             candidates = {
                 name: item for name, item in candidates.items()
@@ -625,71 +713,171 @@ class SearchEngine:
         output = self._finish(
             search_id, candidates, request, stale, cached_at, incomplete,
             enriched_count=enriched_count, relation_calls=0, code_calls=0,
-            stage="search", rejected_directions=[],
+            stage="search", rejected_directions=[], iteration=0,
+            query_summary=self._query_summary(executed, skipped),
         )
-        output["next_action"] = "expand" if mode == "deep" else "rank"
+        output["next_action"] = "iterate" if mode == "deep" else "rank"
+        if output.get("observation"):
+            output["observation"]["stop"]["should_stop"] = False
         _compact_search_output(output)
         return output
 
     def expand(self, search_id: str, refinement: dict[str, Any]) -> dict[str, Any]:
+        return self._run_iteration(
+            search_id, SearchHypothesis.from_refinement(Refinement.from_dict(refinement)),
+            stage="expand",
+        )
+
+    def iterate(self, search_id: str, refinement: dict[str, Any]) -> dict[str, Any]:
+        return self._run_iteration(search_id, SearchHypothesis.from_dict(refinement), stage="iterate")
+
+    def _run_iteration(self, search_id: str, hypothesis: SearchHypothesis, *, stage: str) -> dict[str, Any]:
         session = self.store.load_search(search_id)
-        parsed_refinement = Refinement.from_dict(refinement)
-        request_data = dict(session["request"])
-        request_data["exclusions"] = list(request_data.get("exclusions", [])) + parsed_refinement.exclude
-        request = SearchRequest.from_dict(request_data)
+        state = self.store.get_session_state(search_id)
+        request = SearchRequest.from_dict(session["request"])
         candidates = {repo_key(item): item for item in session["candidates"]}
+        previous_snapshot = self.store.latest_boundary_snapshot(search_id) or {}
+        previous_boundary = previous_snapshot.get("boundary") or {}
+        previous_origins = previous_boundary.get("mechanism_origins") or {}
+        queries_used = self.store.query_count(search_id)
+        remaining = remaining_budget(
+            iteration=state["iteration"],
+            queries_used=queries_used,
+            relation_calls_used=int(state.get("relation_calls_used") or 0),
+            max_iterations=self.max_iterations,
+            queries_per_iteration=self.queries_per_iteration,
+            session_query_budget=self.session_query_budget,
+            readme_enrich_per_iteration=self.readme_enrich_per_iteration,
+            relation_budget=self.relation_budget,
+        )
+        hard = hard_stop_reason(
+            iteration=state["iteration"], queries_used=queries_used,
+            max_iterations=self.max_iterations,
+            session_query_budget=self.session_query_budget,
+            decision=hypothesis.decision,
+        )
+        if hard:
+            state["stop_reason"] = hard
+            self.store.save_session_state(search_id, state)
+            self.store.save_iteration(
+                search_id, state["iteration"], stage, hypothesis.to_dict(),
+                self._query_summary([], []), hard,
+            )
+            output = self._finish(
+                search_id, candidates, request, bool(session["stale"]), None,
+                session.get("incomplete_phase"),
+                enriched_count=0, relation_calls=0, code_calls=0, stage=stage,
+                rejected_directions=list(previous_boundary.get("rejected_directions") or []),
+                iteration=state["iteration"],
+                negative_directions=list(state.get("negative_directions") or []),
+                hypothesis=hypothesis.to_dict(),
+                query_summary=self._query_summary([], []),
+                stop_reasons=[hard], hard_stop=True, remaining=remaining,
+                exploration_additions=list(state.get("exploration_additions") or []),
+            )
+            output["next_action"] = "rank"
+            output["stop_reason"] = hard
+            _compact_search_output(output)
+            return output
+
+        iteration = int(state["iteration"]) + 1
+        negatives = merge_unique(state.get("negative_directions") or [], hypothesis.negative_directions)
+        rejected = merge_unique(
+            previous_boundary.get("rejected_directions") or [], hypothesis.rejected_directions,
+        )
+        request, additions = apply_hypothesis_to_request(
+            request, hypothesis, iteration=iteration,
+            existing_additions=list(state.get("exploration_additions") or []),
+        )
+        self.store.update_search_request(search_id, request.to_dict())
+        strategies = hypothesis.resolved_strategies()
         stale = bool(session["stale"])
         cached_at = None
+        executed: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
         recall_failed = False
-        try:
-            recalled_stale, recalled_cache = self._recall(
-                search_id, refinement_queries(parsed_refinement, request), candidates
+        query_limit = 10 if stage == "expand" else remaining["queries_this_round"]
+        if "keyword" in strategies and query_limit:
+            planned, blocked = hypothesis_queries(
+                hypothesis, request, negatives=negatives,
+                known_fingerprints=self.store.query_fingerprints(search_id),
+                limit=query_limit,
             )
-            stale, cached_at = stale or recalled_stale, recalled_cache
-        except GitHubAuthenticationError:
-            raise
-        except GitHubError:
-            recall_failed = True
+            for item in blocked:
+                self.store.add_query_history(
+                    search_id, item["query"], item["kind"], 0,
+                    iteration=iteration, fingerprint=item["fingerprint"], skipped=True,
+                )
+            skipped.extend(blocked)
+            try:
+                recalled_stale, recalled_cache, executed, recall_skipped = self._recall(
+                    search_id, planned, candidates, iteration=iteration,
+                    known_fingerprints=self.store.query_fingerprints(search_id),
+                )
+                stale, cached_at = stale or recalled_stale, recalled_cache
+                skipped.extend(recall_skipped)
+            except GitHubAuthenticationError:
+                raise
+            except GitHubError:
+                recall_failed = True
         candidates = {
             name: item for name, item in candidates.items()
             if candidate_allowed(item, request, include_readme="readme" in item)
         }
         code_calls = 0
         code_failed = False
-        for filename in parsed_refinement.filenames:
-            query = code_filename_query(filename, parsed_refinement.concepts[0] if parsed_refinement.concepts else None)
-            code_calls += 1
-            try:
-                result = self.github.search_code(query, per_page=10)
-                stale = stale or result.stale
-                cached_at = cached_at or result.cached_at
-                items = self._items(result)
-                self.store.add_query(search_id, query, "key_file", len(items))
-                for item in items:
-                    repository = item.get("repository", item)
-                    self._add_related(
-                        candidates, repository, repository.get("full_name", "unknown"),
-                        "key_file", filename, request,
+        if "code" in strategies:
+            for filename in hypothesis.filenames:
+                query = code_filename_query(
+                    filename, hypothesis.concepts[0] if hypothesis.concepts else None,
+                )
+                code_calls += 1
+                try:
+                    result = self.github.search_code(query, per_page=10)
+                    stale = stale or result.stale
+                    cached_at = cached_at or result.cached_at
+                    items = self._items(result)
+                    self.store.add_query(search_id, query, "key_file", len(items))
+                    self.store.add_query_history(
+                        search_id, query, "key_file", len(items),
+                        iteration=iteration, fingerprint=query_fingerprint(query), skipped=False,
                     )
-            except GitHubAuthenticationError:
-                raise
-            except GitHubError:
-                code_failed = True
-        readme_budget = self.enrich_limit
+                    for item in items:
+                        repository = item.get("repository", item)
+                        self._add_related(
+                            candidates, repository, repository.get("full_name", "unknown"),
+                            "key_file", filename, request, iteration=iteration,
+                        )
+                except GitHubAuthenticationError:
+                    raise
+                except GitHubError:
+                    code_failed = True
+        readme_budget = self.enrich_limit if stage == "expand" else self.readme_enrich_per_iteration
         s, cache_time, first_enrich_failed, first_enriched = self._enrich(
             candidates, request, limit=readme_budget,
         )
         stale, cached_at = stale or s, cached_at or cache_time
-        s, cache_time, calls, relation_failed = self._expand_relations(
-            search_id, candidates, request, parsed_refinement.seeds or None
-        )
-        stale, cached_at = stale or s, cached_at or cache_time
-        remaining = max(0, readme_budget - first_enriched)
+        calls = 0
+        relation_failed = False
+        want_relations = any(name in strategies for name in ("relationship", "seed", "owner"))
+        if want_relations and remaining["relation_calls"]:
+            original_budget = self.relation_budget
+            if stage == "iterate":
+                self.relation_budget = remaining["relation_calls"]
+            try:
+                s, cache_time, calls, relation_failed = self._expand_relations(
+                    search_id, candidates, request,
+                    hypothesis.seeds or None, iteration=iteration,
+                )
+            finally:
+                self.relation_budget = original_budget
+            stale, cached_at = stale or s, cached_at or cache_time
+        leftover = max(0, readme_budget - first_enriched)
         second_enrich_failed = False
         second_enriched = 0
-        if remaining:
+        if leftover:
             s, cache_time, second_enrich_failed, second_enriched = self._enrich(
-                candidates, request, limit=remaining,
+                candidates, request, limit=leftover,
             )
             stale, cached_at = stale or s, cached_at or cache_time
         if calls >= self.relation_budget:
@@ -702,17 +890,67 @@ class SearchEngine:
             incomplete = "relationship_partial_failure"
         else:
             incomplete = None
+        state["iteration"] = iteration
+        state["negative_directions"] = negatives
+        state["exploration_additions"] = additions
+        state["relation_calls_used"] = int(state.get("relation_calls_used") or 0) + calls
+        after_remaining = remaining_budget(
+            iteration=iteration,
+            queries_used=self.store.query_count(search_id),
+            relation_calls_used=state["relation_calls_used"],
+            max_iterations=self.max_iterations,
+            queries_per_iteration=self.queries_per_iteration,
+            session_query_budget=self.session_query_budget,
+            readme_enrich_per_iteration=self.readme_enrich_per_iteration,
+            relation_budget=self.relation_budget,
+        )
         output = self._finish(
             search_id, candidates, request, stale, cached_at, incomplete,
             enriched_count=first_enriched + second_enriched,
-            relation_calls=calls, code_calls=code_calls, stage="expand",
-            rejected_directions=list(dict.fromkeys(
-                list((self.store.latest_boundary_snapshot(search_id) or {}).get("boundary", {}).get(
-                    "rejected_directions", []
-                )) + parsed_refinement.rejected_directions
-            )),
+            relation_calls=calls, code_calls=code_calls, stage=stage,
+            rejected_directions=rejected, iteration=iteration,
+            negative_directions=negatives, hypothesis=hypothesis.to_dict(),
+            query_summary=self._query_summary(executed, skipped),
+            remaining=after_remaining, exploration_additions=additions,
         )
-        output["next_action"] = "rank"
+        delta = output.get("boundary_delta") or {}
+        executed_any = bool(executed) or calls > 0 or code_calls > 0
+        skipped_all = bool(skipped) and not executed_any
+        reasons = iteration_stop_reasons(
+            hard_reason=("duplicate_queries" if skipped_all else None),
+            delta=delta, boundary=output.get("boundary") or {},
+            skipped_all=skipped_all, executed=executed_any,
+            previous_origins=previous_origins,
+            current_origins=(output.get("boundary") or {}).get("mechanism_origins"),
+        )
+        if "no_boundary_gain" in reasons:
+            state["consecutive_no_gain"] = int(state.get("consecutive_no_gain") or 0) + 1
+        else:
+            state["consecutive_no_gain"] = 0
+        hard_after = any(reason in reasons for reason in (
+            "duplicate_queries", "max_iterations", "query_budget_exhausted", "agent_stop",
+        ))
+        next_action = "rank" if (
+            stage == "expand" or hard_after or "directions_covered" in reasons
+            or after_remaining["iterations"] <= 0
+        ) else "iterate"
+        stop_reason = reasons[0] if (next_action == "rank" and reasons) else None
+        state["stop_reason"] = stop_reason
+        self.store.save_session_state(search_id, state)
+        self.store.save_iteration(
+            search_id, iteration, stage, hypothesis.to_dict(),
+            self._query_summary(executed, skipped), stop_reason,
+        )
+        if output.get("observation"):
+            output["observation"]["stop"] = {
+                "should_stop": bool(reasons),
+                "hard": hard_after,
+                "reasons": reasons,
+            }
+            output["observation"]["remaining_budget"] = after_remaining
+        output["next_action"] = next_action
+        if stop_reason:
+            output["stop_reason"] = stop_reason
         _compact_search_output(output)
         return output
 
@@ -739,7 +977,15 @@ class SearchEngine:
     def _finish(self, search_id: str, candidates: dict[str, dict[str, Any]], request: SearchRequest,
                 stale: bool, cached_at: str | None, incomplete: str | None, *,
                 enriched_count: int, relation_calls: int, code_calls: int,
-                stage: str, rejected_directions: list[str]) -> dict[str, Any]:
+                stage: str, rejected_directions: list[str],
+                iteration: int = 0,
+                negative_directions: list[str] | None = None,
+                hypothesis: dict[str, Any] | None = None,
+                query_summary: dict[str, Any] | None = None,
+                stop_reasons: list[str] | None = None,
+                hard_stop: bool = False,
+                remaining: dict[str, int] | None = None,
+                exploration_additions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         candidates = {
             name: item for name, item in candidates.items()
             if candidate_allowed(item, request, include_readme="readme" in item)
@@ -778,10 +1024,14 @@ class SearchEngine:
             enriched_count=enriched_count, relation_calls=relation_calls,
             code_calls=code_calls, lane_counts=lane_counts,
         )
+        negatives = list(negative_directions or [])
         boundary = build_boundary(
-            candidates.values(), selected, request, rejected_directions=rejected_directions,
+            candidates.values(), selected, request,
+            rejected_directions=rejected_directions,
+            negative_directions=negatives,
         ).to_dict()
         coverage.update({
+            "iteration": iteration,
             "mechanism_count": len(boundary["recalled_mechanisms"]),
             "presented_mechanism_count": len(boundary["presented_mechanisms"]),
             "direction_coverage": round(
@@ -790,11 +1040,35 @@ class SearchEngine:
                 3,
             ),
         })
-        boundary_delta = self.store.save_boundary_snapshot(search_id, stage, boundary)
-        return self._search_output(
+        summary = query_summary or {"executed": [], "skipped": [], "executed_count": 0, "skipped_count": 0}
+        boundary_delta = self.store.save_boundary_snapshot(
+            search_id, stage, boundary, iteration=iteration,
+            hypothesis=hypothesis, query_summary=summary,
+        )
+        budget = remaining or remaining_budget(
+            iteration=iteration,
+            queries_used=self.store.query_count(search_id),
+            relation_calls_used=relation_calls,
+            max_iterations=self.max_iterations,
+            queries_per_iteration=self.queries_per_iteration,
+            session_query_budget=self.session_query_budget,
+            readme_enrich_per_iteration=self.readme_enrich_per_iteration,
+            relation_budget=self.relation_budget,
+        )
+        output = self._search_output(
             search_id, candidates.values(), selected, stale, cached_at, incomplete, coverage,
             boundary, boundary_delta,
         )
+        reasons = list(stop_reasons or [])
+        output["iteration"] = iteration
+        output["observation"] = build_observation(
+            iteration=iteration, boundary=boundary, boundary_delta=boundary_delta,
+            coverage=coverage, query_summary=summary,
+            candidates=candidates.values(), selected=selected, request=request,
+            remaining=budget, stop_reasons=reasons, hard_stop=hard_stop,
+            exploration_additions=exploration_additions,
+        )
+        return output
 
     def _reused_output(self, search_id: str, mode: str) -> dict[str, Any]:
         session = self.store.load_search(search_id)
@@ -814,14 +1088,17 @@ class SearchEngine:
         )
         coverage["reused"] = True
         coverage["api_calls"] = {}
-        snapshot = self.store.latest_boundary_snapshot(search_id, ("search", "expand")) or {}
+        snapshot = self.store.latest_boundary_snapshot(search_id, ("search", "expand", "iterate")) or {}
+        state = self.store.get_session_state(search_id)
         boundary = build_boundary(
             session["candidates"], selected, request,
             rejected_directions=(snapshot.get("boundary") or {}).get("rejected_directions", []),
+            negative_directions=state.get("negative_directions") or [],
         ).to_dict()
         explored = boundary.get("explored_directions", [])
         unexplored = boundary.get("unexplored_directions", [])
         coverage.update({
+            "iteration": state.get("iteration") or 0,
             "mechanism_count": len(boundary.get("recalled_mechanisms", [])),
             "presented_mechanism_count": len(boundary.get("presented_mechanisms", [])),
             "direction_coverage": round(len(explored) / max(1, len(explored) + len(unexplored)), 3),
@@ -831,8 +1108,27 @@ class SearchEngine:
             session.get("updated_at"), session.get("incomplete_phase"), coverage,
             boundary, snapshot.get("boundary_delta", {}),
         )
+        remaining = remaining_budget(
+            iteration=int(state.get("iteration") or 0),
+            queries_used=self.store.query_count(search_id),
+            relation_calls_used=int(state.get("relation_calls_used") or 0),
+            max_iterations=self.max_iterations,
+            queries_per_iteration=self.queries_per_iteration,
+            session_query_budget=self.session_query_budget,
+            readme_enrich_per_iteration=self.readme_enrich_per_iteration,
+            relation_budget=self.relation_budget,
+        )
+        output["iteration"] = int(state.get("iteration") or 0)
+        output["observation"] = build_observation(
+            iteration=output["iteration"], boundary=boundary,
+            boundary_delta=snapshot.get("boundary_delta") or {},
+            coverage=coverage, query_summary={"executed": [], "skipped": [], "executed_count": 0},
+            candidates=session["candidates"], selected=selected, request=request,
+            remaining=remaining, stop_reasons=[], hard_stop=False,
+            exploration_additions=list(state.get("exploration_additions") or []),
+        )
         output["reused"] = True
-        output["next_action"] = "expand" if mode == "deep" else "rank"
+        output["next_action"] = "iterate" if mode == "deep" else "rank"
         _compact_search_output(output)
         return output
 

@@ -210,9 +210,11 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
     }
     previous_boundary = store.latest_boundary_snapshot(search_id)
     rejected = list((previous_boundary or {}).get("boundary", {}).get("rejected_directions", []))
+    negatives = list((previous_boundary or {}).get("boundary", {}).get("negative_directions", []))
     boundary = build_boundary(
         candidates, [by_name[name] for name in returned_names],
         boundary_request, rejected_directions=rejected,
+        negative_directions=negatives,
     ).to_dict()
     delta = store.save_boundary_snapshot(search_id, "rank", boundary)
     result = {

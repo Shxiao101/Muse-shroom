@@ -88,6 +88,19 @@ def main(argv: list[str] | None = None) -> int:
             boundary = dict(output.get("boundary") or {})
             assignments = sum(len(item.get("mechanisms") or []) for item in candidates)
             presented_count = len(boundary.get("presented_mechanisms") or [])
+            try:
+                iteration_module = importlib.import_module("muse_shroom.iteration")
+                loop_diagnostics = iteration_module.session_loop_diagnostics(
+                    store, output["search_id"]
+                )
+            except (ImportError, AttributeError, KeyError):
+                loop_diagnostics = {
+                    "iterations_used": 0, "mode": "single-pass",
+                    "queries_per_iteration": [], "new_mechanisms_per_iteration": [],
+                    "boundary_gain_per_iteration": [], "duplicate_query_rate": 0.0,
+                    "candidate_novelty_per_iteration": [], "stop_reason": None,
+                    "unexplored_directions_at_stop": list(boundary.get("unexplored_directions") or []),
+                }
             results.append({
                 "prompt_id": prompt["id"], "category": prompt["category"],
                 "request": prompt["request"],
@@ -110,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
                         "direction_coverage", 0.0
                     ),
                 },
+                "loop_diagnostics": loop_diagnostics,
                 "stale": bool(output.get("stale", False)),
                 "incomplete_phase": output.get("incomplete_phase"),
                 "candidates": [_compact(candidate) for candidate in candidates],

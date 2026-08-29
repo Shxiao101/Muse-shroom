@@ -32,7 +32,7 @@ class GoldenDiscoveryTests(unittest.TestCase):
             "adjacent_concepts": ["OMR GUI"], "artifact_types": ["application"]
         }), "deep")
         self.assertIsNone(first["incomplete_phase"])
-        self.assertEqual(first["next_action"], "expand")
+        self.assertEqual(first["next_action"], "iterate")
         result = engine.expand(first["search_id"], {
             "concepts": ["optical music recognition"], "anchors": ["homr"], "seeds": ["liebharc/homr"]
         })

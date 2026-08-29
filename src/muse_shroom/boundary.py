@@ -190,22 +190,43 @@ def discovered_terms(candidates: Iterable[dict[str, Any]], request: SearchReques
     return [display[key] for key in ranked[:limit]]
 
 
+def mechanism_distribution(candidates: Iterable[dict[str, Any]]) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    display: dict[str, str] = {}
+    for candidate in candidates:
+        for mechanism in candidate.get("mechanisms") or []:
+            name = str(mechanism.get("name") or "").strip()
+            if not name:
+                continue
+            key = name.casefold()
+            counts[key] += 1
+            display.setdefault(key, name)
+    return {
+        display[key]: counts[key]
+        for key in sorted(counts, key=lambda item: (-counts[item], item))
+    }
+
+
 def build_boundary(candidates: Iterable[dict[str, Any]], presented: Iterable[dict[str, Any]],
-                   request: SearchRequest, *, rejected_directions: Iterable[str] = ()) -> SearchBoundary:
+                   request: SearchRequest, *, rejected_directions: Iterable[str] = (),
+                   negative_directions: Iterable[str] = ()) -> SearchBoundary:
     candidate_list = list(candidates)
     presented_list = list(presented)
     recalled = mechanism_names(candidate_list)
     presented_names = mechanism_names(presented_list)
     recalled_keys = {value.casefold() for value in recalled}
     rejected = list(dict.fromkeys(str(value).strip() for value in rejected_directions if str(value).strip()))
+    negatives = list(dict.fromkeys(str(value).strip() for value in negative_directions if str(value).strip()))
     rejected_keys = {value.casefold() for value in rejected}
+    negative_keys = {value.casefold() for value in negatives}
+    blocked_keys = rejected_keys | negative_keys
     explored = [
         concept.term for concept in request.exploration_directions
-        if concept.term.casefold() in recalled_keys and concept.term.casefold() not in rejected_keys
+        if concept.term.casefold() in recalled_keys and concept.term.casefold() not in blocked_keys
     ]
     unexplored = [
         concept.term for concept in request.exploration_directions
-        if concept.term.casefold() not in recalled_keys and concept.term.casefold() not in rejected_keys
+        if concept.term.casefold() not in recalled_keys and concept.term.casefold() not in blocked_keys
     ]
     return SearchBoundary(
         recalled_mechanisms=recalled,
@@ -220,6 +241,7 @@ def build_boundary(candidates: Iterable[dict[str, Any]], presented: Iterable[dic
         unexplored_directions=unexplored,
         rejected_directions=rejected,
         discovered_terms=discovered_terms(candidate_list, request),
+        negative_directions=negatives,
     )
 
 

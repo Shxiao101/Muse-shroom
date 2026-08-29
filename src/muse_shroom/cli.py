@@ -63,6 +63,10 @@ def _persist_output(payload: Any, output_path: str) -> dict[str, Any]:
             receipt["assessment_candidate_count"] = payload["assessment_candidate_count"]
         if payload.get("next_action"):
             receipt["next_action"] = payload["next_action"]
+        if "iteration" in payload:
+            receipt["iteration"] = payload["iteration"]
+        if payload.get("stop_reason"):
+            receipt["stop_reason"] = payload["stop_reason"]
         if payload.get("reused"):
             receipt["reused"] = True
         buckets = payload.get("buckets")
@@ -94,6 +98,10 @@ def build_parser() -> argparse.ArgumentParser:
     expand.add_argument("--search-id", required=True)
     expand.add_argument("--refinement", required=True, help="refinement JSON path or - for stdin")
     expand.add_argument("--output", help="write full JSON to this UTF-8 file and print a short receipt")
+    iterate = sub.add_parser("iterate", help="run one bounded search iteration for a search_id")
+    iterate.add_argument("--search-id", required=True)
+    iterate.add_argument("--refinement", required=True, help="hypothesis JSON path or - for stdin")
+    iterate.add_argument("--output", help="write full JSON to this UTF-8 file and print a short receipt")
     rank = sub.add_parser("rank")
     rank.add_argument("--search-id", required=True)
     rank.add_argument("--assessments", required=True, help="assessment JSON path or - for stdin")
@@ -171,7 +179,7 @@ def run(args: argparse.Namespace) -> Any:
                 "credential_source": credential.source if credential else None,
                 "credential_error": auth_error,
             }
-        if args.command in {"search", "expand"}:
+        if args.command in {"search", "expand", "iterate"}:
             github = GitHubClient(store)
             engine = SearchEngine(store, github)
             if args.command == "search":
@@ -179,6 +187,8 @@ def run(args: argparse.Namespace) -> Any:
                     SearchRequest.from_dict(_json_input(args.request)), args.mode,
                     refresh=args.refresh,
                 )
+            if args.command == "iterate":
+                return engine.iterate(args.search_id, _json_input(args.refinement))
             return engine.expand(args.search_id, _json_input(args.refinement))
         if args.command == "rank":
             return rank_search(store, args.search_id, _json_input(args.assessments))

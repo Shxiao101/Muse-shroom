@@ -29,7 +29,47 @@ Pass a JSON object to `muse-shroom search --request FILE --mode quick|deep`.
 
 Preserve concise Chinese capability phrases verbatim, for example `正文配图`, `文章配图`, `专注管理`, and `自控训练`; do not split them by character, whitespace, or Latin-word rules, and do not add particle special cases. Keep English concepts to one to three meaningful words. For a non-English need, add at least one GitHub-common English expression as an alias. Do not use a fixed translation dictionary; choose the alias from the confirmed interpretation.
 
-For deep refinement, pass:
+For a deep-mode iteration, pass a search hypothesis to `muse-shroom iterate --search-id SEARCH_ID --refinement FILE`. `decision` must be exactly `continue` or `stop`.
+
+```json
+{
+  "decision": "continue",
+  "reason": "why this round is worth running",
+  "target_direction": "unexplored boundary direction",
+  "target_mechanism": "mechanism to verify",
+  "concepts": ["reformulated search term"],
+  "aliases": ["GitHub-common wording"],
+  "negative_directions": ["confirmed wrong sense, such as DOM focus"],
+  "anchors": ["term observed in evidence"],
+  "seeds": ["owner/repo selected from candidates"],
+  "filenames": ["distinctive filename observed in evidence"],
+  "exclude": ["newly observed irrelevant meaning"],
+  "rejected_directions": ["direction the user explicitly rejected"],
+  "promote_discovered_terms": ["digital wellbeing"],
+  "add_exploration_directions": [
+    {"term": "commitment device", "reason": "related blocking strategy", "evidence": "discovered_term"}
+  ],
+  "strategies": ["keyword"]
+}
+```
+
+To stop, pass:
+
+```json
+{
+  "decision": "stop",
+  "stop_reason": "low expected boundary gain",
+  "remaining_unexplored_directions": ["biofeedback"]
+}
+```
+
+`negative_directions` are session-level wrong senses produced by the Agent. They are not `rejected_directions`, which are user refusals. Discovered terms are not searched and do not become mechanisms until listed in `promote_discovered_terms` or `add_exploration_directions` and later matched by description, Topics, or README evidence.
+
+`strategies` may include `keyword`, `relationship`, `seed`, `code`, and `owner`. Omit it to run keyword reformulation only; supplying `seeds` or `filenames` also enables the matching retrieval strategy. The CLI skips queries that match history after normalizing case and token order, and it skips terms covered by `negative_directions`.
+
+Default deep-mode budget: 3 iterations after the initial search, 6 keyword queries per iteration, 30 session search queries, 15 README enrichments per iteration, and the existing relationship-call budget. Observation includes `remaining_budget` and `stop.reasons`. Hard stops are `max_iterations`, `query_budget_exhausted`, `duplicate_queries`, and `agent_stop`.
+
+The older `expand` command still accepts:
 
 ```json
 {
@@ -45,4 +85,4 @@ For deep refinement, pass:
 
 Keep all arrays short and evidence-driven. Muse-shroom generates and validates GitHub syntax.
 
-All refinement values must be arrays of strings. Seeds use `owner/repo`; filenames must be basenames such as `SKILL.md`, never paths or query fragments. Original search constraints remain active during expansion.
+All hypothesis and refinement values must be arrays of strings except `decision`, `reason`, `stop_reason`, `target_direction`, `target_mechanism`, and `add_exploration_directions` objects. Seeds use `owner/repo`; filenames must be basenames such as `SKILL.md`, never paths or query fragments. Original search constraints remain active during iteration.

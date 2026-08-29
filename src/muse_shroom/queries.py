@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
-from .models import Concept, Refinement, SearchRequest
+from .models import Concept, Refinement, SearchHypothesis, SearchRequest
 
 
 TYPE_TERMS = {
@@ -307,6 +307,99 @@ def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, Any
     take(exploration)
     take(problem)
     return result
+
+
+def query_fingerprint(query: str) -> str:
+    tokens = [token.strip().strip('"').casefold() for token in query.split()]
+    return " ".join(sorted(token for token in tokens if token))
+
+
+def term_blocked_by_negative(term: str, negatives: Iterable[str]) -> bool:
+    from .boundary import _contains_normalized, _normalized
+
+    needle = _normalized(term)
+    if not needle:
+        return True
+    for raw in negatives:
+        negative = _normalized(str(raw))
+        if not negative:
+            continue
+        if needle == negative:
+            return True
+        if _contains_normalized(negative, needle) or _contains_normalized(needle, negative):
+            return True
+    return False
+
+
+def hypothesis_queries(hypothesis: SearchHypothesis, request: SearchRequest,
+                       *, negatives: Iterable[str] = (),
+                       known_fingerprints: Iterable[str] = (),
+                       limit: int = 6) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build this-round keyword queries, skipping negatives and historical duplicates."""
+    suffix = _qualifiers(request)
+    blocked = list(dict.fromkeys(str(value).strip() for value in negatives if str(value).strip()))
+    known = set(known_fingerprints)
+    planned: list[dict[str, Any]] = []
+
+    def add(term: str, kind: str, concept_id: str) -> None:
+        clean = term.strip()
+        if not clean or term_blocked_by_negative(clean, blocked):
+            return
+        quoted = _quote(clean)
+        if not quoted:
+            return
+        query = f"{quoted} in:name,description,topics,readme {suffix}"
+        normalized = " ".join(query.split())
+        item = {
+            "query": normalized, "kind": kind, "sort": "stars",
+            "concept_id": concept_id, "term": clean,
+            "lane_kind": "adjacent" if kind in {"adjacent", "exploration"} else "core",
+            "fingerprint": query_fingerprint(normalized),
+        }
+        if any(existing["query"] == item["query"] for existing in planned):
+            return
+        planned.append(item)
+
+    if hypothesis.target_mechanism:
+        add(hypothesis.target_mechanism, "refinement", "hypothesis:mechanism")
+    if hypothesis.target_direction:
+        add(hypothesis.target_direction, "adjacent", "hypothesis:direction")
+    for index, term in enumerate(hypothesis.concepts):
+        add(term, "refinement", f"refinement:{index}")
+    for index, term in enumerate(hypothesis.aliases):
+        add(term, "refinement", f"hypothesis:alias:{index}")
+    for index, term in enumerate(hypothesis.adjacent_concepts):
+        add(term, "adjacent", f"adjacent:{index}")
+    for index, term in enumerate(hypothesis.promote_discovered_terms):
+        add(term, "adjacent", f"hypothesis:discovered:{index}")
+    for index, addition in enumerate(hypothesis.add_exploration_directions):
+        add(addition.term, "adjacent", f"hypothesis:exploration:{index}")
+    for left in (hypothesis.concepts[:3] or ([hypothesis.target_mechanism] if hypothesis.target_mechanism else [])):
+        for right in hypothesis.anchors[:3]:
+            if not left or term_blocked_by_negative(left, blocked) or term_blocked_by_negative(right, blocked):
+                continue
+            query = f"{_quote(left)} {_quote(right)} in:readme {suffix}"
+            normalized = " ".join(query.split())
+            item = {
+                "query": normalized, "kind": "anchor", "sort": "stars",
+                "concept_id": "hypothesis:anchor", "term": left,
+                "lane_kind": "core", "fingerprint": query_fingerprint(normalized),
+            }
+            if not any(existing["query"] == item["query"] for existing in planned):
+                planned.append(item)
+
+    executed: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for item in planned:
+        if item["fingerprint"] in known:
+            skipped.append({**item, "skipped": True, "skip_reason": "duplicate"})
+            continue
+        if len(executed) >= limit:
+            skipped.append({**item, "skipped": True, "skip_reason": "round_budget"})
+            continue
+        known.add(item["fingerprint"])
+        executed.append(item)
+    return executed, skipped
 
 
 def refinement_queries(refinement: Refinement, request: SearchRequest,

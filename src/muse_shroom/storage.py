@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .boundary import boundary_delta
+from .iteration import default_session_state
 
 
 def utc_now() -> str:
@@ -75,6 +76,25 @@ class Store:
                 search_id TEXT NOT NULL, stage TEXT NOT NULL,
                 boundary_json TEXT NOT NULL, delta_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                iteration INTEGER,
+                hypothesis_json TEXT,
+                query_summary_json TEXT,
+                FOREIGN KEY(search_id) REFERENCES searches(id)
+            );
+            CREATE TABLE IF NOT EXISTS query_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                search_id TEXT NOT NULL, iteration INTEGER NOT NULL DEFAULT 0,
+                query TEXT NOT NULL, kind TEXT NOT NULL,
+                fingerprint TEXT NOT NULL, result_count INTEGER NOT NULL DEFAULT 0,
+                skipped INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(search_id) REFERENCES searches(id)
+            );
+            CREATE TABLE IF NOT EXISTS search_iterations (
+                search_id TEXT NOT NULL, iteration INTEGER NOT NULL,
+                stage TEXT NOT NULL, hypothesis_json TEXT,
+                query_summary_json TEXT, stop_reason TEXT,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(search_id, iteration),
                 FOREIGN KEY(search_id) REFERENCES searches(id)
             );
             CREATE TABLE IF NOT EXISTS feedback (
@@ -90,11 +110,23 @@ class Store:
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(searches)")}
         if "fingerprint" not in columns:
             self.db.execute("ALTER TABLE searches ADD COLUMN fingerprint TEXT")
+        if "session_state_json" not in columns:
+            self.db.execute("ALTER TABLE searches ADD COLUMN session_state_json TEXT")
+        snapshot_columns = {row[1] for row in self.db.execute("PRAGMA table_info(boundary_snapshots)")}
+        if "iteration" not in snapshot_columns:
+            self.db.execute("ALTER TABLE boundary_snapshots ADD COLUMN iteration INTEGER")
+        if "hypothesis_json" not in snapshot_columns:
+            self.db.execute("ALTER TABLE boundary_snapshots ADD COLUMN hypothesis_json TEXT")
+        if "query_summary_json" not in snapshot_columns:
+            self.db.execute("ALTER TABLE boundary_snapshots ADD COLUMN query_summary_json TEXT")
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_searches_fingerprint ON searches(fingerprint, mode)"
         )
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_boundary_search ON boundary_snapshots(search_id, id)"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_query_history_search ON query_history(search_id, id)"
         )
         self.db.commit()
 
@@ -131,6 +163,102 @@ class Store:
             (search_id, query, kind, result_count),
         )
         self.db.commit()
+
+    def add_query_history(self, search_id: str, query: str, kind: str, result_count: int,
+                          *, iteration: int = 0, fingerprint: str, skipped: bool = False) -> None:
+        self.db.execute(
+            """INSERT INTO query_history
+               (search_id, iteration, query, kind, fingerprint, result_count, skipped)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (search_id, iteration, query, kind, fingerprint, result_count, int(skipped)),
+        )
+        self.db.commit()
+
+    def query_history(self, search_id: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "iteration": int(row["iteration"]),
+                "query": row["query"],
+                "kind": row["kind"],
+                "fingerprint": row["fingerprint"],
+                "result_count": int(row["result_count"]),
+                "skipped": bool(row["skipped"]),
+            }
+            for row in self.db.execute(
+                """SELECT iteration, query, kind, fingerprint, result_count, skipped
+                   FROM query_history WHERE search_id=? ORDER BY id""",
+                (search_id,),
+            )
+        ]
+
+    def query_fingerprints(self, search_id: str) -> set[str]:
+        return {
+            str(row[0])
+            for row in self.db.execute(
+                "SELECT DISTINCT fingerprint FROM query_history WHERE search_id=? AND skipped=0",
+                (search_id,),
+            )
+        }
+
+    def get_session_state(self, search_id: str) -> dict[str, Any]:
+        row = self.db.execute(
+            "SELECT session_state_json FROM searches WHERE id=?", (search_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown search_id: {search_id}")
+        if not row["session_state_json"]:
+            return default_session_state()
+        payload = json.loads(row["session_state_json"])
+        state = default_session_state()
+        state.update(payload if isinstance(payload, dict) else {})
+        return state
+
+    def save_session_state(self, search_id: str, state: dict[str, Any]) -> None:
+        self.db.execute(
+            "UPDATE searches SET session_state_json=?, updated_at=? WHERE id=?",
+            (json.dumps(state, ensure_ascii=False), utc_now(), search_id),
+        )
+        self.db.commit()
+
+    def update_search_request(self, search_id: str, request: dict[str, Any]) -> None:
+        self.db.execute(
+            "UPDATE searches SET request_json=?, updated_at=? WHERE id=?",
+            (json.dumps(request, ensure_ascii=False), utc_now(), search_id),
+        )
+        self.db.commit()
+
+    def save_iteration(self, search_id: str, iteration: int, stage: str,
+                       hypothesis: dict[str, Any] | None, query_summary: dict[str, Any],
+                       stop_reason: str | None) -> None:
+        self.db.execute(
+            """INSERT OR REPLACE INTO search_iterations
+               (search_id, iteration, stage, hypothesis_json, query_summary_json, stop_reason, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                search_id, iteration, stage,
+                json.dumps(hypothesis, ensure_ascii=False) if hypothesis is not None else None,
+                json.dumps(query_summary, ensure_ascii=False),
+                stop_reason, utc_now(),
+            ),
+        )
+        self.db.commit()
+
+    def list_iterations(self, search_id: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "iteration": int(row["iteration"]),
+                "stage": row["stage"],
+                "hypothesis": json.loads(row["hypothesis_json"]) if row["hypothesis_json"] else None,
+                "query_summary": json.loads(row["query_summary_json"]) if row["query_summary_json"] else {},
+                "stop_reason": row["stop_reason"],
+                "created_at": row["created_at"],
+            }
+            for row in self.db.execute(
+                """SELECT iteration, stage, hypothesis_json, query_summary_json, stop_reason, created_at
+                   FROM search_iterations WHERE search_id=? ORDER BY iteration""",
+                (search_id,),
+            )
+        ]
 
     def save_candidate(self, search_id: str, candidate: dict[str, Any]) -> None:
         full_name = str(candidate["full_name"]).lower()
@@ -198,16 +326,23 @@ class Store:
         return json.loads(row[0]) if row else None
 
     def save_boundary_snapshot(self, search_id: str, stage: str,
-                               boundary: dict[str, Any]) -> dict[str, Any]:
+                               boundary: dict[str, Any], *,
+                               iteration: int | None = None,
+                               hypothesis: dict[str, Any] | None = None,
+                               query_summary: dict[str, Any] | None = None) -> dict[str, Any]:
         previous = self.latest_boundary_snapshot(search_id)
         delta = boundary_delta(boundary, previous["boundary"] if previous else None).to_dict()
         self.db.execute(
             """INSERT INTO boundary_snapshots
-               (search_id, stage, boundary_json, delta_json, created_at)
-               VALUES (?, ?, ?, ?, ?)""",
+               (search_id, stage, boundary_json, delta_json, created_at,
+                iteration, hypothesis_json, query_summary_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 search_id, stage, json.dumps(boundary, ensure_ascii=False),
                 json.dumps(delta, ensure_ascii=False), utc_now(),
+                iteration,
+                json.dumps(hypothesis, ensure_ascii=False) if hypothesis is not None else None,
+                json.dumps(query_summary, ensure_ascii=False) if query_summary is not None else None,
             ),
         )
         self.db.commit()
@@ -217,12 +352,16 @@ class Store:
         return [
             {
                 "id": int(row["id"]), "stage": row["stage"],
+                "iteration": row["iteration"],
                 "boundary": json.loads(row["boundary_json"]),
                 "boundary_delta": json.loads(row["delta_json"]),
+                "hypothesis": json.loads(row["hypothesis_json"]) if row["hypothesis_json"] else None,
+                "query_summary": json.loads(row["query_summary_json"]) if row["query_summary_json"] else None,
                 "created_at": row["created_at"],
             }
             for row in self.db.execute(
-                """SELECT id,stage,boundary_json,delta_json,created_at
+                """SELECT id,stage,iteration,boundary_json,delta_json,hypothesis_json,
+                          query_summary_json,created_at
                    FROM boundary_snapshots WHERE search_id=? ORDER BY id""",
                 (search_id,),
             )
@@ -230,27 +369,31 @@ class Store:
 
     def latest_boundary_snapshot(self, search_id: str,
                                  stages: tuple[str, ...] = ()) -> dict[str, Any] | None:
+        select = """SELECT id,stage,iteration,boundary_json,delta_json,hypothesis_json,
+                           query_summary_json,created_at
+                    FROM boundary_snapshots"""
         if stages:
             placeholders = ",".join("?" for _ in stages)
             row = self.db.execute(
-                f"""SELECT id,stage,boundary_json,delta_json,created_at
-                    FROM boundary_snapshots
+                f"""{select}
                     WHERE search_id=? AND stage IN ({placeholders})
                     ORDER BY id DESC LIMIT 1""",
                 (search_id, *stages),
             ).fetchone()
         else:
             row = self.db.execute(
-                """SELECT id,stage,boundary_json,delta_json,created_at
-                   FROM boundary_snapshots WHERE search_id=? ORDER BY id DESC LIMIT 1""",
+                f"{select} WHERE search_id=? ORDER BY id DESC LIMIT 1",
                 (search_id,),
             ).fetchone()
         if row is None:
             return None
         return {
             "id": int(row["id"]), "stage": row["stage"],
+            "iteration": row["iteration"],
             "boundary": json.loads(row["boundary_json"]),
             "boundary_delta": json.loads(row["delta_json"]),
+            "hypothesis": json.loads(row["hypothesis_json"]) if row["hypothesis_json"] else None,
+            "query_summary": json.loads(row["query_summary_json"]) if row["query_summary_json"] else None,
             "created_at": row["created_at"],
         }
 

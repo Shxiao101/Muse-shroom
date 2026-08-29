@@ -31,7 +31,7 @@ muse-shroom --help
 ## 工作流
 
 1. Agent 根据 [`examples/music-ai.request.json`](examples/music-ai.request.json) 生成结构化需求。
-2. 快搜调用一次 `search` 和一次 `rank`；深搜在两者之间调用 `expand`。
+2. 快搜调用一次 `search` 和一次 `rank`；深搜在两者之间根据 `observation` 进行有限次 `iterate`。`expand` 仍可作为兼容入口。
 3. CLI 先按概念覆盖探针富化最多 30 个候选的 README，再重排出最多 12 个短名单，只为短名单读取最新 Release。
 4. Agent 只根据候选中的 evidence IDs 生成语义评价，功能结论必须引用 README 片段。
 5. CLI 合并元数据、关系证据、类型质量规则和评价，输出热门、宝藏、跨界三个榜。
@@ -40,6 +40,7 @@ v0.4 的 request 将语义拆成三层：`problem_concepts` 描述真正要解�
 
 ```console
 muse-shroom search --request examples/music-ai.request.json --mode quick --output search.json
+muse-shroom iterate --search-id SEARCH_ID --refinement examples/focus-tools.hypothesis.json --output iterate.json
 muse-shroom expand --search-id SEARCH_ID --refinement examples/music-ai.refinement.json --output expand.json
 muse-shroom rank --search-id SEARCH_ID --assessments assessments.json --output rank.json
 muse-shroom inspect Quackone/homr_gui --search-id SEARCH_ID
@@ -57,12 +58,14 @@ muse-shroom feedback Quackone/homr_gui --relevant yes --interesting yes --too-ha
 - `boundary.recalled_mechanisms` 统计完整候选池中有证据的机制，`presented_mechanisms` 只统计当前短名单或最终榜单；同一机制下多个仓库只计一次。
 - mechanism 只根据 description、Topics 或 README 的实际文本匹配；仓库名与 Star 不作为机制证据。公开候选使用统一的 `mechanism_match` evidence，`mechanisms[].evidence_ids` 可直接引用，不再内嵌第二套 evidence。
 - `boundary.mechanism_origins` 将有证据的请求机制与经证据确认的 exploration direction 分组；`discovered_terms` 仍是未确认术语，不会自动升级为 mechanism。
-- `explored_directions` / `unexplored_directions` 描述探索边界，`discovered_terms` 保存少量有机制证据的候选 Topics，供下一次人工 refinement 使用，但不会自动继续搜索。
-- search、每次 expand、rank 都会在 SQLite 中追加 boundary snapshot；输出的 `boundary_delta` 是相对前一 snapshot 的新增机制、展示机制、方向和术语。
+- `explored_directions` / `unexplored_directions` 描述探索边界，`discovered_terms` 保存少量有机制证据的候选 Topics。Agent 必须把术语写入 hypothesis 才会进入下一轮搜索，命中 description / Topics / README 后才升级为 mechanism。
+- `negative_directions` 记录本 session 已确认的错误语义，与用户拒绝的 `rejected_directions` 分开保存，并会避免继续消耗这些方向的 query 预算。
+- search、每次 iterate / expand、rank 都会在 SQLite 中追加 boundary snapshot；iterate 快照带有 `iteration`、hypothesis 和 query summary。输出的 `boundary_delta` 是相对前一 snapshot 的新增机制、展示机制、方向和术语。
+- 深搜默认最多 3 轮 iterate；每轮最多 6 条新 query，整个 session 最多 30 条 search query。observation 给出 remaining budget 与 stop reasons。
 - 探针阶段同一 owner 最多 2 个；短名单按核心代表 3、小众宝藏 4、跨界灵感 2、概念桥接 3 分配。
 - 低 Star 不能单独成为宝藏或桥接理由；必须有非泛化查询来源和 README/元数据相关证据。
 - 搜索 JSON 不超过 30KB；超限时只压缩次要字段，并保留每个候选的首条概念证据及其 README SHA/行号。每个候选默认最多 3 条证据：metadata、concept_match（或有效 overview），以及检测到的 mechanism_match；没有 mechanism 时第三条保留 usage/installation。Release 放在 `latest_release`，不占 evidence 槽。
-- 深搜从种子沿 README 链接、README 反向引用、Fork 和作者仓库扩散，并受请求预算限制。
+- 关系扩散（README 链接、反向引用、Fork、作者仓库）只在 hypothesis 选择 `relationship` / `seed` / `owner` 时运行，不再每轮默认全开。
 - README 富化最多提取 5 条不可信证据片段；默认 JSON 每个候选最多保留 3 条证据。原文仅保存在 SQLite。
 - 单独的 `skill` / `AI` / `agent` 不会作为核心查询；形态词应放在 `artifact_types`。中文概念整词保留。概念可以带最多 4 个 GitHub 常用别名，同一组别名只计一次分。
 - 推荐理由必须引用已采集的 evidence ID；功能结论必须引用具体 README 片段，未知能力应写成 `unknown`。
