@@ -58,7 +58,18 @@ def _worker(source: Path, *, label: str, mode: str, prompts: Path,
 def _review_candidate(candidate: dict) -> dict:
     evidence = []
     for item in candidate.get("evidence") or []:
-        if item.get("kind") != "readme_excerpt":
+        kind = item.get("kind")
+        if kind == "mechanism_match":
+            facts = item.get("facts") or {}
+            evidence.append({
+                "id": item.get("id"), "kind": "mechanism_match",
+                "facts": {
+                    "mechanisms": list(facts.get("mechanisms") or [])[:3],
+                    "untrusted_source": bool(facts.get("untrusted_source", False)),
+                },
+            })
+            continue
+        if kind != "readme_excerpt":
             continue
         facts = item.get("facts") or {}
         evidence.append({
@@ -71,7 +82,7 @@ def _review_candidate(candidate: dict) -> dict:
                 ) if facts.get(key) is not None
             },
         })
-        if len(evidence) >= 2:
+        if len(evidence) >= 3:
             break
     return {
         "repo": candidate.get("repo"),
@@ -82,6 +93,14 @@ def _review_candidate(candidate: dict) -> dict:
         "language": candidate.get("language"),
         "archived": bool(candidate.get("archived", False)),
         "pushed_at": candidate.get("pushed_at"),
+        "mechanisms": [
+            {
+                key: mechanism.get(key)
+                for key in ("name", "role", "evidence_ids")
+                if mechanism.get(key) is not None
+            }
+            for mechanism in list(candidate.get("mechanisms") or [])[:3]
+        ],
         "evidence": evidence,
     }
 

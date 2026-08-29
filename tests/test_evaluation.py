@@ -185,11 +185,23 @@ class EvaluationTests(unittest.TestCase):
                 "language": "Python", "archived": False, "pushed_at": "2026-08-01T00:00:00Z",
                 "selection_lanes": ["core"], "selection_score_components": {"recall": 99},
                 "discovery_paths": [{"kind": "query"}],
+                "mechanisms": [{
+                    "name": "pomodoro", "role": "mechanism",
+                    "evidence_ids": ["mechanisms"], "matched_terms": ["focus timer"],
+                }],
                 "evidence": [
                     {"id": "metadata", "kind": "github_metadata", "facts": {}},
                     {"id": "readme", "kind": "readme_excerpt", "facts": {
                         "snippet_type": "concept_match", "line_start": 2, "line_end": 3,
                         "sha": "abc", "parent_evidence_id": "parent", "text": "Specific behavior",
+                        "untrusted_source": True,
+                    }},
+                    {"id": "mechanisms", "kind": "mechanism_match", "facts": {
+                        "mechanisms": [{
+                            "mechanism": "pomodoro", "role": "mechanism",
+                            "source_field": "readme", "matched_term": "focus timer",
+                            "text": "Specific focus timer behavior", "untrusted_source": True,
+                        }],
                         "untrusted_source": True,
                     }},
                 ],
@@ -210,8 +222,10 @@ class EvaluationTests(unittest.TestCase):
             self.assertNotIn("selection_lanes", public)
             self.assertNotIn("selection_score_components", public)
             self.assertNotIn("discovery_paths", public)
-            self.assertEqual(len(public["evidence"]), 1)
+            self.assertEqual(len(public["evidence"]), 2)
             self.assertEqual(public["evidence"][0]["facts"]["sha"], "abc")
+            self.assertEqual(public["mechanisms"][0]["evidence_ids"], ["mechanisms"])
+            self.assertEqual(public["evidence"][1]["kind"], "mechanism_match")
 
     @unittest.skipUnless((ROOT / ".git").exists(), "requires the v0.2 Git revision")
     def test_replay_runs_v02_and_current_from_one_cassette(self):

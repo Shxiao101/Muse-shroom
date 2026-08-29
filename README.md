@@ -55,12 +55,13 @@ muse-shroom feedback Quackone/homr_gui --relevant yes --interesting yes --too-ha
 - 快搜最多生成 12 条受控查询；别名不会扩大 API 预算。同一概念组的多次字段查询会增强可信度，但 RRF 按概念组封顶。
 - 搜索输出使用 schema v2；`candidate_count` 是完整召回数，`candidates` 只包含最多 12 个评审短名单。
 - `boundary.recalled_mechanisms` 统计完整候选池中有证据的机制，`presented_mechanisms` 只统计当前短名单或最终榜单；同一机制下多个仓库只计一次。
-- mechanism 只根据 description、Topics 或 README 的实际文本匹配，候选中的 `mechanisms` 会给出来源、命中词和证据；仓库名与 Star 不作为机制证据。
+- mechanism 只根据 description、Topics 或 README 的实际文本匹配；仓库名与 Star 不作为机制证据。公开候选使用统一的 `mechanism_match` evidence，`mechanisms[].evidence_ids` 可直接引用，不再内嵌第二套 evidence。
+- `boundary.mechanism_origins` 将有证据的请求机制与经证据确认的 exploration direction 分组；`discovered_terms` 仍是未确认术语，不会自动升级为 mechanism。
 - `explored_directions` / `unexplored_directions` 描述探索边界，`discovered_terms` 保存少量有机制证据的候选 Topics，供下一次人工 refinement 使用，但不会自动继续搜索。
 - search、每次 expand、rank 都会在 SQLite 中追加 boundary snapshot；输出的 `boundary_delta` 是相对前一 snapshot 的新增机制、展示机制、方向和术语。
 - 探针阶段同一 owner 最多 2 个；短名单按核心代表 3、小众宝藏 4、跨界灵感 2、概念桥接 3 分配。
 - 低 Star 不能单独成为宝藏或桥接理由；必须有非泛化查询来源和 README/元数据相关证据。
-- 搜索 JSON 不超过 30KB；超限时只压缩次要字段，并保留每个候选的首条概念证据及其 README SHA/行号。每个候选默认 3 条证据：metadata、concept_match（或有效 overview）、usage/installation。Release 放在 `latest_release`，不占 evidence 槽。
+- 搜索 JSON 不超过 30KB；超限时只压缩次要字段，并保留每个候选的首条概念证据及其 README SHA/行号。每个候选默认最多 3 条证据：metadata、concept_match（或有效 overview），以及检测到的 mechanism_match；没有 mechanism 时第三条保留 usage/installation。Release 放在 `latest_release`，不占 evidence 槽。
 - 深搜从种子沿 README 链接、README 反向引用、Fork 和作者仓库扩散，并受请求预算限制。
 - README 富化最多提取 5 条不可信证据片段；默认 JSON 每个候选最多保留 3 条证据。原文仅保存在 SQLite。
 - 单独的 `skill` / `AI` / `agent` 不会作为核心查询；形态词应放在 `artifact_types`。中文概念整词保留。概念可以带最多 4 个 GitHub 常用别名，同一组别名只计一次分。

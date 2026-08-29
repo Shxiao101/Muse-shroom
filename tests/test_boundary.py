@@ -8,7 +8,7 @@ from muse_shroom.boundary import annotate_candidate_mechanisms, build_boundary
 from muse_shroom.models import SearchRequest
 from muse_shroom.queries import build_queries
 from muse_shroom.ranking import rank_search
-from muse_shroom.search import SearchEngine
+from muse_shroom.search import SearchEngine, public_candidate
 from muse_shroom.storage import Store
 
 from tests.helpers import FrozenGitHub, repo
@@ -54,18 +54,36 @@ class BoundaryTests(unittest.TestCase):
         request = SearchRequest.from_dict({
             "request": "focus", "problem_concepts": ["focus"],
             "mechanisms": [{"term": "pomodoro", "aliases": ["focus timer"]}],
+            "exploration_directions": ["biofeedback"],
         })
         item = repo("owner/pomodoro", 3, description="A productivity utility")
-        item["readme"] = "# Utility\nA configurable focus timer for deep work."
+        item["readme"] = "# Utility\nA configurable focus timer with biofeedback for deep work."
         item["readme_sha"] = "abc123"
         item["evidence"] = []
 
         annotate_candidate_mechanisms(item, request)
 
-        self.assertEqual([value["name"] for value in item["mechanisms"]], ["pomodoro"])
+        self.assertEqual(
+            [value["name"] for value in item["mechanisms"]],
+            ["pomodoro", "biofeedback"],
+        )
         fact = next(value for value in item["evidence"] if value["kind"] == "mechanism_match")
-        self.assertEqual(fact["facts"]["source_field"], "readme")
-        self.assertEqual(fact["facts"]["sha"], "abc123")
+        match = fact["facts"]["mechanisms"][0]
+        self.assertEqual(match["source_field"], "readme")
+        self.assertEqual(match["sha"], "abc123")
+        self.assertEqual(len(fact["facts"]["mechanisms"]), 2)
+        public = public_candidate(item)
+        public_ids = {value["id"] for value in public["evidence"]}
+        self.assertTrue(all(
+            set(mechanism["evidence_ids"]) <= public_ids
+            for mechanism in public["mechanisms"]
+        ))
+        self.assertTrue(any(value["kind"] == "mechanism_match" for value in public["evidence"]))
+        self.assertTrue(all("evidence" not in mechanism for mechanism in public["mechanisms"]))
+        annotate_candidate_mechanisms(item, request)
+        self.assertEqual(
+            sum(value["kind"] == "mechanism_match" for value in item["evidence"]), 1
+        )
 
         name_only = repo("owner/pomodoro", 3, description="A productivity utility")
         name_only["evidence"] = []
@@ -89,9 +107,14 @@ class BoundaryTests(unittest.TestCase):
 
         self.assertEqual(boundary.recalled_mechanisms, ["biofeedback", "pomodoro"])
         self.assertEqual(boundary.presented_mechanisms, ["pomodoro"])
+        self.assertEqual(boundary.mechanism_origins, {
+            "requested_mechanisms": ["pomodoro"],
+            "confirmed_exploration_directions": ["biofeedback"],
+        })
         self.assertEqual(boundary.explored_directions, ["biofeedback"])
         self.assertEqual(boundary.unexplored_directions, [])
         self.assertEqual(boundary.discovered_terms, ["digital wellbeing"])
+        self.assertNotIn("digital wellbeing", boundary.recalled_mechanisms)
         rejected = build_boundary(
             [first, second, third], [first], request,
             rejected_directions=["biofeedback"],

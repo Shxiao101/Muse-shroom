@@ -32,6 +32,8 @@ PUBLIC_CANDIDATE_FIELDS = {
 
 CONCEPT_MATCH_CHARS = 240
 HOWTO_EXCERPT_CHARS = 220
+MECHANISM_EVIDENCE_CHARS = 180
+PUBLIC_MECHANISM_LIMIT = 3
 SEARCH_OUTPUT_MAX_BYTES = 30_000
 
 
@@ -65,8 +67,34 @@ def _unique(items: list[Any]) -> list[Any]:
     return result
 
 
-def _pack_evidence(candidate: dict[str, Any]) -> list[dict[str, Any]]:
+def _compact_mechanism_evidence(item: dict[str, Any], names: set[str]) -> dict[str, Any]:
+    facts = item.get("facts") or {}
+    matches = []
+    for match in facts.get("mechanisms") or []:
+        if str(match.get("mechanism") or "").casefold() not in names:
+            continue
+        matches.append({
+            key: (
+                " ".join(str(value).split())[:MECHANISM_EVIDENCE_CHARS]
+                if key == "text" else value
+            )
+            for key, value in match.items()
+            if value is not None
+        })
+    return {
+        "id": item.get("id"), "kind": "mechanism_match",
+        **({"source": item.get("source")} if item.get("source") else {}),
+        "facts": {
+            "mechanisms": matches,
+            "untrusted_source": any(bool(match.get("untrusted_source")) for match in matches),
+        },
+    }
+
+
+def _pack_evidence(candidate: dict[str, Any], mechanism_names: set[str] | None = None
+                   ) -> list[dict[str, Any]]:
     metadata = None
+    mechanism = None
     by_type: dict[str, dict[str, Any]] = {}
     for item in candidate.get("evidence", []):
         kind = item.get("kind")
@@ -81,6 +109,12 @@ def _pack_evidence(candidate: dict[str, Any]) -> list[dict[str, Any]]:
             snippet_type = str((item.get("facts") or {}).get("snippet_type") or "")
             if snippet_type and snippet_type not in by_type:
                 by_type[snippet_type] = item
+        elif kind == "mechanism_match" and mechanism is None:
+            names = mechanism_names or {
+                str(value.get("name") or "").casefold()
+                for value in candidate.get("mechanisms") or []
+            }
+            mechanism = _compact_mechanism_evidence(item, names)
     chosen: list[dict[str, Any]] = []
     if metadata:
         chosen.append(metadata)
@@ -92,8 +126,10 @@ def _pack_evidence(candidate: dict[str, Any]) -> list[dict[str, Any]]:
     if primary:
         limit = CONCEPT_MATCH_CHARS if (primary.get("facts") or {}).get("snippet_type") == "concept_match" else HOWTO_EXCERPT_CHARS
         chosen.append(_compact_excerpt(primary, limit))
+    if mechanism and (mechanism.get("facts") or {}).get("mechanisms"):
+        chosen.append(mechanism)
     howto = by_type.get("usage") or by_type.get("installation")
-    if howto and howto is not primary:
+    if howto and howto is not primary and len(chosen) < 3:
         chosen.append(_compact_excerpt(howto, HOWTO_EXCERPT_CHARS))
     return chosen[:3]
 
@@ -159,10 +195,11 @@ def _compact_search_output(output: dict[str, Any], limit: int = SEARCH_OUTPUT_MA
         if isinstance(item.get("mechanisms"), list) and len(item["mechanisms"]) > 2
     ])
     stages.append([
-        (mechanism["evidence"], "text", str(mechanism["evidence"].get("text") or "")[:100])
-        for item in candidates for mechanism in item.get("mechanisms") or []
-        if isinstance(mechanism.get("evidence"), dict)
-        and len(str(mechanism["evidence"].get("text") or "")) > 100
+        (match, "text", str(match.get("text") or "")[:100])
+        for item in candidates for evidence in item.get("evidence") or []
+        if evidence.get("kind") == "mechanism_match"
+        for match in (evidence.get("facts") or {}).get("mechanisms") or []
+        if len(str(match.get("text") or "")) > 100
     ])
     stages.append([
         (item, "selection_lanes", item["selection_lanes"][:1])
@@ -243,6 +280,8 @@ def public_candidate(candidate: dict[str, Any], *, detailed: bool = False) -> di
         if any(item.get("id") == release_id for item in candidate.get("evidence", [])):
             result["latest_release"] = {**release, "evidence_id": release_id}
     if not detailed:
+        mechanisms = list(result.get("mechanisms") or [])[:PUBLIC_MECHANISM_LIMIT]
+        result["mechanisms"] = mechanisms
         relationships = [path for path in candidate.get("discovery_paths", []) if path.get("kind") == "relationship"]
         queries = [path for path in candidate.get("discovery_paths", []) if path.get("kind") == "query"]
         queries.sort(key=lambda path: (int(path.get("position", 10)), str(path.get("query_kind", ""))))
@@ -253,7 +292,9 @@ def public_candidate(candidate: dict[str, Any], *, detailed: bool = False) -> di
             }.items() if value is not None
         } for path in queries[:2]])
         result["discovery_paths"] = compact_paths
-        result["evidence"] = _pack_evidence(candidate)
+        result["evidence"] = _pack_evidence(
+            candidate, {str(item.get("name") or "").casefold() for item in mechanisms},
+        )
     return result
 
 
@@ -758,6 +799,8 @@ class SearchEngine:
     def _reused_output(self, search_id: str, mode: str) -> dict[str, Any]:
         session = self.store.load_search(search_id)
         request = SearchRequest.from_dict(session["request"])
+        for candidate in session["candidates"]:
+            annotate_candidate_mechanisms(candidate, request)
         selected = [item for item in session["candidates"] if item.get("selected_for_assessment")]
         lane_counts: dict[str, int] = {}
         for item in selected:
@@ -772,7 +815,10 @@ class SearchEngine:
         coverage["reused"] = True
         coverage["api_calls"] = {}
         snapshot = self.store.latest_boundary_snapshot(search_id, ("search", "expand")) or {}
-        boundary = snapshot.get("boundary", {})
+        boundary = build_boundary(
+            session["candidates"], selected, request,
+            rejected_directions=(snapshot.get("boundary") or {}).get("rejected_directions", []),
+        ).to_dict()
         explored = boundary.get("explored_directions", [])
         unexplored = boundary.get("unexplored_directions", [])
         coverage.update({

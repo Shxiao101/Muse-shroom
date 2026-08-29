@@ -6,7 +6,7 @@ from dataclasses import asdict
 from typing import Any
 
 from .analyze import age_days
-from .boundary import build_boundary
+from .boundary import annotate_candidate_mechanisms, build_boundary
 from .models import Assessment, ContractError, SearchRequest, repo_key
 from .storage import Store
 
@@ -106,6 +106,17 @@ def _mmr_select(pool: list[dict[str, Any]], count: int, selected: list[dict[str,
 def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[str, Any]:
     session = store.load_search(search_id)
     candidates = session["candidates"]
+    try:
+        boundary_request = SearchRequest.from_dict(session["request"])
+    except ContractError:
+        # Rankings created by v0.2/v0.3 tests or persisted sessions may only
+        # contain the original request string.
+        boundary_request = SearchRequest.from_dict({
+            "request": str(session["request"].get("request") or "legacy search"),
+            "problem_concepts": [str(session["request"].get("request") or "legacy search")],
+        })
+    for candidate in candidates:
+        annotate_candidate_mechanisms(candidate, boundary_request)
     by_name = {repo_key(item): item for item in candidates}
     raw_assessments = assessment_payload.get("assessments", []) if isinstance(assessment_payload, dict) else assessment_payload
     if not isinstance(raw_assessments, list):
@@ -199,15 +210,6 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
     }
     previous_boundary = store.latest_boundary_snapshot(search_id)
     rejected = list((previous_boundary or {}).get("boundary", {}).get("rejected_directions", []))
-    try:
-        boundary_request = SearchRequest.from_dict(session["request"])
-    except ContractError:
-        # Rankings created by v0.2/v0.3 tests or persisted sessions may only
-        # contain the original request string.
-        boundary_request = SearchRequest.from_dict({
-            "request": str(session["request"].get("request") or "legacy search"),
-            "problem_concepts": [str(session["request"].get("request") or "legacy search")],
-        })
     boundary = build_boundary(
         candidates, [by_name[name] for name in returned_names],
         boundary_request, rejected_directions=rejected,

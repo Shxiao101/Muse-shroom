@@ -167,6 +167,7 @@ class SearchRequest:
 class SearchBoundary:
     recalled_mechanisms: list[str] = field(default_factory=list)
     presented_mechanisms: list[str] = field(default_factory=list)
+    mechanism_origins: dict[str, list[str]] = field(default_factory=dict)
     explored_directions: list[str] = field(default_factory=list)
     unexplored_directions: list[str] = field(default_factory=list)
     rejected_directions: list[str] = field(default_factory=list)

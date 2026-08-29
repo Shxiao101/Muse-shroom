@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 from collections import Counter
 from typing import Any, Iterable
@@ -68,7 +67,11 @@ def annotate_candidate_mechanisms(candidate: dict[str, Any], request: SearchRequ
     ]
     full_name = str(candidate.get("full_name") or "").lower()
     mechanisms: list[dict[str, Any]] = []
-    evidence_by_id = {str(item.get("id")): item for item in candidate.get("evidence") or []}
+    evidence_by_id = {
+        str(item.get("id")): item for item in candidate.get("evidence") or []
+        if item.get("kind") != "mechanism_match"
+    }
+    mechanism_facts: list[dict[str, Any]] = []
 
     for name, concept, role in _mechanism_concepts(request):
         matches: list[dict[str, Any]] = []
@@ -99,39 +102,41 @@ def annotate_candidate_mechanisms(candidate: dict[str, Any], request: SearchRequ
         if not unique_matches:
             continue
 
-        digest = hashlib.sha1(name.casefold().encode("utf-8")).hexdigest()[:10]
-        evidence_id = f"repo:{full_name}:mechanism:{digest}"
         primary = unique_matches[0]
-        evidence_by_id[evidence_id] = {
-            "id": evidence_id,
-            "kind": "mechanism_match",
+        mechanisms.append({
+            "name": name, "role": role,
+            "matched_terms": list(dict.fromkeys(str(item["matched_term"]) for item in unique_matches)),
+            "sources": list(dict.fromkeys(str(item["source"]) for item in unique_matches)),
+        })
+        mechanism_facts.append({
+            "mechanism": name, "role": role,
+            "source_field": primary["source"],
+            "matched_term": primary["matched_term"],
+            "text": primary["text"],
             "source": (
                 f"https://github.com/{candidate.get('full_name')}#readme"
                 if primary["source"] == "readme" else candidate.get("html_url")
             ),
+            **({"line_start": primary["line_start"]} if primary.get("line_start") else {}),
+            **({"sha": candidate.get("readme_sha")} if primary["source"] == "readme" else {}),
+            "untrusted_source": primary["source"] == "readme",
+        })
+
+    if mechanisms:
+        evidence_id = f"repo:{full_name}:mechanisms"
+        evidence_by_id[evidence_id] = {
+            "id": evidence_id,
+            "kind": "mechanism_match",
+            "source": candidate.get("html_url"),
             "facts": {
-                "mechanism": name,
-                "role": role,
-                "source_field": primary["source"],
-                "matched_term": primary["matched_term"],
-                "text": primary["text"],
-                **({"line_start": primary["line_start"]} if primary.get("line_start") else {}),
-                **({"sha": candidate.get("readme_sha")} if primary["source"] == "readme" else {}),
-                "untrusted_source": primary["source"] == "readme",
+                "mechanisms": mechanism_facts,
+                "untrusted_source": any(
+                    bool(fact.get("untrusted_source")) for fact in mechanism_facts
+                ),
             },
         }
-        mechanisms.append({
-            "name": name, "role": role, "evidence_ids": [evidence_id],
-            "matched_terms": list(dict.fromkeys(str(item["matched_term"]) for item in unique_matches)),
-            "sources": list(dict.fromkeys(str(item["source"]) for item in unique_matches)),
-            "evidence": {
-                "source": primary["source"], "matched_term": primary["matched_term"],
-                "text": primary["text"],
-                **({"line_start": primary["line_start"]} if primary.get("line_start") else {}),
-                **({"sha": candidate.get("readme_sha")} if primary["source"] == "readme" else {}),
-                "untrusted_source": primary["source"] == "readme",
-            },
-        })
+        for mechanism in mechanisms:
+            mechanism["evidence_ids"] = [evidence_id]
 
     candidate["mechanisms"] = mechanisms
     candidate["evidence"] = list(evidence_by_id.values())
@@ -143,6 +148,16 @@ def mechanism_names(candidates: Iterable[dict[str, Any]]) -> list[str]:
         for candidate in candidates
         for mechanism in candidate.get("mechanisms") or []
         if str(mechanism.get("name") or "").strip()
+    }
+    return sorted(names, key=str.casefold)
+
+
+def mechanism_names_by_role(candidates: Iterable[dict[str, Any]], role: str) -> list[str]:
+    names = {
+        str(mechanism.get("name"))
+        for candidate in candidates
+        for mechanism in candidate.get("mechanisms") or []
+        if mechanism.get("role") == role and str(mechanism.get("name") or "").strip()
     }
     return sorted(names, key=str.casefold)
 
@@ -195,6 +210,12 @@ def build_boundary(candidates: Iterable[dict[str, Any]], presented: Iterable[dic
     return SearchBoundary(
         recalled_mechanisms=recalled,
         presented_mechanisms=presented_names,
+        mechanism_origins={
+            "requested_mechanisms": mechanism_names_by_role(candidate_list, "mechanism"),
+            "confirmed_exploration_directions": mechanism_names_by_role(
+                candidate_list, "exploration"
+            ),
+        },
         explored_directions=explored,
         unexplored_directions=unexplored,
         rejected_directions=rejected,
