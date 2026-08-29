@@ -239,11 +239,41 @@ def _public_ranked_item(item: dict[str, Any], *, bucket: str | None, debug: bool
     return payload
 
 
+def _is_final_view(at: str | None) -> bool:
+    return (at or "final").strip().lower() in {"final", "rank", "latest"}
+
+
+def _stored_repo_names(snapshot: dict[str, Any] | None) -> list[str] | None:
+    stored = (snapshot or {}).get("visible_repos")
+    if isinstance(stored, dict):
+        names = stored.get("assessment_repos") or stored.get("presented_repos") or stored.get("visible_repos")
+        return [str(name) for name in names] if isinstance(names, list) else None
+    if isinstance(stored, list):
+        return [str(name) for name in stored]
+    return None
+
+
+def _candidate_card(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "repo": item.get("full_name") or item.get("repo"),
+        "url": item.get("html_url") or item.get("url"),
+        "description": item.get("description"),
+        "stars": item.get("stargazers_count", item.get("stars")),
+        "topics": item.get("topics") or [],
+        "mechanisms": item.get("mechanisms") or [],
+        "boundary_role": None,
+        "_bucket": None,
+    }
+
+
 def _visible_repos(
     ranking: dict[str, Any] | None,
     candidates: list[dict[str, Any]],
+    snapshot: dict[str, Any] | None,
+    *,
+    use_ranking: bool,
 ) -> list[dict[str, Any]]:
-    if ranking:
+    if use_ranking and ranking:
         by_repo = {}
         buckets = ranking.get("buckets") or {}
         for bucket_name, items in buckets.items():
@@ -257,21 +287,22 @@ def _visible_repos(
             if item:
                 ordered.append(item)
         return ordered[:MAX_GRAPH_REPOS]
-    selected = [item for item in candidates if item.get("selected_for_assessment")]
-    selected.sort(key=lambda item: str(item.get("full_name") or "").lower())
-    return [
-        {
-            "repo": item.get("full_name"),
-            "url": item.get("html_url"),
-            "description": item.get("description"),
-            "stars": item.get("stargazers_count"),
-            "topics": item.get("topics") or [],
-            "mechanisms": item.get("mechanisms") or [],
-            "boundary_role": None,
-            "_bucket": None,
-        }
-        for item in selected[:MAX_GRAPH_REPOS]
-    ]
+    by_name = {_key(item.get("full_name") or ""): item for item in candidates}
+    names = _stored_repo_names(snapshot)
+    if names is None:
+        iteration = int((snapshot or {}).get("iteration") or 0)
+        names = [
+            str(item.get("full_name"))
+            for item in candidates
+            if item.get("selected_for_assessment")
+            and int(item.get("first_seen_iteration") or 0) <= iteration
+        ]
+    cards = []
+    for name in names:
+        item = by_name.get(_key(name))
+        if item:
+            cards.append(_candidate_card(item))
+    return cards[:MAX_GRAPH_REPOS]
 
 
 def _query_executed(summary: dict[str, Any] | None) -> int:
@@ -457,7 +488,10 @@ class ExplorerReadModel:
             visible_extra = extra_recalled[:MAX_EXTRA_RECALLED]
             hidden_extra = extra_recalled[MAX_EXTRA_RECALLED:]
 
-            visible_repos = _visible_repos(ranking, candidates)
+            visible_repos = _visible_repos(
+                ranking, candidates, snapshot,
+                use_ranking=_is_final_view(at) and ranking is not None,
+            )
             repo_by_mechanism: dict[str, list[str]] = {}
             for repo_item in visible_repos:
                 repo_name = str(repo_item.get("repo") or "")
@@ -632,11 +666,43 @@ class ExplorerReadModel:
         try:
             snapshots = store.boundary_snapshots(search_id)
             iterations = store.list_iterations(search_id)
-            by_iteration: dict[int, dict[str, Any]] = {}
+            rows_by_iteration: dict[int, list[dict[str, Any]]] = {}
             for row in iterations:
-                by_iteration.setdefault(int(row["iteration"]), row)
-            steps = []
+                rows_by_iteration.setdefault(int(row["iteration"]), []).append(row)
+            records: list[tuple[str, str, dict[str, Any]]] = []
             for snapshot in snapshots:
+                records.append(("snapshot", str(snapshot.get("created_at") or ""), snapshot))
+            for row in iterations:
+                if row.get("event") in {"stop", "refuse"}:
+                    records.append(("event", str(row.get("created_at") or ""), row))
+            records.sort(key=lambda item: (item[1], 0 if item[0] == "snapshot" else 1))
+            steps = []
+            for kind_tag, _when, payload_row in records:
+                if kind_tag == "event":
+                    reason = payload_row.get("stop_reason")
+                    event = str(payload_row.get("event") or "stop")
+                    steps.append({
+                        "id": f"{event}-{payload_row.get('id')}",
+                        "kind": event,
+                        "stage": payload_row.get("stage"),
+                        "iteration": int(payload_row.get("iteration") or 0),
+                        "created_at": payload_row.get("created_at"),
+                        "hypothesis": payload_row.get("hypothesis"),
+                        "target_direction": (payload_row.get("hypothesis") or {}).get("target_direction")
+                        if isinstance(payload_row.get("hypothesis"), dict) else None,
+                        "queries_executed": 0,
+                        "new_mechanisms": [],
+                        "new_presented_mechanisms": [],
+                        "new_directions": [],
+                        "new_terms": [],
+                        "boundary_gain": False,
+                        "stop_reasons": [reason] if reason in HARD_STOP_REASONS else ([reason] if reason else []),
+                        "stop_signals": [],
+                        "hard": reason in HARD_STOP_REASONS,
+                        "event": event,
+                    })
+                    continue
+                snapshot = payload_row
                 stage = str(snapshot.get("stage") or "")
                 iteration = int(snapshot.get("iteration") or 0)
                 if stage == "search" or (stage not in {"iterate", "expand", "rank"} and iteration == 0 and not steps):
@@ -650,9 +716,12 @@ class ExplorerReadModel:
                 summary = snapshot.get("query_summary") or {}
                 executed = _query_executed(summary)
                 hyp = snapshot.get("hypothesis") or {}
-                iter_row = by_iteration.get(iteration) if kind == "iteration" else None
-                stop_reason = (iter_row or {}).get("stop_reason") or None
-                hard = [stop_reason] if stop_reason in HARD_STOP_REASONS else []
+                hard = []
+                for row in rows_by_iteration.get(iteration, []):
+                    reason = row.get("stop_reason")
+                    if reason in HARD_STOP_REASONS and row.get("event") in {stage, "iterate", "expand", "search"}:
+                        if reason not in hard:
+                            hard.append(reason)
                 signals = _advisory_from_delta(delta, boundary, executed)
                 step = {
                     "id": f"{kind}-{iteration}-{snapshot.get('id')}",
@@ -675,6 +744,8 @@ class ExplorerReadModel:
                     ),
                     "stop_reasons": hard,
                     "stop_signals": signals,
+                    "hard": bool(hard),
+                    "event": kind,
                 }
                 if debug:
                     step["query_summary"] = {
@@ -685,15 +756,16 @@ class ExplorerReadModel:
                         ),
                     }
                 steps.append(step)
-            events = []
-            for row in iterations:
-                if row.get("event") in {"stop", "refuse"} or row.get("stop_reason") in HARD_STOP_REASONS:
-                    events.append({
-                        "event": row.get("event"),
-                        "iteration": row.get("iteration"),
-                        "stop_reason": row.get("stop_reason"),
-                        "hard": row.get("stop_reason") in HARD_STOP_REASONS,
-                    })
+            events = [
+                {
+                    "event": row.get("event"),
+                    "iteration": row.get("iteration"),
+                    "stop_reason": row.get("stop_reason"),
+                    "hard": row.get("stop_reason") in HARD_STOP_REASONS,
+                }
+                for row in iterations
+                if row.get("event") in {"stop", "refuse"} or row.get("stop_reason") in HARD_STOP_REASONS
+            ]
             payload = {
                 "search_id": search_id,
                 "steps": steps,

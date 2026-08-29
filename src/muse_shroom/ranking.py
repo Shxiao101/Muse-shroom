@@ -364,7 +364,13 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
         boundary_request, rejected_directions=rejected,
         negative_directions=negatives,
     ).to_dict()
-    delta = store.save_boundary_snapshot(search_id, "rank", boundary)
+    delta = store.save_boundary_snapshot(
+        search_id, "rank", boundary,
+        visible_repos={
+            "assessment_repos": display_order,
+            "pool_repos": [str(item.get("full_name")) for item in candidates],
+        },
+    )
     assignments = sum(len(by_name[item["repo"].lower()].get("mechanisms") or []) for item in ranked_items)
     redundancy = round(
         max(0, assignments - len(boundary["presented_mechanisms"])) / max(1, assignments), 3,

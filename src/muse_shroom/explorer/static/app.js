@@ -158,13 +158,21 @@ function drawTimeline(timeline) {
     return;
   }
   root.innerHTML = steps.map((step, index) => {
-    const at = step.kind === "initial" ? "initial" : step.kind === "rank" ? "final" : `iteration-${step.iteration}`;
-    const active = (current.at === at) || (current.at === "final" && index === steps.length - 1);
-    const gain = (step.new_mechanisms || []).slice(0, 3).join(", ") || (step.boundary_gain ? "gain" : "no gain");
-    return `<button type="button" class="step ${active ? "active" : ""}" data-at="${at}">
-      <strong>${esc(step.kind === "initial" ? "Initial" : step.kind === "rank" ? "Rank" : `Iteration ${step.iteration}`)}</strong>
+    const ending = step.kind === "stop" || step.kind === "refuse";
+    const at = step.kind === "initial" ? "initial" : step.kind === "rank" ? "final" : step.kind === "iteration" ? `iteration-${step.iteration}` : "";
+    const active = at && ((current.at === at) || (current.at === "final" && index === steps.length - 1 && !ending));
+    const title = step.kind === "initial" ? "Initial"
+      : step.kind === "rank" ? "Rank"
+      : step.kind === "stop" ? "Hard stop"
+      : step.kind === "refuse" ? "Refused continue"
+      : `Iteration ${step.iteration}`;
+    const gain = ending
+      ? (step.stop_reasons || []).join(", ") || step.kind
+      : ((step.new_mechanisms || []).slice(0, 3).join(", ") || (step.boundary_gain ? "gain" : "no gain"));
+    return `<button type="button" class="step ${ending ? "stop" : ""} ${active ? "active" : ""}" ${at ? `data-at="${at}"` : ""}>
+      <strong>${esc(title)}</strong>
       <small>${esc(gain)}</small>
-      ${step.stop_reasons?.length ? `<small>hard: ${esc(step.stop_reasons.join(", "))}</small>` : ""}
+      ${!ending && step.stop_reasons?.length ? `<small>hard: ${esc(step.stop_reasons.join(", "))}</small>` : ""}
       ${step.stop_signals?.length ? `<small>signal: ${esc(step.stop_signals.join(", "))}</small>` : ""}
     </button>`;
   }).join("");

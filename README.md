@@ -52,7 +52,7 @@ muse-shroom rank --search-id SEARCH_ID --assessments assessments.json --output r
 muse-shroom explorer
 ```
 
-默认打开 `http://127.0.0.1:8765/`。Explorer 子命令支持 `--host`、`--port`、`--no-browser`；数据目录仍用全局 `--data-dir`（`muse-shroom --data-dir DIR explorer`）。Skill / MCP / CLI 不依赖 Explorer。`?debug=1` 才显示 selection_order、score components 和 query history。
+默认打开 `http://127.0.0.1:8765/`，只绑定 loopback。Explorer 子命令支持 `--host`、`--port`、`--no-browser`；数据目录仍用全局 `--data-dir`（`muse-shroom --data-dir DIR explorer`）。绑定 `0.0.0.0` 等非本机地址必须显式加 `--allow-remote`（无认证，会暴露本地搜索数据）。Skill / MCP / CLI 不依赖 Explorer。`?debug=1` 才显示 selection_order、score components 和 query history。
 
 ## MCP 宿主配置
 

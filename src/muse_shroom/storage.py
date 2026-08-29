@@ -121,6 +121,8 @@ class Store:
             self.db.execute("ALTER TABLE boundary_snapshots ADD COLUMN hypothesis_json TEXT")
         if "query_summary_json" not in snapshot_columns:
             self.db.execute("ALTER TABLE boundary_snapshots ADD COLUMN query_summary_json TEXT")
+        if "repos_json" not in snapshot_columns:
+            self.db.execute("ALTER TABLE boundary_snapshots ADD COLUMN repos_json TEXT")
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_searches_fingerprint ON searches(fingerprint, mode)"
         )
@@ -413,20 +415,22 @@ class Store:
                                boundary: dict[str, Any], *,
                                iteration: int | None = None,
                                hypothesis: dict[str, Any] | None = None,
-                               query_summary: dict[str, Any] | None = None) -> dict[str, Any]:
+                               query_summary: dict[str, Any] | None = None,
+                               visible_repos: dict[str, Any] | list[str] | None = None) -> dict[str, Any]:
         previous = self.latest_boundary_snapshot(search_id)
         delta = boundary_delta(boundary, previous["boundary"] if previous else None).to_dict()
         self.db.execute(
             """INSERT INTO boundary_snapshots
                (search_id, stage, boundary_json, delta_json, created_at,
-                iteration, hypothesis_json, query_summary_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                iteration, hypothesis_json, query_summary_json, repos_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 search_id, stage, json.dumps(boundary, ensure_ascii=False),
                 json.dumps(delta, ensure_ascii=False), utc_now(),
                 iteration,
                 json.dumps(hypothesis, ensure_ascii=False) if hypothesis is not None else None,
                 json.dumps(query_summary, ensure_ascii=False) if query_summary is not None else None,
+                json.dumps(visible_repos, ensure_ascii=False) if visible_repos is not None else None,
             ),
         )
         self.db.commit()
@@ -441,11 +445,12 @@ class Store:
                 "boundary_delta": json.loads(row["delta_json"]),
                 "hypothesis": json.loads(row["hypothesis_json"]) if row["hypothesis_json"] else None,
                 "query_summary": json.loads(row["query_summary_json"]) if row["query_summary_json"] else None,
+                "visible_repos": json.loads(row["repos_json"]) if row["repos_json"] else None,
                 "created_at": row["created_at"],
             }
             for row in self.db.execute(
                 """SELECT id,stage,iteration,boundary_json,delta_json,hypothesis_json,
-                          query_summary_json,created_at
+                          query_summary_json,repos_json,created_at
                    FROM boundary_snapshots WHERE search_id=? ORDER BY id""",
                 (search_id,),
             )
@@ -454,7 +459,7 @@ class Store:
     def latest_boundary_snapshot(self, search_id: str,
                                  stages: tuple[str, ...] = ()) -> dict[str, Any] | None:
         select = """SELECT id,stage,iteration,boundary_json,delta_json,hypothesis_json,
-                           query_summary_json,created_at
+                           query_summary_json,repos_json,created_at
                     FROM boundary_snapshots"""
         if stages:
             placeholders = ",".join("?" for _ in stages)
@@ -478,6 +483,7 @@ class Store:
             "boundary_delta": json.loads(row["delta_json"]),
             "hypothesis": json.loads(row["hypothesis_json"]) if row["hypothesis_json"] else None,
             "query_summary": json.loads(row["query_summary_json"]) if row["query_summary_json"] else None,
+            "visible_repos": json.loads(row["repos_json"]) if row["repos_json"] else None,
             "created_at": row["created_at"],
         }
 

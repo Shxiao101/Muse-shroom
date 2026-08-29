@@ -80,6 +80,7 @@ h2 { font-size: 1.05rem; margin: 28px 0 12px; color: var(--gold); }
   border: 1px solid var(--line); background: var(--bg-2); padding: 8px 12px; cursor: pointer; min-width: 120px;
 }
 .step.active { border-color: var(--gold); color: var(--gold); }
+.step.stop { border-color: var(--reject); color: var(--reject); }
 .step small { display: block; color: var(--muted); }
 
 #graph { width: 100%; height: 420px; background: #16140f; border: 1px solid var(--line); }

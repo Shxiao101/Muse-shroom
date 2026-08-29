@@ -15,6 +15,17 @@ from .. import __version__
 from .read_model import ExplorerReadModel
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "localhost."}
+
+
+def is_loopback_host(host: str) -> bool:
+    value = (host or "").strip().lower()
+    if value in LOOPBACK_HOSTS:
+        return True
+    if value.startswith("127."):
+        parts = value.split(".")
+        return len(parts) == 4 and all(part.isdigit() and 0 <= int(part) <= 255 for part in parts)
+    return False
 
 
 def _json_bytes(payload: Any, status: int = 200) -> tuple[int, bytes, str]:
@@ -122,7 +133,13 @@ def build_server(
     data_dir: str | None = None,
     host: str = "127.0.0.1",
     port: int = 8765,
+    allow_remote: bool = False,
 ) -> ThreadingHTTPServer:
+    if not is_loopback_host(host) and not allow_remote:
+        raise ValueError(
+            "Explorer is a localhost UI; refusing to bind "
+            f"{host!r} without --allow-remote (that would expose local search data with no auth)"
+        )
     ExplorerHandler.data_dir = data_dir
     return ThreadingHTTPServer((host, port), ExplorerHandler)
 
@@ -133,8 +150,14 @@ def run_explorer(
     host: str = "127.0.0.1",
     port: int = 8765,
     open_browser: bool = True,
+    allow_remote: bool = False,
 ) -> int:
-    server = build_server(data_dir=data_dir, host=host, port=port)
+    if allow_remote and not is_loopback_host(host):
+        print(
+            f"WARNING: Explorer has no authentication; {host} will expose local search sessions.",
+            flush=True,
+        )
+    server = build_server(data_dir=data_dir, host=host, port=port, allow_remote=allow_remote)
     url = f"http://{host}:{port}/"
     print(f"Muse-shroom Explorer {__version__} (read-only) at {url}", flush=True)
     if open_browser:

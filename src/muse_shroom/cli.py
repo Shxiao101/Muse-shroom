@@ -127,6 +127,11 @@ def build_parser() -> argparse.ArgumentParser:
     explorer.add_argument("--host", default="127.0.0.1", help="bind address")
     explorer.add_argument("--port", type=int, default=8765, help="bind port")
     explorer.add_argument("--no-browser", action="store_true", help="do not open a browser")
+    explorer.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="allow a non-loopback bind address; exposes local search data with no authentication",
+    )
     return parser
 
 
@@ -273,9 +278,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             return run_explorer(
                 data_dir=args.data_dir, host=args.host, port=args.port,
-                open_browser=not args.no_browser,
+                open_browser=not args.no_browser, allow_remote=args.allow_remote,
             )
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             print(json.dumps({"ok": False, "error": "OSError", "message": str(exc)}, ensure_ascii=False), file=sys.stderr)
             return 2
     try:

@@ -60,6 +60,7 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn("python -m unittest tests.test_mcp -v", readme)
         self.assertIn('python -m pip install -e ".[test]"', readme)
         self.assertIn("muse-shroom explorer", readme)
+        self.assertIn("--allow-remote", readme)
 
 
 if __name__ == "__main__":

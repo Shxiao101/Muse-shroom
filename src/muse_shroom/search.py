@@ -1206,6 +1206,10 @@ class SearchEngine:
         boundary_delta = self.store.save_boundary_snapshot(
             search_id, stage, boundary, iteration=iteration,
             hypothesis=hypothesis, query_summary=summary,
+            visible_repos={
+                "assessment_repos": [str(item.get("full_name")) for item in selected],
+                "pool_repos": [str(item.get("full_name")) for item in candidates.values()],
+            },
         )
         budget = remaining or remaining_budget(
             iteration=iteration,

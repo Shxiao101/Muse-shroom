@@ -1,12 +1,16 @@
+import io
 import json
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
+from contextlib import redirect_stderr
+from pathlib import Path
 
+from muse_shroom.cli import main
 from muse_shroom.explorer.read_model import ExplorerReadModel, MAX_GRAPH_REPOS
-from muse_shroom.explorer.server import build_server
+from muse_shroom.explorer.server import build_server, is_loopback_host
 from muse_shroom.models import SearchRequest
 from muse_shroom.ranking import rank_search
 from muse_shroom.search import SearchEngine
@@ -221,6 +225,87 @@ class ExplorerReadModelTests(unittest.TestCase):
             self.assertNotIn("pool/extra-0", json.dumps(view["graph"]))
             self.assertNotIn("candidates", listed)
 
+    def test_historical_graph_does_not_use_future_rank_repos(self):
+        timer = repo("focus/timer", 4, description="Pomodoro timer for focus", topics=["pomodoro"])
+        later = repo("lab/galvanic", 8, description="Galvanic skin response trainer", topics=["gsr"])
+        github = FrozenGitHub(
+            [("focus", [timer]), ("pomodoro", [timer]), ("galvanic", [later])],
+            readmes={
+                "focus/timer": "# Timer\nPomodoro.\n## Usage\nRun it.",
+                "lab/galvanic": "# GSR\nGalvanic skin response.\n## Usage\nWear it.",
+            },
+        )
+        request = SearchRequest.from_dict({
+            "request": "focus tools",
+            "problem_concepts": ["focus"],
+            "mechanisms": ["pomodoro"],
+            "exploration_directions": ["commitment device"],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                engine = SearchEngine(store, github, relation_budget=0)
+                search_id = engine.search(request, "deep")["search_id"]
+                engine.iterate(search_id, {
+                    "decision": "continue",
+                    "reason": "cover galvanic skin response",
+                    "concepts": ["galvanic"],
+                    "target_direction": "galvanic",
+                })
+                excerpt = _excerpt(store, search_id, "focus/timer")
+                assessments = [_assessment(excerpt, "focus/timer")]
+                if store.get_candidate("lab/galvanic", search_id):
+                    assessments.append(_assessment(_excerpt(store, search_id, "lab/galvanic"), "lab/galvanic"))
+                rank_search(store, search_id, assessments)
+                model = ExplorerReadModel(data_dir=directory)
+                initial = model.boundary_view(search_id, at="initial")
+                later_view = model.boundary_view(search_id, at="iteration-1")
+                final = model.boundary_view(search_id, at="final")
+            finally:
+                store.close()
+        def repos(view):
+            return {node["label"].lower() for node in view["graph"]["nodes"] if node["kind"] == "repository"}
+        self.assertNotIn("lab/galvanic", repos(initial))
+        for node in initial["graph"]["nodes"]:
+            if node["kind"] == "repository":
+                self.assertFalse(node.get("boundary_role"))
+                self.assertFalse(node.get("bucket"))
+        self.assertIn("lab/galvanic", repos(later_view) | repos(final))
+
+    def test_timeline_shows_stop_and_refuse_events(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store, github, search_id = _session(directory)
+            try:
+                SearchEngine(store, github, relation_budget=0).iterate(search_id, {
+                    "decision": "stop",
+                    "reason": "enough coverage",
+                    "stop_reason": "low expected boundary gain",
+                })
+                stopped = ExplorerReadModel(data_dir=directory).iteration_timeline(search_id)
+                other = SearchEngine(store, github, relation_budget=0, max_iterations=0).search(
+                    SearchRequest.from_dict(REQUEST), "deep", refresh=True,
+                )
+                SearchEngine(store, github, relation_budget=0, max_iterations=0).iterate(other["search_id"], {
+                    "decision": "continue",
+                    "reason": "try anyway",
+                    "concepts": ["biofeedback"],
+                })
+                refused = ExplorerReadModel(data_dir=directory).iteration_timeline(other["search_id"])
+            finally:
+                store.close()
+        stop_steps = [step for step in stopped["steps"] if step["kind"] == "stop"]
+        self.assertTrue(stop_steps)
+        self.assertIn("agent_stop", stop_steps[0]["stop_reasons"])
+        self.assertTrue(stop_steps[0]["hard"])
+        refuse_steps = [step for step in refused["steps"] if step["kind"] == "refuse"]
+        self.assertTrue(refuse_steps)
+        self.assertIn("max_iterations", refuse_steps[0]["stop_reasons"])
+        frontend = (
+            Path(__file__).resolve().parents[1] / "src" / "muse_shroom" / "explorer" / "static" / "app.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Hard stop", frontend)
+        self.assertIn("Refused continue", frontend)
+
 
 class ExplorerHttpTests(unittest.TestCase):
     def test_http_api_is_get_only_and_serves_ui(self):
@@ -250,6 +335,21 @@ class ExplorerHttpTests(unittest.TestCase):
             finally:
                 server.shutdown()
                 server.server_close()
+
+    def test_non_loopback_bind_requires_allow_remote(self):
+        self.assertTrue(is_loopback_host("127.0.0.1"))
+        self.assertTrue(is_loopback_host("localhost"))
+        self.assertFalse(is_loopback_host("0.0.0.0"))
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                build_server(data_dir=directory, host="0.0.0.0", port=0)
+            server = build_server(data_dir=directory, host="127.0.0.1", port=0)
+            server.server_close()
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            code = main(["explorer", "--host", "0.0.0.0", "--no-browser"])
+        self.assertEqual(code, 2)
+        self.assertIn("allow-remote", stderr.getvalue())
 
 
 if __name__ == "__main__":
