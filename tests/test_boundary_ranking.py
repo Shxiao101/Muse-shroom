@@ -5,7 +5,7 @@ from muse_shroom.boundary import annotate_candidate_mechanisms
 from muse_shroom.boundary_score import (
     contribution_score, gated_boundary_value, redundancy_penalty,
 )
-from muse_shroom.models import SearchRequest
+from muse_shroom.models import ContractError, SearchRequest
 from muse_shroom.ranking import rank_search
 from muse_shroom.selection import shortlist_select
 from muse_shroom.storage import Store
@@ -43,7 +43,7 @@ FOCUS_REQUEST = SearchRequest.from_dict({
 
 
 def _assess(item, *, relevance=85, uniqueness=70, usability=80, transferability=None,
-            category=None, adjacent=False):
+            category=None, adjacent=False, mechanism=None, boundary_value=None):
     name = item["full_name"]
     payload = {
         "repo": name, "relevance": relevance, "uniqueness": uniqueness, "usability": usability,
@@ -55,6 +55,10 @@ def _assess(item, *, relevance=85, uniqueness=70, usability=80, transferability=
     }
     if transferability is not None:
         payload["transferability"] = transferability
+    if mechanism is not None:
+        payload["mechanism"] = mechanism
+    if boundary_value is not None:
+        payload["boundary_value"] = boundary_value
     return payload
 
 
@@ -181,6 +185,59 @@ class BoundaryRankingTests(unittest.TestCase):
             [item.get("boundary_role") for bucket in second["buckets"].values() for item in bucket],
         )
         self.assertEqual(first["boundary_summary"], second["boundary_summary"])
+
+    def test_explanations_follow_sequential_presented_state(self):
+        first = _item("habit/one", 50, "Commitment device", kinds=["adjacent"])
+        second = _item("habit/two", 40, "Commitment device", kinds=["adjacent"])
+        third = _item("sense/bio", 30, "Biofeedback focus sensor", kinds=["adjacent"])
+        for item in (first, second, third):
+            annotate_candidate_mechanisms(item, FOCUS_REQUEST)
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.create_search("s", FOCUS_REQUEST.to_dict(), "deep")
+            for item in (first, second, third):
+                store.save_candidate("s", item)
+            result = rank_search(store, "s", [
+                _assess(first, relevance=82, uniqueness=80, transferability=70),
+                _assess(second, relevance=80, uniqueness=78, transferability=68),
+                _assess(third, relevance=78, uniqueness=88, transferability=72),
+            ])
+            store.close()
+        by_name = {
+            item["repo"].lower(): item
+            for bucket in result["buckets"].values() for item in bucket
+        }
+        commit_new = [
+            "commitment device" in [name.casefold() for name in by_name[key]["new_mechanisms"]]
+            for key in ("habit/one", "habit/two")
+        ]
+        self.assertEqual(sum(commit_new), 1)
+        self.assertTrue(any(
+            "biofeedback" in name.casefold()
+            for name in by_name["sense/bio"]["new_mechanisms"]
+        ))
+        repeat = by_name["habit/two" if not commit_new[1] else "habit/one"]
+        self.assertEqual(repeat["new_mechanisms"], [])
+        self.assertIn("already presented", repeat["why_different"])
+
+    def test_assessment_mechanism_must_match_evidence(self):
+        item = _item("pomo/one", 40, "Pomodoro timer")
+        annotate_candidate_mechanisms(item, FOCUS_REQUEST)
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.create_search("s", FOCUS_REQUEST.to_dict(), "deep")
+            store.save_candidate("s", item)
+            with self.assertRaises(ContractError):
+                rank_search(store, "s", [_assess(item, mechanism="quantum focus")])
+            result = rank_search(store, "s", [
+                _assess(item, mechanism="pomodoro", boundary_value=40),
+            ])
+            extra = _assess(item, mechanism="pomodoro")
+            extra["mechanism_novelty"] = 99
+            ignored = rank_search(store, "s", [extra])
+            store.close()
+        self.assertEqual(result["coverage"]["returned"], 1)
+        self.assertEqual(ignored["coverage"]["returned"], 1)
 
 
 if __name__ == "__main__":

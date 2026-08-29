@@ -460,7 +460,6 @@ class Assessment:
     reasons: list[dict[str, Any]] = field(default_factory=list)
     risks: list[dict[str, Any]] = field(default_factory=list)
     mechanism: str = ""
-    mechanism_novelty: float | None = None
     transferability: float | None = None
     boundary_value: float | None = None
 
@@ -508,8 +507,6 @@ class Assessment:
             reasons=reasons,
             risks=risks,
             mechanism=mechanism,
-            mechanism_novelty=_optional_score(data.get("mechanism_novelty"), "mechanism_novelty")
-            if "mechanism_novelty" in data else None,
             transferability=_optional_score(data.get("transferability"), "transferability")
             if "transferability" in data else None,
             boundary_value=_optional_score(data.get("boundary_value"), "boundary_value")

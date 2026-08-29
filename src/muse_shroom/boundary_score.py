@@ -28,8 +28,22 @@ RANK_BOUNDARY_WEIGHTS = {
     "novelty": 0.10,
     "contribution": 0.08,
     "transferability": 0.06,
+    "boundary_value": 0.04,
     "redundancy": 0.16,
 }
+
+
+def evidence_mechanism_labels(candidate: dict[str, Any]) -> set[str]:
+    labels: set[str] = set()
+    for mechanism in candidate.get("mechanisms") or []:
+        name = str(mechanism.get("name") or "").strip()
+        if name:
+            labels.add(name.casefold())
+        for term in mechanism.get("matched_terms") or []:
+            value = str(term or "").strip()
+            if value:
+                labels.add(value.casefold())
+    return labels
 
 
 def candidate_mechanism_names(candidate: dict[str, Any]) -> list[str]:

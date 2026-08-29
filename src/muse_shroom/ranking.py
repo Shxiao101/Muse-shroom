@@ -4,16 +4,17 @@ import math
 import re
 from collections import Counter
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Iterable
 
 from .analyze import age_days
 from .boundary import annotate_candidate_mechanisms, build_boundary
 from .boundary_score import (
     RANK_BOUNDARY_WEIGHTS, RELEVANCE_GATE, TYPE_QUALITY_GATE,
     assign_boundary_role, boundary_summary, candidate_mechanism_names,
-    contribution_score, exploration_terms, gated_boundary_value,
-    inspiration_score, mechanism_overlap, new_mechanisms_for, novelty_score,
-    recalled_mechanism_counts, redundancy_penalty,
+    contribution_score, evidence_mechanism_labels, exploration_terms,
+    gated_boundary_value, inspiration_score, mechanism_overlap,
+    new_mechanisms_for, novelty_score, recalled_mechanism_counts,
+    redundancy_penalty,
 )
 from .models import Assessment, ContractError, SearchRequest, repo_key
 from .storage import Store
@@ -136,12 +137,18 @@ def _mmr_select(pool: list[dict[str, Any]], count: int, selected: list[dict[str,
             red = redundancy_penalty(item, presented, presented_counts=presented_counts)
             transfer = item["assessment"].get("transferability")
             transfer = 50.0 if transfer is None else float(transfer)
+            boundary_value = item["assessment"].get("boundary_value")
+            allowed = contrib > 15 or novelty > 15
+            value_bonus = 0.0
+            if allowed and boundary_value is not None:
+                value_bonus = (float(boundary_value) - 50.0) * weights["boundary_value"]
             base = item["scores"][score_name]
             live = (
                 base * (1 - diversity) - penalty * diversity
                 + contrib * weights["contribution"]
                 + novelty * weights["novelty"]
                 + (transfer - 50.0) * weights["transferability"]
+                + value_bonus
                 - red * weights["redundancy"]
             )
             return live, str(item.get("repo") or "").lower()
@@ -156,6 +163,28 @@ def _mmr_select(pool: list[dict[str, Any]], count: int, selected: list[dict[str,
         boundary_ctx["presented"] = presented
         boundary_ctx["presented_counts"] = presented_counts
     return chosen
+
+
+def _explain_ranked_items(items: list[dict[str, Any]], presented_before: Iterable[str],
+                          by_name: dict[str, dict[str, Any]]) -> None:
+    presented = {str(name).casefold() for name in presented_before if str(name).strip()}
+    for item in items:
+        kinds = by_name[item["repo"].lower()].get("matched_kinds", [])
+        fresh = new_mechanisms_for(item, presented)
+        role = assign_boundary_role(item, presented, matched_kinds=kinds)
+        transfer = item["assessment"].get("transferability")
+        reason = ""
+        reasons = item.get("assessment", {}).get("reasons") or []
+        if reasons and str(reasons[0].get("text") or "").strip():
+            reason = str(reasons[0]["text"]).strip()
+        lead = "introduces " + ", ".join(fresh) if fresh else "shares already presented mechanisms"
+        item["boundary_role"] = role
+        item["new_mechanisms"] = fresh
+        item["why_different"] = (f"{lead}; {reason}" if reason else lead)[:240]
+        item["transferability"] = 50.0 if transfer is None else float(transfer)
+        item["inspiration_score"] = item["scores"]["components"].get("inspiration")
+        for name in candidate_mechanism_names(item):
+            presented.add(name.casefold())
 
 
 def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[str, Any]:
@@ -186,6 +215,12 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
             for item in by_name[name].get("evidence", [])
         }
         assessment = Assessment.from_dict(raw, evidence)
+        if assessment.mechanism:
+            allowed = evidence_mechanism_labels(by_name[name])
+            if assessment.mechanism.casefold() not in allowed:
+                raise ContractError(
+                    f"assessment mechanism for {name} must match evidence-backed mechanisms"
+                )
         assessments[name] = assessment
         store.save_assessment(search_id, name, asdict(assessment))
     if not assessments:
@@ -301,26 +336,10 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
     used.update(item["repo"].lower() for item in popular)
     gem_pool = [item for item in eligible if item["repo"].lower() not in used and item["scores"]["components"]["underexposure"] >= 20]
     gems = _mmr_select(gem_pool, 4, adjacent + popular, "gem", boundary_ctx=boundary_ctx)
+    pick_order = adjacent + popular + gems
+    _explain_ranked_items(pick_order, presented_before, by_name)
     ranked_items = popular + gems + adjacent
     returned_names = {item["repo"].lower() for item in ranked_items}
-    for item in ranked_items:
-        kinds = by_name[item["repo"].lower()].get("matched_kinds", [])
-        role = assign_boundary_role(item, presented_before, matched_kinds=kinds)
-        fresh = new_mechanisms_for(item, presented_before)
-        transfer = item["assessment"].get("transferability")
-        reason = ""
-        reasons = item.get("assessment", {}).get("reasons") or []
-        if reasons and str(reasons[0].get("text") or "").strip():
-            reason = str(reasons[0]["text"]).strip()
-        if fresh:
-            lead = "introduces " + ", ".join(fresh)
-        else:
-            lead = "shares already presented mechanisms"
-        item["boundary_role"] = role
-        item["new_mechanisms"] = fresh
-        item["why_different"] = (f"{lead}; {reason}" if reason else lead)[:240]
-        item["transferability"] = 50.0 if transfer is None else float(transfer)
-        item["inspiration_score"] = item["scores"]["components"].get("inspiration")
     boundary = build_boundary(
         candidates, [by_name[name] for name in returned_names],
         boundary_request, rejected_directions=rejected,
