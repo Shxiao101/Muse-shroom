@@ -1,6 +1,6 @@
 # Search request contract
 
-Pass a JSON object to `muse-shroom search --request FILE --mode quick|deep`.
+Pass a JSON object to MCP `muse_search` or `muse-shroom search --request FILE --mode quick|deep`.
 
 Iterate hypotheses use [hypothesis-contract.md](hypothesis-contract.md). Assessments use [assessment-contract.md](assessment-contract.md). Rank output uses [result-contract.md](result-contract.md).
 

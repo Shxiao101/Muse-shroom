@@ -22,6 +22,13 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertNotIn("mechanism_novelty", (REFERENCES / "assessment-contract.md").read_text(encoding="utf-8"))
         self.assertIn("muse-shroom iterate", self.skill)
         self.assertNotIn("muse-shroom expand", self.skill)
+        self.assertNotIn("muse_expand", self.skill)
+        self.assertIn("muse_search", self.skill)
+        self.assertIn("muse_observe", self.skill)
+        self.assertIn("muse_iterate", self.skill)
+        self.assertIn("muse_rank", self.skill)
+        self.assertIn("Otherwise use the CLI", self.skill)
+        self.assertIn("Do not change the search strategy", self.skill)
         self.assertIn("stop.signals", self.skill)
         self.assertIn("should_stop", self.skill)
         self.assertIn("还有吗", self.skill)
@@ -35,6 +42,7 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn("DOM focus", hypothesis)
         self.assertIn("行为干预", hypothesis)
         self.assertIn("observe --search-id", hypothesis)
+        self.assertIn("muse_observe", hypothesis)
         self.assertIn("can_iterate", hypothesis)
 
     def test_hypothesis_contract_keeps_expand_as_compatibility_only(self):

@@ -1,6 +1,6 @@
 # Muse-shroom search internals
 
-CLI implementation notes. Agent Skills should follow `skills/github-inspiration-discovery/` instead of this file.
+CLI and MCP implementation notes. Agent Skills should follow `skills/github-inspiration-discovery/` instead of this file. MCP is a stdio adapter over the same Core; session state stays in SQLite and `search_id` is always explicit.
 
 - Quick mode: at most 12 controlled queries; aliases do not expand the API budget. RRF is capped per concept group.
 - Search output is schema v2: `candidate_count` is full recall, `candidates` is the assessment shortlist of at most 12 rows.

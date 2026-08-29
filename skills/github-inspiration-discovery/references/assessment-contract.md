@@ -1,6 +1,6 @@
 # Candidate assessment contract
 
-Send an object containing `assessments` to `muse-shroom rank --search-id ID --assessments -`:
+Send an object containing `assessments` to MCP `muse_rank` or `muse-shroom rank --search-id ID --assessments -`:
 
 ```json
 {

@@ -25,12 +25,15 @@ muse-shroom auth logout
 
 ```console
 python -m pip install -e .
+python -m pip install -e ".[mcp]"
 muse-shroom --help
 ```
 
+MCP 是可选 extra。安装 `[mcp]` 后可用 `muse-shroom-mcp` 或 `python -m muse_shroom.mcp_server` 以 stdio 启动。
+
 ## 工作流
 
-宿主 Agent 使用 [`skills/github-inspiration-discovery`](skills/github-inspiration-discovery/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → `rank`。快搜是 `search` 然后 `rank`。
+宿主 Agent 使用 [`skills/github-inspiration-discovery`](skills/github-inspiration-discovery/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → `rank`。快搜是 `search` 然后 `rank`。MCP 可用时优先调用 `muse_search` / `muse_observe` / `muse_iterate` / `muse_rank`；否则走 CLI。策略相同。
 
 v0.4 请求把语义拆成 `problem_concepts`、`mechanisms`、`exploration_directions`。契约在 Skill 的 `references/` 下。
 
@@ -41,7 +44,36 @@ muse-shroom iterate --search-id SEARCH_ID --refinement examples/focus-tools.hypo
 muse-shroom rank --search-id SEARCH_ID --assessments assessments.json --output rank.json
 ```
 
-所有命令默认输出 JSON。JSON 输入请保存为 UTF-8 文件；Windows 不要使用 `Get-Content | muse-shroom`。`--output` 把完整 JSON 写到文件，控制台只打印回执。相同 request 和 mode 默认复用已完成的 `search_id`，需要新召回时加 `--refresh`。`--data-dir` 可覆盖平台数据目录。
+所有命令默认输出 JSON。JSON 输入请保存为 UTF-8 文件；Windows 不要使用 `Get-Content | muse-shroom`。`--output` 把完整 JSON 写到文件，控制台只打印回执。相同 request 和 mode 默认复用已完成的 `search_id`，需要新召回时加 `--refresh`。`--data-dir` 可覆盖平台数据目录。MCP 与 CLI 共用同一凭据存储和 SQLite 目录；多轮工具必须显式传 `search_id`。
+
+## MCP 宿主配置
+
+安装 `muse-shroom[mcp]` 后，本地 stdio 入口是 `muse-shroom-mcp`（或 `python -m muse_shroom.mcp_server`）。可选 `--data-dir`。进程只读取已有 GitHub 凭据，不返回 token。
+
+Codex（`~/.codex/config.toml`）：
+
+```toml
+[mcp_servers.muse-shroom]
+command = "muse-shroom-mcp"
+```
+
+Claude Code：
+
+```console
+claude mcp add muse-shroom -- muse-shroom-mcp
+```
+
+Cursor（`.cursor/mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "muse-shroom": {
+      "command": "muse-shroom-mcp"
+    }
+  }
+}
+```
 
 ## 结果
 
@@ -64,4 +96,4 @@ python -m unittest discover -s tests -v
 
 ## 首版边界
 
-没有 MCP、独立模型 API、Web UI、云服务、后台监控、自动安装项目或全量 GitHub 索引。`skills/github-inspiration-discovery` 可独立复制到支持 Skills 的宿主中。
+没有远程 MCP 服务、独立模型 API、Web UI、云服务、后台监控、自动安装项目或全量 GitHub 索引。`skills/github-inspiration-discovery` 可独立复制到支持 Skills 的宿主中。

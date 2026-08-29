@@ -1,6 +1,6 @@
 # Rank result contract
 
-`muse-shroom rank` returns the final display interface. Do not re-sort it.
+MCP `muse_rank` and `muse-shroom rank` return the same display interface. Do not re-sort it.
 
 Read:
 
