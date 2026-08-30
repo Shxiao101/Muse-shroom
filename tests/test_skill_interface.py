@@ -85,6 +85,29 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn("same credential-bearing context", self.skill)
         self.assertNotIn("codexsandboxoffline", self.skill)
 
+    def test_deep_iterations_observe_between_calls_and_rank_is_terminal(self):
+        hypothesis = (REFERENCES / "hypothesis-contract.md").read_text(encoding="utf-8")
+        result_contract = (REFERENCES / "result-contract.md").read_text(encoding="utf-8")
+        for text in (self.skill, hypothesis):
+            self.assertIn(
+                "Never chain two `muse_iterate` calls without an intervening `muse_observe`",
+                text,
+            )
+            self.assertIn("initial deep search response", text)
+        for text in (self.skill, result_contract):
+            self.assertIn("terminal", text)
+            self.assertIn("successful rank", text)
+            self.assertIn("Do not call", text)
+        self.assertIn("Do not issue no-op shell commands", self.skill)
+        self.assertIn("only before rank", self.skill)
+
+    def test_result_keeps_one_order_and_discloses_coverage_gaps(self):
+        result_contract = (REFERENCES / "result-contract.md").read_text(encoding="utf-8")
+        for text in (self.skill, result_contract):
+            self.assertIn("Do not append a second priority, recommendation, or best-first order", text)
+            self.assertIn("boundary.unexplored_directions", text)
+            self.assertIn("boundary.presented_mechanisms", text)
+
     def test_readme_documents_mcp_test_install_and_command(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
