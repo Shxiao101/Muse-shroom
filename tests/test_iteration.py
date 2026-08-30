@@ -31,6 +31,8 @@ def _dom_repos() -> list[dict]:
              topics=["keyboard", "accessibility"]),
         repo("web/focus-visible", 1200, description="Polyfill for accessibility focus-visible",
              topics=["css", "accessibility"]),
+        repo("web/timer-widget", 60, description="Generic countdown timer widget",
+             topics=["timer", "productivity"]),
     ]
 
 
@@ -83,6 +85,7 @@ class AgenticLoopTests(unittest.TestCase):
                 "web/focus-trap": "# Trap\nKeep DOM focus inside a dialog.\n## Usage\nImport it.",
                 "web/keyboard-focus": "# Keyboard\nKeyboard focus helpers.\n## Usage\nTab through widgets.",
                 "web/focus-visible": "# Visible\nAccessibility focus polyfill.\n## Usage\nUse CSS.",
+                "web/timer-widget": "# Timer\nA generic countdown timer.\n## Usage\nStart it.",
                 "tools/website-blocker": "# Blocker\nA website blocker.\n## Usage\nInstall the app.",
                 "tools/commitment-device": "# Stick\nA commitment device.\n## Usage\nLock the session.",
             },
@@ -100,6 +103,7 @@ class AgenticLoopTests(unittest.TestCase):
                     "negative_directions": [
                         "DOM focus", "keyboard focus", "accessibility focus",
                     ],
+                    "rejected_directions": ["countdown timer"],
                     "target_mechanism": "distraction blocking",
                     "target_direction": "commitment device",
                     "concepts": ["website blocker"],
@@ -116,10 +120,13 @@ class AgenticLoopTests(unittest.TestCase):
         self.assertEqual(second["boundary"]["negative_directions"], [
             "DOM focus", "keyboard focus", "accessibility focus",
         ])
+        self.assertEqual(second["boundary"]["rejected_directions"], ["countdown timer"])
         self.assertNotEqual(second["boundary"]["rejected_directions"], second["boundary"]["negative_directions"])
         self.assertEqual([item["stage"] for item in snapshots[:2]], ["search", "iterate"])
         self.assertEqual(snapshots[1]["iteration"], 1)
-        self.assertGreaterEqual(second["candidate_count"], first["candidate_count"])
+        returned = {item["full_name"] for item in second["candidates"]}
+        self.assertEqual(returned, {"tools/website-blocker", "tools/commitment-device"})
+        self.assertLess(second["candidate_count"], first["candidate_count"])
 
     def test_redundant_pomodoro_round_explores_an_uncovered_mechanism(self):
         pomodoros = [

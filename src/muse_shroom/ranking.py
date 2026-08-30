@@ -17,10 +17,33 @@ from .boundary_score import (
     redundancy_penalty,
 )
 from .models import Assessment, ContractError, SearchRequest, repo_key
+from .selection import mechanism_rejected
 from .storage import Store
 
 
 DIFFICULTY = {"easy": 100.0, "medium": 65.0, "hard": 25.0, "unknown": 45.0}
+
+
+def _presentation_candidates(candidates: Iterable[dict[str, Any]],
+                             rejected: Iterable[str]) -> tuple[list[dict[str, Any]], set[str]]:
+    views = []
+    rejected_labels: set[str] = set()
+    for candidate in candidates:
+        kept = []
+        for mechanism in candidate.get("mechanisms") or []:
+            if mechanism_rejected(mechanism, rejected):
+                labels = [mechanism.get("name") or "", *(mechanism.get("matched_terms") or [])]
+                rejected_labels.update(
+                    str(label).strip().casefold()
+                    for label in labels
+                    if str(label).strip()
+                )
+                continue
+            kept.append(mechanism)
+        view = dict(candidate)
+        view["mechanisms"] = kept
+        views.append(view)
+    return views, rejected_labels
 
 
 def _metadata_facts(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -177,7 +200,13 @@ def _explain_ranked_items(items: list[dict[str, Any]], presented_before: Iterabl
         reasons = item.get("assessment", {}).get("reasons") or []
         if reasons and str(reasons[0].get("text") or "").strip():
             reason = str(reasons[0]["text"]).strip()
-        lead = "introduces " + ", ".join(fresh) if fresh else "shares already presented mechanisms"
+        mechanisms = candidate_mechanism_names(item)
+        if fresh:
+            lead = "introduces " + ", ".join(fresh)
+        elif mechanisms:
+            lead = "shares already presented mechanisms"
+        else:
+            lead = "has no labeled mechanism"
         item["boundary_role"] = role
         item["new_mechanisms"] = fresh
         item["why_different"] = (f"{lead}; {reason}" if reason else lead)[:240]
@@ -252,12 +281,20 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
             ((store.latest_boundary_snapshot(search_id, ("search", "expand", "iterate")) or {}).get("boundary") or {})
             .get("presented_mechanisms") or []
         )
+    presentation_candidates, rejected_mechanism_labels = _presentation_candidates(
+        candidates, rejected,
+    )
+    presentation_by_name = {repo_key(item): item for item in presentation_candidates}
+    presented_before = [
+        name for name in presented_before
+        if str(name).casefold() not in rejected_mechanism_labels
+    ]
     exploration = exploration_terms(boundary_request)
-    pool_counts = recalled_mechanism_counts(candidates)
+    pool_counts = recalled_mechanism_counts(presentation_candidates)
     percentiles = _percentiles(candidates)
     scored = []
     for name, assessment in assessments.items():
-        candidate = by_name[name]
+        candidate = presentation_by_name[name]
         stars = int(candidate.get("stargazers_count", 0))
         popularity = percentiles[name]
         activity = max(0.0, 100.0 - age_days(candidate.get("pushed_at")) / 7)
@@ -290,10 +327,13 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
         inspiration = inspiration_score(
             assessment.relevance, novelty, transfer, evidence_completeness,
         )
+        assessment_data = asdict(assessment)
+        if str(assessment_data.get("mechanism") or "").casefold() in rejected_mechanism_labels:
+            assessment_data["mechanism"] = ""
         item = {
             "repo": candidate["full_name"], "url": candidate.get("html_url"),
             "description": candidate.get("description"), "stars": stars,
-            "topics": candidate.get("topics", []), "assessment": asdict(assessment),
+            "topics": candidate.get("topics", []), "assessment": assessment_data,
             "mechanisms": candidate.get("mechanisms", []),
             "discovery_paths": candidate.get("discovery_paths", []),
             "evidence": candidate.get("evidence", []),
@@ -354,13 +394,18 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
     gems = _mmr_select(gem_pool, 4, adjacent + popular, "gem", boundary_ctx=boundary_ctx)
     selection_items = adjacent + popular + gems
     display_items = popular + gems + adjacent
-    _explain_ranked_items(display_items, presented_before, by_name)
+    # Iteration snapshots describe the internal exploration history, while the
+    # ranked list is the final user-visible presentation.  Score novelty against
+    # exploration history above, but explain novelty sequentially within this
+    # display so the first visible occurrence owns each mechanism.
+    display_presented_before: list[str] = []
+    _explain_ranked_items(display_items, display_presented_before, by_name)
     ranked_items = display_items
     selection_order = [item["repo"] for item in selection_items]
     display_order = [item["repo"] for item in display_items]
     returned_names = {item["repo"].lower() for item in ranked_items}
     boundary = build_boundary(
-        candidates, [by_name[name] for name in returned_names],
+        candidates, [presentation_by_name[name] for name in returned_names],
         boundary_request, rejected_directions=rejected,
         negative_directions=negatives,
     ).to_dict()
@@ -371,12 +416,12 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
             "pool_repos": [str(item.get("full_name")) for item in candidates],
         },
     )
-    assignments = sum(len(by_name[item["repo"].lower()].get("mechanisms") or []) for item in ranked_items)
+    assignments = sum(len(item.get("mechanisms") or []) for item in ranked_items)
     redundancy = round(
         max(0, assignments - len(boundary["presented_mechanisms"])) / max(1, assignments), 3,
     )
-    shown, introduced = _display_mechanism_sequence(display_items, presented_before)
-    summary = boundary_summary(ranked_items, presented_before, shown, redundancy)
+    shown, introduced = _display_mechanism_sequence(display_items, display_presented_before)
+    summary = boundary_summary(ranked_items, display_presented_before, shown, redundancy)
     summary["new_mechanisms_introduced"] = introduced
     summary["mechanisms_shown"] = shown
     result = {

@@ -255,8 +255,39 @@ def _compact_search_output(output: dict[str, Any], limit: int = SEARCH_OUTPUT_MA
     for stage in stages:
         if apply(stage):
             return
+    # Persistence happens before this wire-format compaction.  Keep a small,
+    # assessment-grade candidate record instead of failing after the session
+    # has already advanced when a mechanism-rich shortlist is still too large.
+    for item in candidates:
+        evidence = list(item.get("evidence") or [])
+        primary_evidence = next(
+            (value for value in evidence if value.get("kind") == "readme_excerpt"),
+            evidence[0] if evidence else None,
+        )
+        minimal = {
+            key: item[key]
+            for key in (
+                "full_name", "html_url", "description", "topics", "language",
+                "stargazers_count", "archived", "pushed_at", "license",
+                "selection_lanes",
+            )
+            if key in item
+        }
+        if isinstance(minimal.get("description"), str):
+            minimal["description"] = minimal["description"][:96]
+        if isinstance(minimal.get("topics"), list):
+            minimal["topics"] = minimal["topics"][:1]
+        mechanisms = list(item.get("mechanisms") or [])
+        if mechanisms:
+            minimal["mechanisms"] = mechanisms[:1]
+        if primary_evidence is not None:
+            minimal["evidence"] = [primary_evidence]
+        item.clear()
+        item.update(minimal)
+    output["coverage"]["candidate_details_truncated"] = True
+    output["coverage"]["output_truncation_level"] = "assessment_minimal"
     if _sync_output_bytes(output) > limit:
-        raise ValueError(f"compact search output exceeds {limit} bytes after optional-field compaction")
+        raise ValueError(f"assessment-grade search output exceeds {limit} bytes")
 
 
 def public_candidate(candidate: dict[str, Any], *, detailed: bool = False) -> dict[str, Any]:
@@ -928,9 +959,14 @@ class SearchEngine:
                 raise
             except GitHubError:
                 recall_failed = True
+        for candidate in candidates.values():
+            annotate_candidate_mechanisms(candidate, request)
         candidates = {
             name: item for name, item in candidates.items()
-            if candidate_allowed(item, request, include_readme="readme" in item)
+            if candidate_allowed(
+                item, request, include_readme="readme" in item,
+                negative_terms=negatives, rejected_terms=rejected,
+            )
         }
         code_calls = 0
         code_failed = False
@@ -1020,6 +1056,7 @@ class SearchEngine:
             negative_directions=negatives, hypothesis=hypothesis.to_dict(),
             query_summary=self._query_summary(executed, skipped),
             remaining=after_remaining, exploration_additions=additions,
+            negative_terms=negatives, rejected_terms=rejected,
         )
         delta = output.get("boundary_delta") or {}
         executed_any = bool(executed) or calls > 0 or code_calls > 0
@@ -1142,11 +1179,9 @@ class SearchEngine:
                 stop_reasons: list[str] | None = None,
                 hard_stop: bool = False,
                 remaining: dict[str, int] | None = None,
-                exploration_additions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        candidates = {
-            name: item for name, item in candidates.items()
-            if candidate_allowed(item, request, include_readme="readme" in item)
-        }
+                exploration_additions: list[dict[str, Any]] | None = None,
+                negative_terms: Iterable[str] = (),
+                rejected_terms: Iterable[str] = ()) -> dict[str, Any]:
         concept_terms = self._concept_terms(request)
         for candidate in candidates.values():
             candidate.setdefault("evidence", make_evidence(
@@ -1154,6 +1189,14 @@ class SearchEngine:
                 artifact_types=request.artifact_types,
             ))
             annotate_candidate_mechanisms(candidate, request)
+        candidates = {
+            name: item for name, item in candidates.items()
+            if candidate_allowed(
+                item, request, include_readme="readme" in item,
+                negative_terms=negative_terms, rejected_terms=rejected_terms,
+            )
+        }
+        for candidate in candidates.values():
             candidate["matched_kinds"] = sorted(set(candidate.get("matched_kinds", [])))
             candidate["selected_for_assessment"] = False
         assessable = [item for item in candidates.values() if "readme" in item]

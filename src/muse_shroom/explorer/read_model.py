@@ -777,11 +777,12 @@ class ExplorerReadModel:
         finally:
             store.close()
 
-    def result_view(self, search_id: str, *, debug: bool = False) -> dict[str, Any]:
+    def result_view(self, search_id: str, *, at: str | None = None,
+                    debug: bool = False) -> dict[str, Any]:
         store = self._store()
         try:
             ranking = store.get_ranking(search_id)
-            if ranking is None:
+            if ranking is None or not _is_final_view(at):
                 return {
                     "search_id": search_id,
                     "ranked": False,

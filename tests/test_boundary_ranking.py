@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 
-from muse_shroom.boundary import annotate_candidate_mechanisms
+from muse_shroom.boundary import annotate_candidate_mechanisms, build_boundary
 from muse_shroom.boundary_score import (
     contribution_score, gated_boundary_value, redundancy_penalty,
 )
@@ -239,7 +239,7 @@ class BoundaryRankingTests(unittest.TestCase):
         self.assertEqual(result["coverage"]["returned"], 1)
         self.assertEqual(ignored["coverage"]["returned"], 1)
 
-    def test_display_order_explanations_ignore_internal_selection_order(self):
+    def test_display_order_explanations_ignore_internal_selection_order_and_iteration_history(self):
         adjacent = _item("adj/commit", 80, "Commitment device", kinds=["adjacent"])
         popular = _item("big/commit", 25000, "Commitment device", kinds=["core"])
         gem = _item("tiny/bio", 12, "Biofeedback focus sensor", kinds=["core"])
@@ -250,6 +250,13 @@ class BoundaryRankingTests(unittest.TestCase):
             store.create_search("s", FOCUS_REQUEST.to_dict(), "deep")
             for item in (adjacent, popular, gem):
                 store.save_candidate("s", item)
+            store.save_boundary_snapshot(
+                "s", "iterate",
+                build_boundary(
+                    [adjacent, popular, gem], [adjacent, popular, gem], FOCUS_REQUEST,
+                ).to_dict(),
+                iteration=1,
+            )
             result = rank_search(store, "s", [
                 _assess(adjacent, relevance=78, uniqueness=80, transferability=70),
                 _assess(popular, relevance=90, uniqueness=60),
@@ -279,6 +286,72 @@ class BoundaryRankingTests(unittest.TestCase):
             [name.casefold() for name in result["newly_presented_mechanisms"]],
             [name.casefold() for name in result["boundary_summary"]["new_mechanisms_introduced"]],
         )
+
+    def test_first_display_item_without_mechanisms_does_not_claim_prior_presentation(self):
+        unlabeled = _item("plain/tool", 25000, "Useful focus application", kinds=["core"])
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.create_search("s", FOCUS_REQUEST.to_dict(), "deep")
+            store.save_candidate("s", unlabeled)
+            result = rank_search(
+                store, "s", [_assess(unlabeled, relevance=90, uniqueness=60)],
+            )
+            store.close()
+
+        item = next(
+            item for bucket in result["buckets"].values() for item in bucket
+            if item["repo"].lower() == "plain/tool"
+        )
+        self.assertEqual(item["new_mechanisms"], [])
+        self.assertTrue(item["why_different"].startswith("has no labeled mechanism"))
+
+    def test_rank_keeps_mixed_candidate_without_presenting_rejected_mechanism(self):
+        request = SearchRequest.from_dict({
+            "request": "stay focused",
+            "problem_concepts": ["focus"],
+            "mechanisms": [
+                {"term": "pomodoro", "aliases": ["timer"]},
+                "blocking",
+            ],
+            "exploration_directions": ["commitment device", "biofeedback"],
+        })
+        mixed = _item(
+            "block/mixed", 5000, "Pomodoro timer with website blocking", kinds=["core"],
+        )
+        annotate_candidate_mechanisms(mixed, request)
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.create_search("s", request.to_dict(), "deep")
+            store.save_candidate("s", mixed)
+            store.save_boundary_snapshot(
+                "s", "iterate",
+                build_boundary(
+                    [mixed], [mixed], request,
+                    rejected_directions=["timer"],
+                ).to_dict(),
+                iteration=1,
+            )
+            result = rank_search(
+                store, "s", [_assess(mixed, relevance=92, mechanism="timer")],
+            )
+            store.close()
+
+        item = next(item for bucket in result["buckets"].values() for item in bucket)
+        mechanisms = {value["name"].casefold() for value in item["mechanisms"]}
+        self.assertIn("blocking", mechanisms)
+        self.assertNotIn("pomodoro", mechanisms)
+        self.assertNotIn("pomodoro", {name.casefold() for name in item["new_mechanisms"]})
+        self.assertNotIn("pomodoro", item["why_different"].casefold())
+        self.assertEqual(item["assessment"]["mechanism"], "")
+        self.assertIn("pomodoro", {
+            name.casefold() for name in result["boundary"]["recalled_mechanisms"]
+        })
+        self.assertNotIn("pomodoro", {
+            name.casefold() for name in result["boundary"]["presented_mechanisms"]
+        })
+        self.assertNotIn("pomodoro", {
+            name.casefold() for name in result["newly_presented_mechanisms"]
+        })
 
 
 if __name__ == "__main__":

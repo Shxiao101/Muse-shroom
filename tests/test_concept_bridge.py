@@ -4,7 +4,7 @@ import unittest
 
 from muse_shroom.analyze import make_evidence, safe_readme
 from muse_shroom.models import Concept, SearchRequest
-from muse_shroom.search import SearchEngine, public_candidate
+from muse_shroom.search import SearchEngine, _compact_search_output, public_candidate
 from muse_shroom.selection import (
     SHORTLIST_LIMIT, balanced_select, concept_coverage, covered_core_ids,
     lexical_concept_evidence, probe_select, score_candidates, shortlist_select,
@@ -325,6 +325,40 @@ class ConceptBridgeTests(unittest.TestCase):
             self.assertIn("line_start", excerpts[0]["facts"])
             self.assertIn("line_end", excerpts[0]["facts"])
             self.assertIn("parent_evidence_id", excerpts[0]["facts"])
+
+    def test_compact_output_falls_back_to_assessment_grade_candidates(self):
+        candidates = []
+        for index in range(12):
+            candidates.append({
+                "full_name": f"owner/project-{index}",
+                "html_url": f"https://github.com/owner/project-{index}",
+                "description": "A concrete inspiration candidate " * 12,
+                "topics": [f"topic-{value}" for value in range(8)],
+                "stargazers_count": index,
+                "archived": False,
+                "selection_reason": {"reason": "unbounded explanation " * 240},
+                "mechanisms": [{"name": "commitment device"}],
+                "evidence": [{
+                    "id": f"repo:owner/project-{index}:readme:overview",
+                    "kind": "readme_excerpt",
+                    "facts": {
+                        "snippet_type": "overview", "line_start": 1, "line_end": 3,
+                        "parent_evidence_id": f"repo:owner/project-{index}:readme",
+                        "text": "Evidence-backed overview " * 10,
+                    },
+                }],
+            })
+        output = {"coverage": {}, "candidates": candidates}
+
+        _compact_search_output(output)
+
+        encoded = json.dumps(output, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.assertLessEqual(len(encoded), 30_000)
+        self.assertEqual(output["coverage"]["output_bytes"], len(encoded))
+        self.assertEqual(output["coverage"]["output_truncation_level"], "assessment_minimal")
+        self.assertTrue(output["coverage"]["candidate_details_truncated"])
+        self.assertTrue(all(item.get("full_name") and item.get("evidence") for item in candidates))
+        self.assertTrue(all("selection_reason" not in item for item in candidates))
 
     def test_badge_only_overview_is_not_used_as_concept_evidence(self):
         item = repo("owner/badges", 12, description="self-control trainer")

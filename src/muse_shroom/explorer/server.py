@@ -97,7 +97,7 @@ class ExplorerHandler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[3] == "iterations":
                 return _json_bytes(self._model().iteration_timeline(search_id, debug=debug))
             if len(parts) == 4 and parts[3] == "result":
-                return _json_bytes(self._model().result_view(search_id, debug=debug))
+                return _json_bytes(self._model().result_view(search_id, at=at, debug=debug))
             if len(parts) >= 6 and parts[3] == "repos":
                 repo = "/".join(parts[4:])
                 return _json_bytes(self._model().repo_detail(search_id, repo, debug=debug))

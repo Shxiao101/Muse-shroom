@@ -183,6 +183,34 @@ class ExplorerReadModelTests(unittest.TestCase):
                 self.assertIn("why_different", item)
                 self.assertNotIn("components", item.get("scores") or {})
 
+    def test_historical_result_view_does_not_expose_final_rank(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store, _github, search_id = _session(directory, iterate=True, rank=True)
+            try:
+                model = ExplorerReadModel(data_dir=directory)
+                final_views = [
+                    model.result_view(search_id, at=value)
+                    for value in (None, "final", "rank", "latest", "Final")
+                ]
+                initial = model.result_view(search_id, at="initial")
+                iteration = model.result_view(search_id, at="iteration-1")
+            finally:
+                store.close()
+
+        for final in final_views:
+            self.assertTrue(final["ranked"])
+            self.assertTrue(final["items"])
+        for historical in (initial, iteration):
+            self.assertFalse(historical["ranked"])
+            self.assertEqual(historical["display_order"], [])
+            self.assertEqual(historical["items"], [])
+
+        frontend = (
+            Path(__file__).resolve().parents[1] / "src" / "muse_shroom" / "explorer" / "static" / "app.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn('if (current.searchId !== searchId) current.at = "final";', frontend)
+        self.assertIn('id="ranked-results" ${current.at === "final" ? "" : "hidden"}', frontend)
+
     def test_explorer_views_are_read_only(self):
         with tempfile.TemporaryDirectory() as directory:
             store, github, search_id = _session(directory, iterate=True, rank=True)
@@ -328,6 +356,12 @@ class ExplorerHttpTests(unittest.TestCase):
                 self.assertEqual(result["display_order"], json.loads(urllib.request.urlopen(
                     base + f"/api/searches/{search_id}/result", timeout=5,
                 ).read())["display_order"])
+                historical = json.loads(urllib.request.urlopen(
+                    base + f"/api/searches/{search_id}/result?at=initial", timeout=5,
+                ).read())
+                self.assertFalse(historical["ranked"])
+                self.assertEqual(historical["display_order"], [])
+                self.assertEqual(historical["items"], [])
                 request = urllib.request.Request(base + "/api/searches", method="POST")
                 with self.assertRaises(urllib.error.HTTPError) as raised:
                     urllib.request.urlopen(request, timeout=5)

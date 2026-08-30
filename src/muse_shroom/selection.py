@@ -590,7 +590,35 @@ def uncovered_core_terms(selected: Iterable[dict[str, Any]], request: SearchRequ
     return terms
 
 
-def candidate_allowed(candidate: dict[str, Any], request: SearchRequest, *, include_readme: bool) -> bool:
+def _contains_blocked_term(surfaces: Iterable[str], terms: Iterable[str], *,
+                           contiguous: bool = True) -> bool:
+    haystack = " ".join(str(value).casefold() for value in surfaces)
+    phrase_tokens = re.compile(r"[A-Za-z0-9_+#]+|[\u3400-\u9fff]+")
+    haystack_tokens = phrase_tokens.findall(haystack)
+    normalized_haystack = " ".join(haystack_tokens)
+    token_set = set(haystack_tokens)
+    for value in terms:
+        term = str(value).casefold().strip()
+        if not term:
+            continue
+        normalized_term = " ".join(phrase_tokens.findall(term))
+        if term in haystack or normalized_term and normalized_term in normalized_haystack:
+            return True
+        if not contiguous:
+            term_tokens = phrase_tokens.findall(term)
+            if term_tokens and all(token in token_set for token in term_tokens):
+                return True
+    return False
+
+
+def mechanism_rejected(mechanism: dict[str, Any], rejected_terms: Iterable[str]) -> bool:
+    surfaces = [mechanism.get("name") or "", *(mechanism.get("matched_terms") or [])]
+    return _contains_blocked_term(surfaces, rejected_terms)
+
+
+def candidate_allowed(candidate: dict[str, Any], request: SearchRequest, *, include_readme: bool,
+                      negative_terms: Iterable[str] = (),
+                      rejected_terms: Iterable[str] = ()) -> bool:
     constraints = request.constraints
     if not constraints.get("include_archived", False) and candidate.get("archived", False):
         return False
@@ -605,16 +633,26 @@ def candidate_allowed(candidate: dict[str, Any], request: SearchRequest, *, incl
     pushed_after = constraints.get("pushed_after")
     if pushed_after and str(candidate.get("pushed_at", ""))[:10] < str(pushed_after):
         return False
-    terms = [term.casefold() for term in request.exclusions]
-    if terms:
-        surfaces = _text(candidate, include_readme=include_readme)
-        haystack = " ".join(surfaces.values())
-        phrase_tokens = re.compile(r"[A-Za-z0-9_+#]+|[\u3400-\u9fff]+")
-        normalized_haystack = " ".join(phrase_tokens.findall(haystack))
-
-        def excluded(term: str) -> bool:
-            normalized_term = " ".join(phrase_tokens.findall(term))
-            return term in haystack or bool(normalized_term) and normalized_term in normalized_haystack
-        if any(excluded(term) for term in terms):
+    surfaces = _text(candidate, include_readme=include_readme)
+    if _contains_blocked_term(surfaces.values(), request.exclusions):
+        return False
+    identity_surfaces = _text(candidate, include_readme=False)
+    if _contains_blocked_term(
+        identity_surfaces.values(), negative_terms, contiguous=False,
+    ):
+        return False
+    rejected = list(rejected_terms)
+    if rejected:
+        mechanisms = list(candidate.get("mechanisms") or [])
+        if mechanisms:
+            rejected_mechanisms = [
+                mechanism for mechanism in mechanisms
+                if mechanism_rejected(mechanism, rejected)
+            ]
+            if rejected_mechanisms and len(rejected_mechanisms) == len(mechanisms):
+                return False
+        elif _contains_blocked_term(
+            identity_surfaces.values(), rejected, contiguous=False,
+        ):
             return False
     return True

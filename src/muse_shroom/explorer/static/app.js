@@ -88,13 +88,14 @@ async function renderList() {
 }
 
 async function renderDetail(searchId) {
+  if (current.searchId !== searchId) current.at = "final";
   current.searchId = searchId;
   const atParam = current.at && current.at !== "final" ? `&at=${encodeURIComponent(current.at)}` : "";
   const [summary, boundary, timeline, result] = await Promise.all([
     api(`/api/searches/${searchId}`),
     api(`/api/searches/${searchId}/boundary?${atParam.replace(/^&/, "")}`),
     api(`/api/searches/${searchId}/iterations`),
-    api(`/api/searches/${searchId}/result`),
+    api(`/api/searches/${searchId}/result?${atParam.replace(/^&/, "")}`),
   ]);
   current.boundary = boundary;
   current.result = result;
@@ -132,8 +133,10 @@ async function renderDetail(searchId) {
     <h2>Exploration Graph</h2>
     <div class="filters" id="filters"></div>
     <svg id="graph" viewBox="0 0 1100 420" role="img" aria-label="problem to mechanism to repository graph"></svg>
-    <h2>Ranked Results</h2>
-    <div class="results" id="results"></div>
+    <section id="ranked-results" ${current.at === "final" ? "" : "hidden"}>
+      <h2>Ranked Results</h2>
+      <div class="results" id="results"></div>
+    </section>
   `;
   drawTimeline(timeline);
   drawFilters();

@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 
+from muse_shroom.boundary import annotate_candidate_mechanisms
 from muse_shroom.cli import main
 from muse_shroom.models import ContractError, SearchRequest
 from muse_shroom.ranking import _percentiles, rank_search
@@ -34,6 +35,55 @@ class V03QualityTests(unittest.TestCase):
         )
         self.assertTrue(candidate_allowed(separated, request, include_readme=False))
         self.assertFalse(candidate_allowed(explicit, request, include_readme=False))
+
+    def test_rejected_mechanism_drops_timer_only_but_keeps_mixed_blocker(self):
+        request = SearchRequest.from_dict({
+            "request": "focus tools", "core_concepts": ["focus"],
+            "mechanisms": [
+                {"term": "pomodoro", "aliases": ["timer", "time boxing"]},
+                {"term": "distraction blocker", "aliases": ["website blocker"]},
+            ],
+        })
+        timer = repo("tools/timer", 10, description="A time boxing utility")
+        blocker = repo("tools/blocker", 10, description="A website blocker")
+        blocker["readme"] = "Includes an optional session timer."
+        for candidate in (timer, blocker):
+            annotate_candidate_mechanisms(candidate, request)
+
+        self.assertFalse(candidate_allowed(
+            timer, request, include_readme=False, rejected_terms=["pomodoro"],
+        ))
+        self.assertTrue(candidate_allowed(
+            blocker, request, include_readme=True, rejected_terms=["timer", "pomodoro"],
+        ))
+        self.assertEqual(
+            {item["name"] for item in blocker["mechanisms"]},
+            {"pomodoro", "distraction blocker"},
+        )
+
+    def test_negative_direction_uses_identity_fields_not_incidental_readme(self):
+        request = SearchRequest.from_dict({
+            "request": "focus tools", "core_concepts": ["focus"],
+        })
+        wrong_sense = repo(
+            "tools/agent-skill", 10, description="Agent skill productivity harness",
+        )
+        valid = repo("tools/blocker", 10, description="Website blocker for people")
+        valid["readme"] = "Can also be invoked from an agent skill."
+        prompt_list = repo(
+            "lists/awesome-ai-prompts", 10, description="Prompt collection",
+        )
+
+        self.assertFalse(candidate_allowed(
+            wrong_sense, request, include_readme=False, negative_terms=["agent skill"],
+        ))
+        self.assertTrue(candidate_allowed(
+            valid, request, include_readme=True, negative_terms=["agent skill"],
+        ))
+        self.assertFalse(candidate_allowed(
+            prompt_list, request, include_readme=False,
+            rejected_terms=["awesome prompts"],
+        ))
 
     def test_assessment_selection_caps_repositories_from_one_owner(self):
         request = SearchRequest.from_dict({
