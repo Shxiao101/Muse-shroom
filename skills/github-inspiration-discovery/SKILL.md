@@ -31,7 +31,11 @@ Separate the surface phrase from the underlying symptom. “Codex overthinks” 
 
 ## 3. Authenticate
 
-Prefer `muse_status` when MCP is available; otherwise run `muse-shroom auth status` in the host/local user context with network. If a credential is configured, run `search`, `observe`, `iterate`, and `rank` in that same context. Never copy the token into a prompt, file, argument, environment variable, or tool output. Direct the user to `muse-shroom auth login` only when status says no credential is configured or GitHub rejected it.
+Prefer `muse_status` when MCP is available; otherwise establish a credential-bearing host/local user context with network and run `muse-shroom auth status` there. System credential stores are scoped to an OS user or session, so a missing credential reported from a sandbox, container, remote worker, service account, or other isolated context does not prove that the user's normal interactive context is unconfigured.
+
+When CLI status reports no credential from an isolated or uncertain context, use the host's permission or user-context mechanism, when available, to rerun that read-only status in the normal interactive user context. If the host cannot do that, report that the current context cannot verify the user's credential instead of claiming that no credential exists. Do not hard-code a product-specific process, sandbox account, or username to detect this condition.
+
+If a credential is configured, run `search`, `observe`, `iterate`, and `rank` in that same credential-bearing context. Never copy the token into a prompt, file, argument, environment variable, or tool output. Direct the user to `muse-shroom auth login` only when status in the intended credential-bearing context says no credential is configured or GitHub rejects it.
 
 ## 4. Build SearchRequest
 

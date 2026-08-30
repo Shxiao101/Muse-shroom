@@ -77,6 +77,14 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn("Use the CLI only after", self.skill)
         self.assertIn("briefly tell the user the concrete reason", self.skill)
 
+    def test_cli_auth_fallback_is_host_agnostic(self):
+        self.assertIn("credential-bearing host/local user context", self.skill)
+        self.assertIn("does not prove that the user's normal interactive context is unconfigured", self.skill)
+        self.assertIn("current context cannot verify the user's credential", self.skill)
+        self.assertIn("Do not hard-code a product-specific process", self.skill)
+        self.assertIn("same credential-bearing context", self.skill)
+        self.assertNotIn("codexsandboxoffline", self.skill)
+
     def test_readme_documents_mcp_test_install_and_command(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
