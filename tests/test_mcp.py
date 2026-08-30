@@ -505,6 +505,38 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("ContractError", _error_text(result))
                     self.assertIn(expected, _error_text(result))
 
+    async def test_muse_iterate_rejects_null_values_for_non_nullable_fields(self):
+        github = _github()
+        with tempfile.TemporaryDirectory() as directory:
+            mcp = create_server(data_dir=directory, github=github, log_level="ERROR")
+            async with Client(mcp) as client:
+                searched = _payload(await client.call_tool("muse_search", {
+                    "request": REQUEST, "mode": "deep",
+                }))
+                search_id = searched["search_id"]
+                null_strategies = await client.call_tool("muse_iterate", {
+                    "search_id": search_id,
+                    "hypothesis": {
+                        "decision": "continue",
+                        "concepts": ["biofeedback"],
+                        "strategies": None,
+                    },
+                })
+                null_source_iteration = await client.call_tool("muse_iterate", {
+                    "search_id": search_id,
+                    "hypothesis": {
+                        "decision": "continue",
+                        "add_exploration_directions": [{
+                            "term": "biofeedback",
+                            "source_iteration": None,
+                        }],
+                    },
+                })
+        self.assertTrue(null_strategies.is_error)
+        self.assertIn("strategies", _error_text(null_strategies))
+        self.assertTrue(null_source_iteration.is_error)
+        self.assertIn("source_iteration", _error_text(null_source_iteration))
+
     async def test_muse_iterate_and_rank_reject_unknown_and_missing_fields(self):
         github = _github()
         with tempfile.TemporaryDirectory() as directory:

@@ -87,8 +87,8 @@ strict 模式下：
 
 - `decision` 必须是精确的 `continue` 或 `stop`
 - optional text 字段不能传入非 string 或 `null`
-- `strategies` 必须使用已发布的枚举值
-- `add_exploration_directions` 的字段类型与 `source_iteration` integer 约束得到执行
+- `strategies` 必须使用已发布的枚举值，显式 `null` 会被拒绝
+- `add_exploration_directions` 的字段类型与 `source_iteration` integer 约束得到执行，显式 `null` 不再按缺省值处理
 
 ### 6. 统一 enum 来源
 
@@ -117,6 +117,8 @@ request = 123                            → reject
 concept.term = 123                       → reject
 assessment.artifact_type = "banana"     → reject
 reason.evidence_ids = "repo:..."         → reject
+strategies = null                       → reject
+source_iteration = null                 → reject
 ```
 
 同时验证了完整合法 v0.4 payload 仍然可以通过。
@@ -134,7 +136,7 @@ python -m unittest tests.test_contracts_and_queries -v
 结果：
 
 ```text
-Ran 24 tests
+Ran 25 tests
 OK
 ```
 
@@ -147,7 +149,7 @@ python -m unittest tests.test_mcp -v
 结果：
 
 ```text
-Ran 13 tests
+Ran 14 tests
 OK
 ```
 
@@ -160,7 +162,7 @@ python -m unittest discover -s tests -v
 结果：
 
 ```text
-Ran 152 tests
+Ran 154 tests
 OK
 ```
 
@@ -215,4 +217,4 @@ Issue 1 已修复。
 
 ## Git 状态说明
 
-本次没有创建 commit，也没有 push。已有的 blackbox/review 未跟踪文件未被修改。
+基础 contract parity 修复已通过 commit `4b61d23` 推送到 `origin/experiment`；本次两个 null parity 补丁随本报告纳入后续提交。已有的 blackbox/review 未跟踪文件未被修改。

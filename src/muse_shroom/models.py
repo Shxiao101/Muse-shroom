@@ -461,6 +461,8 @@ class ExplorationAddition:
                     source = int(source)
                 except (TypeError, ValueError) as exc:
                     raise ContractError("add_exploration_directions source_iteration must be an integer") from exc
+        elif strict and "source_iteration" in value:
+            raise ContractError("add_exploration_directions source_iteration must be an integer")
         return cls(term, reason, evidence, source)
 
 
@@ -540,6 +542,8 @@ class SearchHypothesis:
             raise ContractError("hypothesis.add_exploration_directions cannot contain more than 5 items")
         strategies_raw = data.get("strategies", [])
         if strategies_raw is None:
+            if strict:
+                raise ContractError("hypothesis.strategies must be an array of strings")
             strategies_raw = []
         if not isinstance(strategies_raw, list) or any(not isinstance(item, str) for item in strategies_raw):
             raise ContractError("hypothesis.strategies must be an array of strings")

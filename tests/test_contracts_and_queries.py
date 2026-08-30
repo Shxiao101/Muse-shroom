@@ -214,6 +214,25 @@ class ContractAndQueryTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             SearchHypothesis.from_dict({"concepts": ["pomodoro"]}, strict=True)
 
+    def test_strict_hypothesis_rejects_null_schema_values(self):
+        with self.assertRaises(ContractError) as raised:
+            SearchHypothesis.from_dict({
+                "decision": "continue",
+                "concepts": ["pomodoro"],
+                "strategies": None,
+            }, strict=True)
+        self.assertIn("strategies", str(raised.exception))
+
+        with self.assertRaises(ContractError) as raised:
+            SearchHypothesis.from_dict({
+                "decision": "continue",
+                "add_exploration_directions": [{
+                    "term": "biofeedback",
+                    "source_iteration": None,
+                }],
+            }, strict=True)
+        self.assertIn("source_iteration", str(raised.exception))
+
     def test_strict_assessment_rejects_missing_and_unknown_fields(self):
         evidence = {"repo:owner/tool:readme:overview": "readme_excerpt"}
         complete = {
