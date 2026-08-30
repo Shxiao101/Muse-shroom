@@ -153,9 +153,38 @@ class ContractAndQueryTests(unittest.TestCase):
             "problem_concepts": [{"term": "focus", "aliases": ["concentration"]}],
             "mechanisms": ["pomodoro"],
             "exploration_directions": ["commitment device"],
+            "artifact_types": ["application", "plugin"],
+            "constraints": {
+                "language": "Python",
+                "pushed_after": "2026-01-01",
+                "include_archived": False,
+                "min_stars": 1,
+                "max_stars": 100,
+            },
+            "exclusions": ["awesome list"],
+            "exploration_level": 0.6,
         }, strict=True)
         self.assertFalse(parsed.legacy_schema)
         self.assertEqual(parsed.problem_concepts[0].term, "focus")
+
+    def test_strict_search_request_matches_published_types_and_enums(self):
+        cases = [
+            ({"request": 123, "problem_concepts": ["focus"]}, "request"),
+            ({"request": "focus", "problem_concepts": ["focus"], "artifact_types": "application"}, "artifact_types"),
+            ({"request": "focus", "problem_concepts": ["focus"], "artifact_types": ["banana"]}, "artifact_types"),
+            ({
+                "request": "focus", "problem_concepts": ["focus"],
+                "constraints": {"include_archived": "false"},
+            }, "include_archived"),
+            ({"request": "focus", "problem_concepts": [{"term": 123}]}, "concept term"),
+            ({"request": "focus", "problem_concepts": [{"term": "focus", "weight": "1"}]}, "concept weight"),
+            ({"request": "focus", "problem_concepts": ["focus"], "exclusions": [123]}, "exclusions"),
+        ]
+        for payload, expected in cases:
+            with self.subTest(expected=expected):
+                with self.assertRaises(ContractError) as raised:
+                    SearchRequest.from_dict(payload, strict=True)
+                self.assertIn(expected, str(raised.exception))
 
     def test_strict_search_request_keeps_legacy_fields_explicit(self):
         parsed = SearchRequest.from_dict(
@@ -215,6 +244,35 @@ class ContractAndQueryTests(unittest.TestCase):
         with self.assertRaises(ContractError) as raised:
             Assessment.from_dict(no_reasons, evidence, strict=True)
         self.assertIn("reasons", str(raised.exception))
+
+    def test_strict_assessment_matches_published_types_and_enums(self):
+        evidence = {"repo:owner/tool:metadata": "metadata"}
+        complete = {
+            "repo": "owner/tool",
+            "relevance": 80,
+            "uniqueness": 70,
+            "usability": 75,
+            "difficulty": "unknown",
+            "use_case": "unknown",
+            "category": "focus",
+            "artifact_type": "application",
+            "reasons": [{"text": "metadata", "evidence_ids": ["repo:owner/tool:metadata"]}],
+            "risks": [],
+        }
+        cases = [
+            ({"artifact_type": "banana"}, "artifact_type"),
+            ({"difficulty": "trivial"}, "difficulty"),
+            ({"relevance": "80"}, "relevance"),
+            ({"use_case": 123}, "use_case"),
+            ({"category": 123}, "category"),
+            ({"reasons": [{"text": "metadata", "evidence_ids": "repo:owner/tool:metadata"}]}, "evidence_ids"),
+            ({"reasons": [{"text": 123, "evidence_ids": ["repo:owner/tool:metadata"]}]}, "text"),
+        ]
+        for patch, expected in cases:
+            with self.subTest(expected=expected):
+                with self.assertRaises(ContractError) as raised:
+                    Assessment.from_dict({**complete, **patch}, evidence, strict=True)
+                self.assertIn(expected, str(raised.exception))
 
     def test_concepts_cannot_inject_github_qualifiers(self):
         request = SearchRequest.from_dict({"request": "x", "core_concepts": ["music stars:>50000"]})

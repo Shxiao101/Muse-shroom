@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .models import ASSESSMENT_ARTIFACT_TYPES, ASSESSMENT_DIFFICULTIES, SEARCH_ARTIFACT_TYPES
+
 CONCEPT_SCHEMA: dict[str, Any] = {
     "anyOf": [
         {
@@ -75,7 +77,7 @@ SEARCH_REQUEST_SCHEMA: dict[str, Any] = {
             "type": "array",
             "items": {
                 "type": "string",
-                "enum": ["application", "mcp", "skill", "mod", "plugin", "library"],
+                "enum": list(SEARCH_ARTIFACT_TYPES),
             },
             "description": "Desired artifact form. Keep generic words like tool/AI out of concepts.",
         },
@@ -284,7 +286,7 @@ ASSESSMENT_SCHEMA: dict[str, Any] = {
         "usability": {"type": "number", "minimum": 0, "maximum": 100},
         "difficulty": {
             "type": "string",
-            "enum": ["easy", "medium", "hard", "unknown"],
+            "enum": list(ASSESSMENT_DIFFICULTIES),
         },
         "use_case": {
             "type": "string",
@@ -296,7 +298,7 @@ ASSESSMENT_SCHEMA: dict[str, Any] = {
         },
         "artifact_type": {
             "type": "string",
-            "enum": ["application", "mcp", "skill", "mod", "plugin", "library", "unknown"],
+            "enum": list(ASSESSMENT_ARTIFACT_TYPES),
         },
         "reasons": {
             "type": "array",

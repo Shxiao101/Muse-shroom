@@ -484,6 +484,27 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("problem_concepts", legacy.get("contract_warning", ""))
         self.assertNotEqual(valid["search_id"], legacy["search_id"])
 
+    async def test_muse_search_rejects_published_schema_type_mismatches(self):
+        github = _github()
+        invalid_requests = [
+            ({"request": 123, "problem_concepts": ["focus"]}, "request"),
+            ({"request": "focus", "problem_concepts": ["focus"], "artifact_types": "application"}, "artifact_types"),
+            ({"request": "focus", "problem_concepts": ["focus"], "artifact_types": ["banana"]}, "artifact_types"),
+            ({
+                "request": "focus", "problem_concepts": ["focus"],
+                "constraints": {"include_archived": "false"},
+            }, "include_archived"),
+            ({"request": "focus", "problem_concepts": [{"term": 123}]}, "concept term"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            mcp = create_server(data_dir=directory, github=github, log_level="ERROR")
+            async with Client(mcp) as client:
+                for request, expected in invalid_requests:
+                    result = await client.call_tool("muse_search", {"request": request})
+                    self.assertTrue(result.is_error, expected)
+                    self.assertIn("ContractError", _error_text(result))
+                    self.assertIn(expected, _error_text(result))
+
     async def test_muse_iterate_and_rank_reject_unknown_and_missing_fields(self):
         github = _github()
         with tempfile.TemporaryDirectory() as directory:
@@ -536,6 +557,23 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
                         "usability": 80,
                     }],
                 })
+                invalid_artifact_type = await client.call_tool("muse_rank", {
+                    "search_id": search_id,
+                    "assessments": [{
+                        **_assessment(excerpt),
+                        "artifact_type": "banana",
+                    }],
+                })
+                invalid_evidence_ids = await client.call_tool("muse_rank", {
+                    "search_id": search_id,
+                    "assessments": [{
+                        **_assessment(excerpt),
+                        "reasons": [{
+                            "text": "wrong shape",
+                            "evidence_ids": excerpt,
+                        }],
+                    }],
+                })
                 explicit_unknown = _payload(await client.call_tool("muse_rank", {
                     "search_id": search_id,
                     "assessments": [{
@@ -565,6 +603,10 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("fit", _error_text(unknown_rank))
         self.assertTrue(missing_fields.is_error)
         self.assertIn("use_case", _error_text(missing_fields))
+        self.assertTrue(invalid_artifact_type.is_error)
+        self.assertIn("artifact_type", _error_text(invalid_artifact_type))
+        self.assertTrue(invalid_evidence_ids.is_error)
+        self.assertIn("evidence_ids", _error_text(invalid_evidence_ids))
         self.assertEqual(explicit_unknown["search_id"], search_id)
         self.assertEqual(explicit_unknown["next_action"], "done")
 
