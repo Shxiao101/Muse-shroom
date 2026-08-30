@@ -31,4 +31,6 @@ next_action
 
 If `stale` is true or `incomplete_phase` is set, disclose that briefly and still present reliable rows.
 
-Present each item as: name, one-line use, boundary role, why it is worth looking at, and any new mechanism. Add stars, maintenance, or evidence only when the user needs them.
+Present each item as: name, one-line use, boundary role, why it is worth looking at, and a visible new-mechanism field. Render `New mechanism: <comma-separated new_mechanisms>` when non-empty and `New mechanism: none` when empty, translated to the user's language when appropriate. Copy only the item's computed `new_mechanisms`; do not infer one from its description, category, or `why_different`.
+
+Project count and mechanism count are different quantities. Do not describe the number of returned projects as the number of distinct mechanisms. Use `newly_presented_mechanisms` or `coverage.presented_mechanism_count` for mechanism-diversity summaries, and keep items with empty `new_mechanisms` explicit.

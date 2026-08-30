@@ -27,7 +27,7 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn("muse_observe", self.skill)
         self.assertIn("muse_iterate", self.skill)
         self.assertIn("muse_rank", self.skill)
-        self.assertIn("Otherwise use the CLI", self.skill)
+        self.assertIn("Prefer Muse-shroom MCP over the CLI", self.skill)
         self.assertIn("Do not change the search strategy", self.skill)
         self.assertNotIn("explorer", self.skill.lower())
         self.assertIn("stop.signals", self.skill)
@@ -53,6 +53,29 @@ class SkillInterfaceTests(unittest.TestCase):
         hypothesis = (REFERENCES / "hypothesis-contract.md").read_text(encoding="utf-8")
         self.assertIn("iterate", hypothesis)
         self.assertIn("compatibility", hypothesis.lower())
+
+    def test_presentation_contract_requires_explicit_mechanisms_and_accurate_counts(self):
+        result_contract = (REFERENCES / "result-contract.md").read_text(encoding="utf-8")
+        for text in (self.skill, result_contract):
+            self.assertIn("New mechanism: <comma-separated new_mechanisms>", text)
+            self.assertIn("New mechanism: none", text)
+            self.assertIn(
+                "Do not describe the number of returned projects as the number of distinct mechanisms",
+                text,
+            )
+            self.assertIn("coverage.presented_mechanism_count", text)
+
+    def test_intent_and_mode_are_combined_by_default(self):
+        self.assertIn("one interaction by default", self.skill)
+        self.assertIn("In the same message", self.skill)
+        self.assertNotIn("Resolve two interactions separately", self.skill)
+
+    def test_mcp_routing_discovers_deferred_tools_before_cli_fallback(self):
+        self.assertIn("tool-search or deferred-tool discovery", self.skill)
+        self.assertIn("The initial visible tool list alone is not evidence", self.skill)
+        self.assertIn("call `muse_status`", self.skill)
+        self.assertIn("Use the CLI only after", self.skill)
+        self.assertIn("briefly tell the user the concrete reason", self.skill)
 
     def test_readme_documents_mcp_test_install_and_command(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")

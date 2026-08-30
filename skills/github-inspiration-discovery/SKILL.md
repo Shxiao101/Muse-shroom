@@ -9,7 +9,9 @@ Turn a fuzzy request into an evidence-backed shortlist with Muse-shroom. You int
 
 Contracts: [request-contract.md](references/request-contract.md), [hypothesis-contract.md](references/hypothesis-contract.md), [assessment-contract.md](references/assessment-contract.md), [result-contract.md](references/result-contract.md). Follow `next_action` from each search/observe/iterate/rank response: `iterate`, `rank`, or `done`.
 
-If the host provides Muse-shroom MCP tools (`muse_search`, `muse_observe`, `muse_iterate`, `muse_rank`), call those with the same JSON contracts. Otherwise use the CLI. Optional `muse_inspect` is debug-only. Do not change the search strategy for MCP vs CLI. When using the CLI, write JSON as UTF-8 files; on Windows, never pipe `Get-Content` into Muse-shroom.
+Prefer Muse-shroom MCP over the CLI. MCP tools may be deferred and absent from the initial visible tool list. Before concluding that MCP is unavailable, use the host's tool-search or deferred-tool discovery mechanism with `muse` or `shroom`, when that mechanism exists. If discovery finds Muse-shroom, load it and call `muse_status`; then use `muse_search`, `muse_observe`, `muse_iterate`, and `muse_rank` with the same JSON contracts.
+
+Use the CLI only after deferred-tool discovery explicitly returns no Muse-shroom tools, the host has no discovery mechanism and exposes no Muse-shroom tools, or loading/starting the discovered MCP server fails. The initial visible tool list alone is not evidence that MCP is unavailable. When falling back, briefly tell the user the concrete reason. Optional `muse_inspect` is debug-only. Do not change the search strategy for MCP vs CLI. When using the CLI, write JSON as UTF-8 files; on Windows, never pipe `Get-Content` into Muse-shroom.
 
 When the user explicitly says to use Muse-shroom (“使用 Muse-shroom”, “use Muse-shroom”, “search with Muse-shroom”), use Muse-shroom as the primary retrieval path. Do not start with generic Web search instead. After a successful Muse-shroom flow, do not repeat the same search through Web unless you have a separate verification reason. Web may still be used later for explicit verification. This is Muse-shroom-first, not a ban on Web.
 
@@ -19,10 +21,11 @@ Find popular representatives, hidden gems, and transferable adjacent work. Do no
 
 ## 2. Interpret intent
 
-Resolve two interactions separately. Do not combine them into one question.
+Resolve the search interpretation and mode in one interaction by default.
 
-1. Propose the search interpretation in user-facing language: problem, likely mechanisms, exploration directions, artifact types, constraints, exclusions. Wait for confirmation unless the user already gave a specific reading or said “就搜这个”, “直接搜”, “无需确认”, or an equivalent. Apply corrections before searching.
-2. If mode is unspecified, ask: **quick** (one search, then rank) or **deep** (search, then a bounded observe → decide → iterate loop, then rank).
+1. Propose the search interpretation in user-facing language: problem, likely mechanisms, exploration directions, artifact types, constraints, exclusions.
+2. In the same message, if mode is unspecified, ask: **quick** (one search, then rank) or **deep** (search, then a bounded observe → decide → iterate loop, then rank).
+3. Treat a plain quick/deep choice as confirmation of the proposed interpretation. If the user corrects the interpretation while choosing a mode, apply those corrections before searching. If the user already gave a specific reading or said “就搜这个”, “直接搜”, “无需确认”, or an equivalent, do not ask for separate confirmation.
 
 Separate the surface phrase from the underlying symptom. “Codex overthinks” can mean latency, cost, over-design, repeated review, or caution; keep those as distinct concepts.
 
@@ -68,9 +71,9 @@ Call `muse_rank` with `search_id` and assessments, or `muse-shroom rank --search
 
 ## 9. Present
 
-Follow `display_order`. For each item: name, one-line use, boundary role, why it is worth looking at, new mechanism if any. Use the role meanings in the result contract. Do not dump internal scores.
+Follow `display_order`. For each item: name, one-line use, boundary role, why it is worth looking at, and an explicit new-mechanism field. Render `New mechanism: <comma-separated new_mechanisms>` when the array is non-empty and `New mechanism: none` when it is empty, translated to the user's language when appropriate. Use only that item's `new_mechanisms`; do not infer one from its description or category. Use the role meanings in the result contract. Do not dump internal scores.
 
-Quick: show the list only. Deep: one sentence on how the search moved (from `boundary`, `negative_directions`, `newly_presented_mechanisms`), then the list. If `stale` or `incomplete_phase` is set, disclose it briefly and still show reliable rows.
+Quick: show the list only. Deep: one sentence on how the search moved (from `boundary`, `negative_directions`, `newly_presented_mechanisms`), then the list. Do not describe the number of returned projects as the number of distinct mechanisms. If summarizing diversity, use `newly_presented_mechanisms` or `coverage.presented_mechanism_count`; distinguish projects with an empty `new_mechanisms` array from projects that introduce a labeled mechanism. If `stale` or `incomplete_phase` is set, disclose it briefly and still show reliable rows.
 
 ## 10. Safety
 
