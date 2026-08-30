@@ -14,6 +14,21 @@ from tests.helpers import repo
 
 
 class StorageAndCliTests(unittest.TestCase):
+    def test_positive_feedback_does_not_create_topic_personalization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                store.add_feedback("liked/repo", True, True, False, None)
+                self.assertEqual(
+                    store.feedback_bias("other/repo", ["same-topic"]),
+                    0.0,
+                )
+                self.assertEqual(store.feedback_bias("liked/repo"), 0.0)
+                store.add_feedback("rejected/repo", False, False, False, None)
+                self.assertLess(store.feedback_bias("rejected/repo"), 0.0)
+            finally:
+                store.close()
+
     def test_doctor_reports_missing_token_without_printing_value(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True), \
              patch("muse_shroom.cli.resolve_token", return_value=None):

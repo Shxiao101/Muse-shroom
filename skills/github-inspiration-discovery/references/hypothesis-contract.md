@@ -46,6 +46,12 @@ Direction fields are not interchangeable:
 
 Do not write a new positive preference into `negative_directions` or `rejected_directions`. Discovered terms are not searched and do not become mechanisms until listed in `promote_discovered_terms` or `add_exploration_directions` and later matched by description, Topics, or README evidence.
 
+`promote_discovered_terms` must match a term in
+`observation.discovered_term_evidence`. A new
+`add_exploration_directions` item must cite `discovered_term`, a candidate
+evidence ID, or `user_request` when the user explicitly introduced the
+direction. Unsupported high-priority directions are rejected.
+
 The initial deep search response contains the observation used to decide the first iteration. After every successful iteration whose `next_action` remains `iterate`, restore the session with MCP `muse_observe` or `muse-shroom observe --search-id SEARCH_ID` before preparing another hypothesis. Never chain two `muse_iterate` calls without an intervening `muse_observe`. Observe is read-only: no GitHub requests, no new iteration, no boundary writes. `next_action=done` means the default flow has finished and you must not continue automatically. `can_iterate=true` means a user request for more (还有吗 / 再找一些 / 换点不同的) may still `iterate` this `search_id`. `can_iterate` is true only for deep mode with remaining iterations, remaining queries, and no hard stop.
 
 `strategies` may include `keyword`, `relationship`, `seed`, `code`, and `owner`. Omit it to run keyword reformulation only; supplying `seeds` or `filenames` also enables the matching retrieval strategy.

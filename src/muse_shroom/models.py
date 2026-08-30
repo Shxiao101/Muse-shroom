@@ -328,6 +328,7 @@ class SearchBoundary:
     unexplored_directions: list[str] = field(default_factory=list)
     rejected_directions: list[str] = field(default_factory=list)
     discovered_terms: list[str] = field(default_factory=list)
+    discovered_term_evidence: list[dict[str, Any]] = field(default_factory=list)
     negative_directions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

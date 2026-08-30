@@ -458,6 +458,10 @@ class ExplorerReadModel:
             rejected = [_ for _ in (boundary.get("rejected_directions") or []) if str(_).strip()]
             negative = [_ for _ in (boundary.get("negative_directions") or []) if str(_).strip()]
             discovered_terms = [_ for _ in (boundary.get("discovered_terms") or []) if str(_).strip()]
+            discovered_term_evidence = [
+                item for item in boundary.get("discovered_term_evidence") or []
+                if isinstance(item, dict) and str(item.get("term") or "").strip()
+            ]
             recalled_keys = {_key(name) for name in recalled}
             presented_keys = {_key(name) for name in presented}
             unexplored_keys = {_key(name) for name in unexplored}
@@ -640,6 +644,7 @@ class ExplorerReadModel:
                     "rejected": rejected,
                     "negative": negative,
                     "discovered_terms": discovered_terms,
+                    "discovered_term_evidence": discovered_term_evidence,
                 },
                 "mechanisms": mechanism_nodes,
                 "delta": {
@@ -677,6 +682,7 @@ class ExplorerReadModel:
                     records.append(("event", str(row.get("created_at") or ""), row))
             records.sort(key=lambda item: (item[1], 0 if item[0] == "snapshot" else 1))
             steps = []
+            evidence_by_term: dict[str, dict[str, Any]] = {}
             for kind_tag, _when, payload_row in records:
                 if kind_tag == "event":
                     reason = payload_row.get("stop_reason")
@@ -716,6 +722,38 @@ class ExplorerReadModel:
                 summary = snapshot.get("query_summary") or {}
                 executed = _query_executed(summary)
                 hyp = snapshot.get("hypothesis") or {}
+                promoted = {
+                    _key(term) for term in (hyp or {}).get("promote_discovered_terms") or []
+                }
+                promoted.update(
+                    _key(item.get("term") if isinstance(item, dict) else item)
+                    for item in (hyp or {}).get("add_exploration_directions") or []
+                )
+                evidence_sources = [
+                    evidence_by_term[key] for key in promoted if key in evidence_by_term
+                ]
+                for addition in (hyp or {}).get("add_exploration_directions") or []:
+                    if not isinstance(addition, dict):
+                        continue
+                    term = str(addition.get("term") or "")
+                    key = _key(term)
+                    evidence_id = str(addition.get("evidence") or "")
+                    if key in {_key(item.get("term") or "") for item in evidence_sources}:
+                        continue
+                    if evidence_id == "user_request":
+                        evidence_sources.append({
+                            "term": term, "kind": "user_request", "sources": [],
+                        })
+                    elif evidence_id:
+                        evidence_sources.append({
+                            "term": term,
+                            "kind": "candidate_evidence",
+                            "sources": [{"evidence_id": evidence_id}],
+                        })
+                for item in boundary.get("discovered_term_evidence") or []:
+                    key = _key(item.get("term") or "")
+                    if key:
+                        evidence_by_term.setdefault(key, item)
                 hard = []
                 for row in rows_by_iteration.get(iteration, []):
                     reason = row.get("stop_reason")
@@ -733,6 +771,15 @@ class ExplorerReadModel:
                     "target_direction": (hyp or {}).get("target_direction") or None,
                     "target_mechanism": (hyp or {}).get("target_mechanism") or None,
                     "queries_executed": executed,
+                    "queries": [
+                        {
+                            key: item.get(key)
+                            for key in ("query", "kind", "term")
+                            if item.get(key) is not None
+                        }
+                        for item in summary.get("executed") or []
+                    ],
+                    "evidence_sources": evidence_sources,
                     "new_mechanisms": list(delta.get("new_mechanisms") or []),
                     "new_presented_mechanisms": list(delta.get("new_presented_mechanisms") or []),
                     "new_directions": list(delta.get("new_directions") or []),

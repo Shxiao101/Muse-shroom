@@ -51,3 +51,22 @@ Raw v0.4 results also include `boundary`, `boundary_delta`, and diagnostic-only 
 The prompt fixture retains a duplicate `core_concepts` field solely so historical fixture validators can still inspect it. `version_worker.py` detects the checked-out request model: current versions consume the v0.4 fields, while older baseline worktrees receive a generated v0.3 request with problem concepts and mechanisms combined as core concepts.
 
 The probe and shortlist stages cap a single repository owner at two entries. This keeps ecosystems such as a release tool plus its plugins discoverable without allowing one owner to dominate the Agent's review budget.
+
+## Boundary evaluation
+
+Eight mechanism-space golden cases live in
+`evaluation/boundary-golden-cases.json`. They define mainstream mechanisms,
+acceptable new mechanism types, repetition to avoid, and a required
+cross-mechanism direction; they deliberately do not require a particular
+repository.
+
+Run the formal metric evaluator on a raw agentic-loop result pack:
+
+```console
+python evaluation/boundary_eval.py evaluation/results/candidate.raw.json
+```
+
+It reports mechanism redundancy, per-iteration mechanisms and boundary gain,
+direction coverage, presented mechanism count, duplicate query rate, unexplored
+directions at stop, query change, and promotion evidence. A single-pass pack is
+reported as `insufficient_agentic_cases`, never as a Boundary success.

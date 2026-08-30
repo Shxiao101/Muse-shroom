@@ -49,7 +49,7 @@ Call `muse_search` with the SearchRequest, `mode`, and optional `refresh`; or `m
 
 Quick mode skips this section and goes to assess.
 
-Each round, read `observation` in this order: `stop`, `unexplored_directions`, `boundary_delta`, `mechanism_distribution`, `ambiguity_signals`, `discovered_terms`, `remaining_budget`, `anchors`. Do not rebuild the strategy from the original request or by scanning the whole candidate pool.
+Each round, read `observation` in this order: `stop`, `unexplored_directions`, `boundary_delta`, `mechanism_distribution`, `ambiguity_signals`, `discovered_term_evidence`, `remaining_budget`, `anchors`. Promote only terms carried by `discovered_term_evidence`; cite `discovered_term`, its evidence ID, or `user_request` for an added direction. Do not rebuild the strategy from the original request or by scanning the whole candidate pool.
 
 The initial deep search response contains the observation used to decide the first iteration. After every successful `muse_iterate` whose `next_action` is still `iterate`, call `muse_observe` before preparing another hypothesis. Never chain two `muse_iterate` calls without an intervening `muse_observe`. If observe returns `next_action=done` or `can_iterate=false`, do not iterate again.
 

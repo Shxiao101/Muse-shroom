@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "focus",
+      "request": "提高专注力",
+      "mainstream_mechanisms": ["专注计时", "任务流管理", "分心网站屏蔽"],
+      "acceptable_new_mechanism_types": ["行为承诺", "环境与通知干预", "生理反馈"],
+      "avoid_repeating": ["多个同质番茄钟"],
+      "cross_mechanism_directions": ["digital wellbeing", "biofeedback"]
+    },
+    {
+      "id": "codex-overthinking",
+      "request": "减少 Codex overthinking",
+      "mainstream_mechanisms": ["推理预算", "任务拆分", "停止条件"],
+      "acceptable_new_mechanism_types": ["YAGNI 约束", "审查门禁", "反馈回路"],
+      "avoid_repeating": ["同义 prompt 模板"],
+      "cross_mechanism_directions": ["implementation minimalism", "decision hygiene"]
+    },
+    {
+      "id": "learning-habit",
+      "request": "帮助程序员形成学习习惯",
+      "mainstream_mechanisms": ["间隔重复", "学习计划", "打卡"],
+      "acceptable_new_mechanism_types": ["承诺装置", "环境提示", "社交问责"],
+      "avoid_repeating": ["多个课程列表"],
+      "cross_mechanism_directions": ["behavior design", "accountability"]
+    },
+    {
+      "id": "ai-music",
+      "request": "AI 音乐创作辅助",
+      "mainstream_mechanisms": ["生成式作曲", "转录", "音频处理"],
+      "acceptable_new_mechanism_types": ["可视化反馈", "人机协作界面", "硬件控制"],
+      "avoid_repeating": ["多个模型封装"],
+      "cross_mechanism_directions": ["creative coding", "tangible interface"]
+    },
+    {
+      "id": "phone-distraction",
+      "request": "减少手机分心",
+      "mainstream_mechanisms": ["应用屏蔽", "使用时长统计", "专注模式"],
+      "acceptable_new_mechanism_types": ["摩擦设计", "替代行为", "物理环境干预"],
+      "avoid_repeating": ["多个相同 app blocker"],
+      "cross_mechanism_directions": ["digital minimalism", "commitment device"]
+    },
+    {
+      "id": "code-review",
+      "request": "提高代码 review 质量",
+      "mainstream_mechanisms": ["静态分析", "PR 模板", "review checklist"],
+      "acceptable_new_mechanism_types": ["认知偏差检查", "变更风险可视化", "教学反馈"],
+      "avoid_repeating": ["多个 linter"],
+      "cross_mechanism_directions": ["decision record", "change impact"]
+    },
+    {
+      "id": "long-project-motivation",
+      "request": "帮助长期项目保持动力",
+      "mainstream_mechanisms": ["里程碑", "任务追踪", "进度图"],
+      "acceptable_new_mechanism_types": ["可见进展", "奖励调度", "身份与社群反馈"],
+      "avoid_repeating": ["多个看板"],
+      "cross_mechanism_directions": ["progress visualization", "behavioral economics"]
+    },
+    {
+      "id": "personal-knowledge",
+      "request": "个人知识管理",
+      "mainstream_mechanisms": ["双向链接", "全文检索", "知识图谱"],
+      "acceptable_new_mechanism_types": ["渐进总结", "情境回忆", "本地优先归档"],
+      "avoid_repeating": ["多个笔记编辑器"],
+      "cross_mechanism_directions": ["memory timeline", "sensemaking"]
+    }
+  ]
+}

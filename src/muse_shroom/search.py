@@ -14,7 +14,7 @@ from .github import (
 from .iteration import (
     apply_hypothesis_to_request, build_observation, default_session_state,
     hard_stop_reason, iteration_stop_reasons, meaningful_gain, merge_unique,
-    remaining_budget,
+    remaining_budget, validate_hypothesis_evidence,
 )
 from .models import (
     DEFAULT_CONSECUTIVE_NO_GAIN, DEFAULT_DEEP_CANDIDATE_LIMIT,
@@ -917,6 +917,10 @@ class SearchEngine:
             )
             _compact_search_output(output)
             return output
+
+        validate_hypothesis_evidence(
+            hypothesis, request, previous_boundary, candidates.values()
+        )
 
         iteration = int(state["iteration"]) + 1
         negatives = merge_unique(state.get("negative_directions") or [], hypothesis.negative_directions)

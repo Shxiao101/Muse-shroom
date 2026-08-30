@@ -6,6 +6,7 @@ from typing import Any, Iterable
 from .boundary import _normalized, mechanism_distribution
 from .selection import concept_coverage
 from .models import (
+    ContractError,
     DEFAULT_CONSECUTIVE_NO_GAIN,
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_QUERIES_PER_ITERATION,
@@ -228,6 +229,9 @@ def build_observation(*, iteration: int, boundary: dict[str, Any],
             "explored_directions": list(boundary.get("explored_directions") or []),
             "unexplored_directions": list(boundary.get("unexplored_directions") or []),
             "discovered_terms": list(boundary.get("discovered_terms") or []),
+            "discovered_term_evidence": list(
+                boundary.get("discovered_term_evidence") or []
+            ),
             "negative_directions": list(boundary.get("negative_directions") or []),
             "rejected_directions": list(boundary.get("rejected_directions") or []),
             "mechanism_origins": dict(boundary.get("mechanism_origins") or {}),
@@ -248,6 +252,9 @@ def build_observation(*, iteration: int, boundary: dict[str, Any],
         ),
         "unexplored_directions": list(boundary.get("unexplored_directions") or []),
         "discovered_terms": list(boundary.get("discovered_terms") or []),
+        "discovered_term_evidence": list(
+            boundary.get("discovered_term_evidence") or []
+        ),
         "exploration_additions": list(exploration_additions or []),
         "ambiguity_signals": ambiguity_signals(
             candidate_list, selected_list, request, boundary, coverage
@@ -275,6 +282,66 @@ def merge_unique(existing: Iterable[str], incoming: Iterable[str]) -> list[str]:
         seen.add(key)
         result.append(text)
     return result
+
+
+def validate_hypothesis_evidence(hypothesis: SearchHypothesis, request: SearchRequest,
+                                 boundary: dict[str, Any],
+                                 candidates: Iterable[dict[str, Any]]) -> None:
+    """Reject new high-priority directions that cannot be traced to evidence."""
+    if hypothesis.decision != "continue":
+        return
+    discovered = {
+        str(item.get("term") or "").casefold(): item
+        for item in boundary.get("discovered_term_evidence") or []
+        if str(item.get("term") or "").strip()
+    }
+    discovered_names = {
+        str(term).casefold() for term in boundary.get("discovered_terms") or []
+        if str(term).strip()
+    }
+    evidence_ids = {
+        str(item.get("id"))
+        for candidate in candidates
+        for item in candidate.get("evidence") or []
+        if str(item.get("id") or "").strip()
+    }
+    requested_directions = {
+        concept.term.casefold() for concept in request.exploration_directions
+    }
+    addition_terms: set[str] = set()
+    for addition in hypothesis.add_exploration_directions:
+        key = addition.term.casefold()
+        addition_terms.add(key)
+        if key in requested_directions:
+            continue
+        if addition.evidence == "user_request":
+            continue
+        if addition.evidence == "discovered_term" and key in discovered:
+            continue
+        if addition.evidence in evidence_ids:
+            continue
+        raise ContractError(
+            f"new exploration direction {addition.term!r} requires evidence: "
+            "use discovered_term for an observed term, an evidence ID, or user_request"
+        )
+    for term in hypothesis.promote_discovered_terms:
+        key = term.casefold()
+        if key not in discovered or key not in discovered_names:
+            raise ContractError(
+                f"promote_discovered_terms entry {term!r} is not an evidence-backed "
+                "term from the latest observation"
+            )
+    if hypothesis.target_direction:
+        key = hypothesis.target_direction.casefold()
+        allowed = (
+            requested_directions | discovered_names | addition_terms
+            | {term.casefold() for term in hypothesis.promote_discovered_terms}
+        )
+        if key not in allowed:
+            raise ContractError(
+                f"target_direction {hypothesis.target_direction!r} must come from an "
+                "existing direction or evidence-backed discovered term"
+            )
 
 
 def apply_hypothesis_to_request(request: SearchRequest, hypothesis: SearchHypothesis,
@@ -370,7 +437,75 @@ def session_loop_diagnostics(store: Any, search_id: str) -> dict[str, Any]:
         ),
         "unexplored_directions_at_stop": list(latest.get("unexplored_directions") or []),
         "mode": "agentic-loop" if iterate_snaps else "single-pass",
+        "boundary_trace": boundary_trace(store, search_id),
     }
+
+
+def boundary_trace(store: Any, search_id: str) -> list[dict[str, Any]]:
+    """Build a compact, evaluation/debug trace without changing user output."""
+    snapshots = store.boundary_snapshots(search_id)
+    trace: list[dict[str, Any]] = []
+    evidence_by_term: dict[str, dict[str, Any]] = {}
+    session = store.load_search(search_id)
+    evidence_by_id = {
+        str(evidence.get("id")): evidence
+        for candidate in session.get("candidates") or []
+        for evidence in candidate.get("evidence") or []
+        if str(evidence.get("id") or "").strip()
+    }
+    for snapshot in snapshots:
+        summary = snapshot.get("query_summary") or {}
+        delta = snapshot.get("boundary_delta") or {}
+        boundary = snapshot.get("boundary") or {}
+        hypothesis = snapshot.get("hypothesis") or {}
+        promoted = {
+            str(term).casefold()
+            for term in hypothesis.get("promote_discovered_terms") or []
+        }
+        evidence_sources = [
+            evidence_by_term[key] for key in promoted if key in evidence_by_term
+        ]
+        for addition in hypothesis.get("add_exploration_directions") or []:
+            if not isinstance(addition, dict):
+                continue
+            term = str(addition.get("term") or "")
+            key = term.casefold()
+            evidence_id = str(addition.get("evidence") or "")
+            if evidence_id == "discovered_term" and key in evidence_by_term:
+                evidence_sources.append(evidence_by_term[key])
+            elif evidence_id == "user_request":
+                evidence_sources.append({
+                    "term": term, "kind": "user_request", "sources": [],
+                })
+            elif evidence_id in evidence_by_id:
+                evidence = evidence_by_id[evidence_id]
+                evidence_sources.append({
+                    "term": term,
+                    "kind": str(evidence.get("kind") or "candidate_evidence"),
+                    "sources": [{
+                        "evidence_id": evidence_id,
+                        "source": evidence.get("source"),
+                    }],
+                })
+        for evidence in boundary.get("discovered_term_evidence") or []:
+            key = str(evidence.get("term") or "").casefold()
+            if key:
+                evidence_by_term.setdefault(key, evidence)
+        trace.append({
+            "iteration": int(snapshot.get("iteration") or 0),
+            "stage": snapshot.get("stage"),
+            "hypothesis": hypothesis or None,
+            "evidence_sources": evidence_sources,
+            "queries": [
+                item.get("query") for item in summary.get("executed") or []
+                if item.get("query")
+            ],
+            "mechanisms_found": list(boundary.get("recalled_mechanisms") or []),
+            "directions_uncovered": list(delta.get("new_directions") or []),
+            "new_mechanisms": list(delta.get("new_mechanisms") or []),
+            "boundary_gain": len(delta.get("new_mechanisms") or []),
+        })
+    return trace
 
 
 def _counts_by_iteration(rows: list[dict[str, Any]]) -> list[int]:

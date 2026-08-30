@@ -130,7 +130,14 @@ class AgenticLoopTests(unittest.TestCase):
 
     def test_redundant_pomodoro_round_explores_an_uncovered_mechanism(self):
         pomodoros = [
-            repo(f"pomo/timer{index}", 12 + index, description="Pomodoro timer")
+            repo(
+                f"pomo/timer{index}", 12 + index,
+                description="Pomodoro timer",
+                topics=(
+                    ["pomodoro", "commitment-device"]
+                    if index == 0 else ["pomodoro"]
+                ),
+            )
             for index in range(8)
         ]
         blocker = repo("block/sites", 9, description="Website blocker")
@@ -168,6 +175,7 @@ class AgenticLoopTests(unittest.TestCase):
                     "add_exploration_directions": [{
                         "term": "commitment device",
                         "reason": "self-control mechanism not covered by pomodoro",
+                        "evidence": "discovered_term",
                     }],
                 })
             finally:
@@ -178,6 +186,36 @@ class AgenticLoopTests(unittest.TestCase):
         self.assertIn("commitment device", second["boundary_delta"]["new_mechanisms"])
         self.assertGreater(len(second["boundary_delta"]["new_mechanisms"]), 0)
         self.assertLessEqual(second["observation"]["mechanism_redundancy"], first_redundancy)
+
+    def test_new_direction_without_evidence_is_rejected(self):
+        timer = repo("focus/timer", 4, description="Pomodoro timer")
+        github = FrozenGitHub(
+            [("focus", [timer]), ("pomodoro", [timer])],
+            readmes={"focus/timer": "# Timer\nPomodoro.\n## Usage\nRun it."},
+        )
+        request = SearchRequest.from_dict({
+            "request": "focus",
+            "problem_concepts": ["focus"],
+            "mechanisms": ["pomodoro"],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                engine = SearchEngine(store, github, relation_budget=0)
+                first = engine.search(request, "deep")
+                with self.assertRaisesRegex(ContractError, "requires evidence"):
+                    engine.iterate(first["search_id"], {
+                        "decision": "continue",
+                        "reason": "invented direction",
+                        "target_direction": "quantum attention",
+                        "concepts": ["quantum attention"],
+                        "add_exploration_directions": [{
+                            "term": "quantum attention",
+                            "reason": "unsupported",
+                        }],
+                    })
+            finally:
+                store.close()
 
     def test_discovered_terms_are_not_mechanisms_until_promoted_and_evidenced(self):
         timer = repo("focus/timer", 4, description="Pomodoro timer", topics=["digital-wellbeing"])
@@ -212,6 +250,9 @@ class AgenticLoopTests(unittest.TestCase):
                     "promote_discovered_terms": ["digital wellbeing"],
                     "concepts": ["digital wellbeing"],
                 })
+                trace = session_loop_diagnostics(
+                    store, first["search_id"]
+                )["boundary_trace"]
             finally:
                 store.close()
 
@@ -220,6 +261,10 @@ class AgenticLoopTests(unittest.TestCase):
         additions = second["observation"]["exploration_additions"]
         self.assertTrue(any(item["term"] == "digital wellbeing" for item in additions))
         self.assertEqual(additions[0]["source_iteration"], 1)
+        self.assertEqual(
+            trace[-1]["evidence_sources"][0]["term"],
+            "digital wellbeing",
+        )
 
     def test_stop_conditions_prevent_unbounded_loops(self):
         item = repo("focus/timer", 4, description="Pomodoro timer")

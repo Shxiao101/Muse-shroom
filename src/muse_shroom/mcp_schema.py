@@ -214,7 +214,11 @@ SEARCH_HYPOTHESIS_SCHEMA: dict[str, Any] = {
         "add_exploration_directions": {
             "type": "array",
             "items": EXPLORATION_ADDITION_SCHEMA,
-            "description": "New positive directions supported by this round's evidence.",
+            "description": (
+                "New positive directions supported by this round's evidence. "
+                "Use an object whose evidence is discovered_term, a candidate "
+                "evidence ID, or user_request."
+            ),
         },
         "strategies": {
             "type": "array",
@@ -227,6 +231,9 @@ SEARCH_HYPOTHESIS_SCHEMA: dict[str, Any] = {
         "promote_discovered_terms": {
             "type": "array",
             "items": {"type": "string"},
+            "description": (
+                "Terms copied exactly from observation.discovered_term_evidence."
+            ),
         },
     },
     "examples": [

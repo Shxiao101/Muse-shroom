@@ -127,7 +127,15 @@ async function renderDetail(searchId) {
       <div class="box"><h3>Rejected</h3>${pills(boundary.overview.rejected, "rejected")}</div>
       <div class="box"><h3>Negative</h3>${pills(boundary.overview.negative, "negative")}</div>
     </div>
-    ${boundary.overview.discovered_terms?.length ? `<p class="sub">Discovered terms（未证实，不作为机制节点）：${esc(boundary.overview.discovered_terms.join(" · "))}</p>` : ""}
+    ${boundary.overview.discovered_term_evidence?.length ? `
+      <div class="box">
+        <h3>Evidence-backed discovered terms</h3>
+        ${boundary.overview.discovered_term_evidence.map((item) => {
+          const source = item.sources?.[0] || {};
+          return `<p><strong>${esc(item.term)}</strong> · ${esc(item.kind || "related_term")}
+            <small>← ${esc(source.repo || "unknown")} / ${esc(source.source_field || "evidence")}</small></p>`;
+        }).join("")}
+      </div>` : ""}
     <h2>Iteration Timeline</h2>
     <div class="timeline" id="timeline"></div>
     <h2>Exploration Graph</h2>
@@ -177,6 +185,8 @@ function drawTimeline(timeline) {
       <small>${esc(gain)}</small>
       ${!ending && step.stop_reasons?.length ? `<small>hard: ${esc(step.stop_reasons.join(", "))}</small>` : ""}
       ${step.stop_signals?.length ? `<small>signal: ${esc(step.stop_signals.join(", "))}</small>` : ""}
+      ${step.queries?.length ? `<small>queries: ${esc(step.queries.map((item) => item.term || item.query).join(" · "))}</small>` : ""}
+      ${step.evidence_sources?.length ? `<small>evidence: ${esc(step.evidence_sources.map((item) => item.term).join(" · "))}</small>` : ""}
     </button>`;
   }).join("");
   root.querySelectorAll("[data-at]").forEach((button) => {

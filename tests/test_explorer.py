@@ -173,6 +173,10 @@ class ExplorerReadModelTests(unittest.TestCase):
             self.assertEqual(summary["status"], "ranked")
             self.assertEqual(view["display_order"], ranking["display_order"])
             self.assertEqual([item["repo"] for item in view["items"]], ranking["display_order"])
+            self.assertEqual(
+                [item["repo"] for item in ranking["items"]],
+                ranking["display_order"],
+            )
             self.assertNotIn("selection_order", view)
             dumped = json.dumps(view)
             self.assertNotIn("MMR", dumped)
@@ -279,6 +283,11 @@ class ExplorerReadModelTests(unittest.TestCase):
                     "reason": "cover galvanic skin response",
                     "concepts": ["galvanic"],
                     "target_direction": "galvanic",
+                    "add_exploration_directions": [{
+                        "term": "galvanic",
+                        "reason": "explicit test direction",
+                        "evidence": "user_request",
+                    }],
                 })
                 excerpt = _excerpt(store, search_id, "focus/timer")
                 assessments = [_assessment(excerpt, "focus/timer")]
@@ -289,11 +298,17 @@ class ExplorerReadModelTests(unittest.TestCase):
                 initial = model.boundary_view(search_id, at="initial")
                 later_view = model.boundary_view(search_id, at="iteration-1")
                 final = model.boundary_view(search_id, at="final")
+                timeline = model.iteration_timeline(search_id)
             finally:
                 store.close()
         def repos(view):
             return {node["label"].lower() for node in view["graph"]["nodes"] if node["kind"] == "repository"}
         self.assertNotIn("lab/galvanic", repos(initial))
+        galvanic_step = next(
+            step for step in timeline["steps"]
+            if step.get("target_direction") == "galvanic"
+        )
+        self.assertEqual(galvanic_step["evidence_sources"][0]["kind"], "user_request")
         for node in initial["graph"]["nodes"]:
             if node["kind"] == "repository":
                 self.assertFalse(node.get("boundary_role"))

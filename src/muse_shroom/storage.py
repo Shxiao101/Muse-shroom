@@ -514,37 +514,20 @@ class Store:
         self.db.commit()
 
     def feedback_bias(self, full_name: str, topics: list[str] | None = None) -> float:
+        """Return rejection/difficulty adjustment for this exact repository.
+
+        Positive and topic-neighbour feedback intentionally do not propagate:
+        doing so would turn boundary discovery back into a similarity-based
+        personalization loop. The topics argument remains for compatibility.
+        """
         rows = self.db.execute(
             "SELECT relevant, interesting, too_hard FROM feedback WHERE full_name=?", (full_name.lower(),)
         ).fetchall()
-        exact_values = []
+        exact_values: list[float] = []
         for row in rows:
-            exact_values.append(
-                (1 if row[0] else -1 if row[0] is not None else 0) * .4
-                + (1 if row[1] else -1 if row[1] is not None else 0) * .4
-                + (-1 if row[2] else 0) * .2
-            )
-        topic_set = {str(topic).lower() for topic in (topics or [])}
-        topic_values = []
-        if topic_set:
-            related = self.db.execute(
-                "SELECT f.relevant,f.interesting,f.too_hard,r.snapshot_json "
-                "FROM feedback f JOIN repositories r ON r.full_name=f.full_name "
-                "WHERE f.full_name<>?", (full_name.lower(),)
-            ).fetchall()
-            for row in related:
-                snapshot_topics = {str(topic).lower() for topic in json.loads(row[3]).get("topics", [])}
-                if topic_set & snapshot_topics:
-                    topic_values.append(
-                        (1 if row[0] else -1 if row[0] is not None else 0) * .4
-                        + (1 if row[1] else -1 if row[1] is not None else 0) * .4
-                        + (-1 if row[2] else 0) * .2
-                    )
-        weighted = []
-        if exact_values:
-            weighted.append((sum(exact_values) / len(exact_values), .7))
-        if topic_values:
-            weighted.append((sum(topic_values) / len(topic_values), .3))
-        denominator = sum(weight for _, weight in weighted)
-        value = sum(score * weight for score, weight in weighted) / denominator if denominator else 0.0
-        return max(-1.0, min(1.0, value))
+            rejection = (-0.6 if row[0] is not None and not bool(row[0]) else 0.0)
+            rejection += (-0.3 if row[1] is not None and not bool(row[1]) else 0.0)
+            difficulty = -0.1 if bool(row[2]) else 0.0
+            exact_values.append(rejection + difficulty)
+        value = sum(exact_values) / len(exact_values) if exact_values else 0.0
+        return max(-1.0, min(0.0, value))

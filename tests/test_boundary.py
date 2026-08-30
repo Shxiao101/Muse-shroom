@@ -102,6 +102,11 @@ class BoundaryTests(unittest.TestCase):
         for item in (first, second, third):
             item["evidence"] = []
             annotate_candidate_mechanisms(item, request)
+        first["evidence"].insert(0, {
+            "id": "repo:one/timer:metadata",
+            "kind": "github_metadata",
+            "facts": {"topics": ["digital-wellbeing"]},
+        })
 
         boundary = build_boundary([first, second, third], [first], request)
 
@@ -114,6 +119,10 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(boundary.explored_directions, ["biofeedback"])
         self.assertEqual(boundary.unexplored_directions, [])
         self.assertEqual(boundary.discovered_terms, ["digital wellbeing"])
+        self.assertEqual(
+            boundary.discovered_term_evidence[0]["sources"][0]["evidence_id"],
+            "repo:one/timer:metadata",
+        )
         self.assertNotIn("digital wellbeing", boundary.recalled_mechanisms)
         rejected = build_boundary(
             [first, second, third], [first], request,

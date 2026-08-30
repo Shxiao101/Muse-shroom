@@ -323,19 +323,20 @@ def rank_search(
         )
         exposure = max(0.0, min(100.0, 100 - 20 * math.log10(stars + 1)))
         easy = DIFFICULTY[assessment.difficulty]
-        personal = store.feedback_bias(name, candidate.get("topics", [])) * 15.0
+        feedback_adjustment = store.feedback_bias(name) * 15.0
         popular_score = (
             assessment.relevance * .30 + popularity * .30 + activity * .15 +
-            type_quality * .15 + assessment.usability * .10 + personal
+            type_quality * .15 + assessment.usability * .10 + feedback_adjustment
         )
         gem_score = (
             assessment.relevance * .25 + assessment.uniqueness * .18 + assessment.usability * .14 +
             easy * .08 + exposure * .10 + type_quality * .08 + relation * .07 +
-            evidence_completeness * .10 + personal
+            evidence_completeness * .10 + feedback_adjustment
         )
         adjacent_score = (
             assessment.relevance * .22 + assessment.uniqueness * .25 + assessment.usability * .14 +
-            easy * .09 + type_quality * .09 + relation * .11 + evidence_completeness * .10 + personal
+            easy * .09 + type_quality * .09 + relation * .11
+            + evidence_completeness * .10 + feedback_adjustment
         )
         novelty = novelty_score(
             candidate, presented=presented_before, recalled_counts=pool_counts, exploration=exploration,
@@ -362,7 +363,8 @@ def rank_search(
                 "components": {
                     "popularity_percentile": round(popularity, 2), "activity": round(activity, 2),
                     "type_quality": round(type_quality, 2), "relationship": round(relation, 2),
-                    "underexposure": round(exposure, 2), "personalization": round(personal, 2),
+                    "underexposure": round(exposure, 2),
+                    "feedback_adjustment": round(feedback_adjustment, 2),
                     "evidence_completeness": round(evidence_completeness, 2),
                     "mechanism_novelty": novelty,
                     "boundary_contribution": contribution,
@@ -447,6 +449,7 @@ def rank_search(
         "stale": bool(session["stale"]), "incomplete_phase": session["incomplete_phase"],
         "next_action": "done",
         "buckets": {"popular": popular, "gems": gems, "adjacent": adjacent},
+        "items": ranked_items,
         "display_order": display_order,
         "selection_order": selection_order,
         "boundary": boundary, "boundary_delta": delta,

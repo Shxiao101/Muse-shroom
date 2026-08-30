@@ -12,6 +12,16 @@ GENERIC_DISCOVERED_TERMS = {
     "ai", "app", "application", "apps", "github", "library", "open source",
     "plugin", "project", "python", "sdk", "software", "tool", "tools",
 }
+TECHNOLOGY_DISCOVERED_TERMS = {
+    "android", "api", "c", "c++", "cli", "css", "docker", "electron",
+    "go", "html", "javascript", "kotlin", "linux", "macos", "nodejs",
+    "php", "react", "ruby", "rust", "swift", "typescript", "windows",
+}
+MECHANISM_HINTS = {
+    "automation", "biofeedback", "blocker", "blocking", "commitment",
+    "dashboard", "feedback", "habit", "intervention", "monitoring",
+    "notification", "pomodoro", "reminder", "tracking", "timer", "workflow",
+}
 
 
 def _normalized(value: str) -> str:
@@ -162,8 +172,10 @@ def mechanism_names_by_role(candidates: Iterable[dict[str, Any]], role: str) -> 
     return sorted(names, key=str.casefold)
 
 
-def discovered_terms(candidates: Iterable[dict[str, Any]], request: SearchRequest,
-                     limit: int = 8) -> list[str]:
+def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: SearchRequest,
+                             limit: int = 8) -> list[dict[str, Any]]:
+    """Return deterministic, source-backed terms that may expand the boundary."""
+    candidate_list = list(candidates)
     known = {
         _normalized(term)
         for concept in (
@@ -173,21 +185,69 @@ def discovered_terms(candidates: Iterable[dict[str, Any]], request: SearchReques
     }
     counts: Counter[str] = Counter()
     display: dict[str, str] = {}
-    for candidate in candidates:
+    sources: dict[str, list[dict[str, Any]]] = {}
+    for candidate in candidate_list:
         if not candidate.get("mechanisms"):
             continue
+        repo = str(candidate.get("full_name") or "").strip()
+        metadata = next(
+            (
+                item for item in candidate.get("evidence") or []
+                if item.get("kind") == "github_metadata"
+            ),
+            None,
+        )
+        if metadata is None:
+            continue
+        relationship_backed = any(
+            path.get("kind") == "relationship"
+            for path in candidate.get("discovery_paths") or []
+        )
         for raw in candidate.get("topics") or []:
             value = " ".join(str(raw).replace("-", " ").split()).strip()
             key = _normalized(value)
             if (
                 not key or key in known or key in GENERIC_DISCOVERED_TERMS
+                or key in TECHNOLOGY_DISCOVERED_TERMS
                 or len(key) < 3 or len(key) > 80
             ):
                 continue
             counts[key] += 1
             display.setdefault(key, value)
+            source = {
+                "repo": repo,
+                "source_field": "topics",
+                "evidence_id": str(metadata.get("id") or ""),
+                "evidence_text": value,
+                "relationship_backed": relationship_backed,
+            }
+            if source not in sources.setdefault(key, []):
+                sources[key].append(source)
     ranked = sorted(counts, key=lambda key: (-counts[key], key))
-    return [display[key] for key in ranked[:limit]]
+    result: list[dict[str, Any]] = []
+    for key in ranked[:limit]:
+        tokens = set(key.split())
+        kind = "candidate_mechanism" if tokens & MECHANISM_HINTS else "project_category"
+        if any(source["relationship_backed"] for source in sources[key]):
+            kind = "cross_domain_direction"
+        result.append({
+            "term": display[key],
+            "kind": kind,
+            "support_count": counts[key],
+            "sources": [
+                {name: value for name, value in source.items() if name != "relationship_backed"}
+                for source in sources[key][:3]
+            ],
+        })
+    return result
+
+
+def discovered_terms(candidates: Iterable[dict[str, Any]], request: SearchRequest,
+                     limit: int = 8) -> list[str]:
+    return [
+        str(item["term"])
+        for item in discovered_term_evidence(candidates, request, limit=limit)
+    ]
 
 
 def mechanism_distribution(candidates: Iterable[dict[str, Any]]) -> dict[str, int]:
@@ -228,6 +288,7 @@ def build_boundary(candidates: Iterable[dict[str, Any]], presented: Iterable[dic
         concept.term for concept in request.exploration_directions
         if concept.term.casefold() not in recalled_keys and concept.term.casefold() not in blocked_keys
     ]
+    term_evidence = discovered_term_evidence(candidate_list, request)
     return SearchBoundary(
         recalled_mechanisms=recalled,
         presented_mechanisms=presented_names,
@@ -240,7 +301,8 @@ def build_boundary(candidates: Iterable[dict[str, Any]], presented: Iterable[dic
         explored_directions=explored,
         unexplored_directions=unexplored,
         rejected_directions=rejected,
-        discovered_terms=discovered_terms(candidate_list, request),
+        discovered_terms=[str(item["term"]) for item in term_evidence],
+        discovered_term_evidence=term_evidence,
         negative_directions=negatives,
     )
 
