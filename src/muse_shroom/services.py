@@ -8,7 +8,7 @@ from typing import Any
 from . import __version__
 from .auth import AuthError, resolve_token
 from .github import GitHubClient
-from .models import SearchRequest
+from .models import SearchHypothesis, SearchRequest
 from .ranking import rank_search
 from .search import SearchEngine, public_candidate
 from .storage import Store
@@ -49,12 +49,20 @@ class MuseCore:
             store.close()
 
     def search(self, request: dict[str, Any], mode: str = "quick", *, refresh: bool = False) -> dict[str, Any]:
-        parsed = SearchRequest.from_dict(request)
+        parsed = SearchRequest.from_dict(request, strict=True)
         store = self._store()
         try:
-            return SearchEngine(store, self._github(store)).search(parsed, mode, refresh=refresh)
+            result = SearchEngine(store, self._github(store)).search(parsed, mode, refresh=refresh)
         finally:
             store.close()
+        if parsed.legacy_schema:
+            result["legacy_schema"] = True
+            result["contract_warning"] = (
+                "This request used deprecated v0.3 fields core_concepts/"
+                "adjacent_concepts. Prefer v0.4 fields problem_concepts, "
+                "mechanisms, and exploration_directions."
+            )
+        return result
 
     def observe(self, search_id: str) -> dict[str, Any]:
         store = self._store()
@@ -64,16 +72,17 @@ class MuseCore:
             store.close()
 
     def iterate(self, search_id: str, hypothesis: dict[str, Any]) -> dict[str, Any]:
+        parsed = SearchHypothesis.from_dict(hypothesis, strict=True)
         store = self._store()
         try:
-            return SearchEngine(store, self._github(store)).iterate(search_id, hypothesis)
+            return SearchEngine(store, self._github(store)).iterate(search_id, parsed.to_dict())
         finally:
             store.close()
 
     def rank(self, search_id: str, assessments: Any) -> dict[str, Any]:
         store = self._store()
         try:
-            return rank_search(store, search_id, assessments)
+            return rank_search(store, search_id, assessments, strict=True)
         finally:
             store.close()
 

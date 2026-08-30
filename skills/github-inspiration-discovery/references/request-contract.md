@@ -31,4 +31,4 @@ Iterate hypotheses use [hypothesis-contract.md](hypothesis-contract.md). Assessm
 
 Preserve concise Chinese capability phrases verbatim, for example `正文配图`, `文章配图`, `专注管理`, and `自控训练`. Keep English concepts to one to three meaningful words. For a non-English need, add at least one GitHub-common English expression as an alias. Do not use a fixed translation dictionary.
 
-The CLI still accepts v0.3 `core_concepts` / `adjacent_concepts` and converts them. New Agent requests must use the v0.4 fields above. Muse-shroom generates GitHub syntax; do not write qualifiers yourself.
+The CLI still accepts v0.3 `core_concepts` / `adjacent_concepts` and converts them. New Agent requests must use the v0.4 fields above. MCP rejects unknown fields such as `query` or `prompt`. If MCP accepts a legacy `core_concepts` payload, the result includes `legacy_schema=true` and a deprecation warning; that is compatibility, not the preferred contract. Muse-shroom generates GitHub syntax; do not write qualifiers yourself.

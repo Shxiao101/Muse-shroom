@@ -10,6 +10,67 @@ class ContractError(ValueError):
     """Raised when JSON supplied at an agent boundary is invalid."""
 
 
+SEARCH_REQUEST_FIELDS = frozenset({
+    "request", "problem_concepts", "mechanisms", "exploration_directions",
+    "artifact_types", "constraints", "exclusions", "exploration_level",
+})
+SEARCH_REQUEST_LEGACY_FIELDS = frozenset({"core_concepts", "adjacent_concepts"})
+SEARCH_REQUEST_CONSTRAINT_FIELDS = frozenset({
+    "language", "pushed_after", "include_archived", "min_stars", "max_stars",
+})
+CONCEPT_OBJECT_FIELDS = frozenset({"term", "weight", "aliases"})
+EXPLORATION_ADDITION_FIELDS = frozenset({"term", "reason", "evidence", "source_iteration"})
+HYPOTHESIS_FIELDS = frozenset({
+    "decision", "target_direction", "target_mechanism", "concepts", "adjacent_concepts",
+    "aliases", "negative_directions", "anchors", "seeds", "filenames", "exclude",
+    "rejected_directions", "reason", "stop_reason", "remaining_unexplored_directions",
+    "add_exploration_directions", "strategies", "promote_discovered_terms",
+})
+ASSESSMENT_REQUIRED_FIELDS = (
+    "repo", "relevance", "uniqueness", "usability", "difficulty", "use_case",
+    "category", "artifact_type", "reasons", "risks",
+)
+ASSESSMENT_OPTIONAL_FIELDS = frozenset({"mechanism", "transferability", "boundary_value"})
+ASSESSMENT_FIELDS = frozenset(ASSESSMENT_REQUIRED_FIELDS) | ASSESSMENT_OPTIONAL_FIELDS
+CLAIM_FIELDS = frozenset({"text", "evidence_ids"})
+RANK_PAYLOAD_FIELDS = frozenset({"assessments"})
+
+
+def reject_unknown_fields(
+    data: dict[str, Any],
+    allowed: set[str],
+    *,
+    where: str,
+    extra_hint: str = "",
+) -> None:
+    unknown = sorted(str(key) for key in data if key not in allowed)
+    if not unknown:
+        return
+    message = (
+        f"unknown {where} field(s): {', '.join(unknown)}. "
+        f"Allowed fields: {', '.join(sorted(allowed))}."
+    )
+    if extra_hint:
+        message = f"{message} {extra_hint}"
+    raise ContractError(message)
+
+
+def require_fields(
+    data: dict[str, Any],
+    required: tuple[str, ...],
+    *,
+    where: str,
+    extra_hint: str = "",
+) -> None:
+    missing = [name for name in required if name not in data]
+    if not missing:
+        return
+    message = f"missing required {where} field(s): {', '.join(missing)}."
+    if extra_hint:
+        message = f"{message} {extra_hint}"
+    raise ContractError(message)
+
+
 def _score(value: Any, name: str) -> float:
     try:
         result = float(value)
@@ -45,7 +106,7 @@ class Concept:
         return values
 
     @classmethod
-    def from_value(cls, value: Any) -> "Concept":
+    def from_value(cls, value: Any, *, strict: bool = False) -> "Concept":
         if isinstance(value, str):
             term = value.strip()
             if not term or len(term) > 160 or "\n" in term or "\r" in term:
@@ -53,6 +114,8 @@ class Concept:
             return cls(term)
         if not isinstance(value, dict) or not str(value.get("term", "")).strip():
             raise ContractError("concepts must be strings or objects containing term")
+        if strict:
+            reject_unknown_fields(value, CONCEPT_OBJECT_FIELDS, where="concept")
         term = str(value["term"]).strip()
         if len(term) > 160 or "\n" in term or "\r" in term:
             raise ContractError("concept terms must be single-line strings up to 160 characters")
@@ -100,8 +163,32 @@ class SearchRequest:
         return self.exploration_directions
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SearchRequest":
-        if not isinstance(data, dict) or not str(data.get("request", "")).strip():
+    def from_dict(cls, data: dict[str, Any], *, strict: bool = False) -> "SearchRequest":
+        if not isinstance(data, dict):
+            raise ContractError("SearchRequest must be an object")
+        if strict:
+            reject_unknown_fields(
+                data,
+                SEARCH_REQUEST_FIELDS | SEARCH_REQUEST_LEGACY_FIELDS,
+                where="SearchRequest",
+                extra_hint=(
+                    "v0.4 fields are request, problem_concepts, mechanisms, "
+                    "exploration_directions, artifact_types, constraints, exclusions, "
+                    "exploration_level. core_concepts and adjacent_concepts are deprecated "
+                    "v0.3 compatibility aliases."
+                ),
+            )
+            v04_present = any(name in data for name in (
+                "problem_concepts", "mechanisms", "exploration_directions",
+            ))
+            legacy_present = any(name in data for name in SEARCH_REQUEST_LEGACY_FIELDS)
+            if v04_present and legacy_present:
+                mixed = ", ".join(sorted(name for name in SEARCH_REQUEST_LEGACY_FIELDS if name in data))
+                raise ContractError(
+                    f"legacy field(s) {mixed} cannot be combined with v0.4 fields; "
+                    "use problem_concepts, mechanisms, and exploration_directions"
+                )
+        if not str(data.get("request", "")).strip():
             raise ContractError("request is required")
         new_fields = any(
             name in data for name in ("problem_concepts", "mechanisms", "exploration_directions")
@@ -111,6 +198,13 @@ class SearchRequest:
         direction_values = data.get("exploration_directions", data.get("adjacent_concepts", []))
         if new_fields and "problem_concepts" not in data and "core_concepts" in data:
             problem_values = data["core_concepts"]
+        if strict and not new_fields and "core_concepts" not in data:
+            raise ContractError(
+                "missing required SearchRequest field(s): problem_concepts. "
+                "v0.4 requires problem_concepts (array of strings or "
+                "{term, aliases, weight} objects). Deprecated v0.3 compatibility: "
+                "core_concepts / adjacent_concepts."
+            )
         for name, values in (
             ("problem_concepts", problem_values),
             ("mechanisms", mechanism_values),
@@ -118,7 +212,7 @@ class SearchRequest:
         ):
             if not isinstance(values, list):
                 raise ContractError(f"{name} must be an array")
-        problem = [Concept.from_value(v) for v in problem_values]
+        problem = [Concept.from_value(v, strict=strict) for v in problem_values]
         if not problem:
             name = "problem_concepts" if new_fields else "core_concepts"
             raise ContractError(f"{name} must contain at least one concept")
@@ -128,6 +222,10 @@ class SearchRequest:
         raw_constraints = data.get("constraints", {})
         if not isinstance(raw_constraints, dict):
             raise ContractError("constraints must be an object")
+        if strict:
+            reject_unknown_fields(
+                raw_constraints, SEARCH_REQUEST_CONSTRAINT_FIELDS, where="constraints",
+            )
         constraints = dict(raw_constraints)
         if constraints.get("pushed_after") and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(constraints["pushed_after"])):
             raise ContractError("constraints.pushed_after must use YYYY-MM-DD")
@@ -144,8 +242,8 @@ class SearchRequest:
         return cls(
             request=str(data["request"]).strip(),
             problem_concepts=problem,
-            mechanisms=[Concept.from_value(v) for v in mechanism_values],
-            exploration_directions=[Concept.from_value(v) for v in direction_values],
+            mechanisms=[Concept.from_value(v, strict=strict) for v in mechanism_values],
+            exploration_directions=[Concept.from_value(v, strict=strict) for v in direction_values],
             artifact_types=[str(v).strip().lower() for v in data.get("artifact_types", []) if str(v).strip()],
             constraints=constraints,
             exclusions=[str(v).strip() for v in data.get("exclusions", []) if str(v).strip()],
@@ -268,7 +366,7 @@ class ExplorationAddition:
         return payload
 
     @classmethod
-    def from_value(cls, value: Any) -> "ExplorationAddition":
+    def from_value(cls, value: Any, *, strict: bool = False) -> "ExplorationAddition":
         if isinstance(value, str):
             term = value.strip()
             if not term or len(term) > 160 or "\n" in term or "\r" in term:
@@ -276,6 +374,10 @@ class ExplorationAddition:
             return cls(term)
         if not isinstance(value, dict) or not str(value.get("term", "")).strip():
             raise ContractError("add_exploration_directions must be strings or objects containing term")
+        if strict:
+            reject_unknown_fields(
+                value, EXPLORATION_ADDITION_FIELDS, where="add_exploration_directions item",
+            )
         term = str(value["term"]).strip()
         if len(term) > 160 or "\n" in term or "\r" in term:
             raise ContractError("add_exploration_directions terms must be single-line strings up to 160 characters")
@@ -330,9 +432,19 @@ class SearchHypothesis:
         return text
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SearchHypothesis":
+    def from_dict(cls, data: dict[str, Any], *, strict: bool = False) -> "SearchHypothesis":
         if not isinstance(data, dict):
             raise ContractError("iteration hypothesis must be an object")
+        if strict:
+            reject_unknown_fields(
+                data,
+                HYPOTHESIS_FIELDS,
+                where="SearchHypothesis",
+                extra_hint=(
+                    "decision must be continue or stop. Unofficial fields such as "
+                    "mechanisms or rationale are rejected."
+                ),
+            )
         decision = str(data.get("decision") or "").strip().casefold()
         if decision not in {"continue", "stop"}:
             raise ContractError("hypothesis.decision must be continue or stop")
@@ -375,7 +487,9 @@ class SearchHypothesis:
             reason=cls._optional_text(data, "reason", 500),
             stop_reason=cls._optional_text(data, "stop_reason", 200),
             remaining_unexplored_directions=cls._strings(data, "remaining_unexplored_directions", 10),
-            add_exploration_directions=[ExplorationAddition.from_value(item) for item in additions_raw],
+            add_exploration_directions=[
+                ExplorationAddition.from_value(item, strict=strict) for item in additions_raw
+            ],
             strategies=strategies,
             promote_discovered_terms=cls._strings(data, "promote_discovered_terms", 5),
         )
@@ -464,26 +578,81 @@ class Assessment:
     boundary_value: float | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any], evidence: set[str] | dict[str, str]) -> "Assessment":
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        evidence: set[str] | dict[str, str],
+        *,
+        strict: bool = False,
+    ) -> "Assessment":
+        if not isinstance(data, dict):
+            raise ContractError("each assessment must be an object")
+        if strict:
+            reject_unknown_fields(
+                data,
+                ASSESSMENT_FIELDS,
+                where="Assessment",
+                extra_hint=(
+                    "Required fields: repo, relevance, uniqueness, usability, difficulty, "
+                    "use_case, category, artifact_type, reasons, risks. Optional: mechanism, "
+                    "transferability, boundary_value. Explicit 'unknown' is valid; omitting a "
+                    "required field is not."
+                ),
+            )
+            require_fields(
+                data,
+                ASSESSMENT_REQUIRED_FIELDS,
+                where="Assessment",
+                extra_hint="Explicit 'unknown' is valid; missing fields are not auto-filled.",
+            )
         repo = str(data.get("repo", "")).strip().lower()
         if "/" not in repo:
             raise ContractError("assessment repo must be owner/name")
-        difficulty = str(data.get("difficulty", "unknown")).lower()
+        if strict:
+            difficulty_raw = data.get("difficulty")
+            if not isinstance(difficulty_raw, str) or not difficulty_raw.strip():
+                raise ContractError("difficulty must be easy, medium, hard, or unknown")
+            difficulty = difficulty_raw.strip().lower()
+        else:
+            difficulty = str(data.get("difficulty", "unknown")).lower()
         if difficulty not in {"easy", "medium", "hard", "unknown"}:
             raise ContractError("difficulty must be easy, medium, hard, or unknown")
-        reasons = list(data.get("reasons", []))
-        risks = list(data.get("risks", []))
+        reasons = data.get("reasons", [])
+        risks = data.get("risks", [])
+        if not isinstance(reasons, list):
+            raise ContractError("reasons must be an array")
+        if not isinstance(risks, list):
+            raise ContractError("risks must be an array")
+        reasons = list(reasons)
+        risks = list(risks)
+        if strict and not reasons:
+            raise ContractError("reasons must contain at least one evidence-backed reason")
         evidence_ids = set(evidence)
         for item in reasons + risks:
             if not isinstance(item, dict) or not str(item.get("text", "")).strip():
                 raise ContractError("each reason/risk needs text")
+            if strict:
+                reject_unknown_fields(item, CLAIM_FIELDS, where="reason/risk")
             cited = item.get("evidence_ids", [])
             if not cited:
                 raise ContractError("each reason/risk must cite at least one evidence id")
             unknown = set(map(str, cited)) - evidence_ids
             if unknown:
                 raise ContractError(f"unknown evidence ids for {repo}: {sorted(unknown)}")
-        use_case = str(data.get("use_case", "unknown")).strip() or "unknown"
+        if strict:
+            use_case = str(data.get("use_case", "")).strip()
+            if not use_case:
+                raise ContractError("use_case is required; use 'unknown' when unverified")
+            category = str(data.get("category", "")).strip()
+            if not category:
+                raise ContractError("category is required; use a specific sub-direction")
+            artifact_type = str(data.get("artifact_type", "")).strip().lower()
+            if not artifact_type:
+                raise ContractError("artifact_type is required; use 'unknown' when unverified")
+        else:
+            use_case = str(data.get("use_case", "unknown")).strip() or "unknown"
+            category = str(data.get("category", "uncategorized")).strip() or "uncategorized"
+            artifact_type = str(data.get("artifact_type", "unknown")).strip().lower() or "unknown"
         if use_case.casefold() != "unknown" and isinstance(evidence, dict):
             cited_reason_ids = {
                 str(evidence_id) for item in reasons for evidence_id in item.get("evidence_ids", [])
@@ -502,8 +671,8 @@ class Assessment:
             usability=_score(data.get("usability"), "usability"),
             difficulty=difficulty,
             use_case=use_case,
-            category=str(data.get("category", "uncategorized")).strip() or "uncategorized",
-            artifact_type=str(data.get("artifact_type", "unknown")).strip().lower() or "unknown",
+            category=category,
+            artifact_type=artifact_type,
             reasons=reasons,
             risks=risks,
             mechanism=mechanism,

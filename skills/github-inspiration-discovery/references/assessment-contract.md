@@ -28,7 +28,7 @@ Send an object containing `assessments` to MCP `muse_rank` or `muse-shroom rank 
 }
 ```
 
-Scores range from 0 to 100. Every reason and risk needs at least one evidence ID belonging to that candidate; invalid citations cause ranking to fail explicitly. Use one stable category per sub-direction so diversity selection can penalize near-duplicates.
+Scores range from 0 to 100. On MCP, every listed required field must be present: `repo`, `relevance`, `uniqueness`, `usability`, `difficulty`, `use_case`, `category`, `artifact_type`, `reasons`, `risks`. Explicit `unknown` is valid; omitting a required field is not auto-filled to `unknown`. `reasons` needs at least one item. `risks` may be `[]`; do not invent a risk. Unknown fields such as `fit`, `caveats`, or top-level `evidence_ids` are rejected. Every reason and non-empty risk needs at least one evidence ID belonging to that candidate; invalid citations cause ranking to fail explicitly. Use one stable category per sub-direction so diversity selection can penalize near-duplicates.
 
 `mechanism`, `transferability`, and `boundary_value` are optional. Omit them when you cannot support them with evidence. `mechanism` must equal a `mechanisms[].name` or `mechanisms[].matched_terms` value on that candidate; if unsure, omit it. The CLI computes novelty from the current presented boundary.
 

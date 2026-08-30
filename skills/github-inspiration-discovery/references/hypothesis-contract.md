@@ -1,6 +1,6 @@
 # Search hypothesis contract
 
-Pass a JSON object to MCP `muse_iterate` or `muse-shroom iterate --search-id SEARCH_ID --refinement FILE`. `decision` must be exactly `continue` or `stop`.
+Pass a JSON object to MCP `muse_iterate` or `muse-shroom iterate --search-id SEARCH_ID --refinement FILE`. `decision` must be exactly `continue` or `stop`. MCP rejects unknown hypothesis fields such as `mechanisms` or `rationale`.
 
 Each round, fill only the fields that this decision needs. Do not mechanically populate every array.
 

@@ -1,7 +1,9 @@
 import unittest
 
 from muse_shroom.analyze import github_links, make_evidence, readme_signals, safe_readme
-from muse_shroom.models import ContractError, Refinement, SearchRequest
+from muse_shroom.models import (
+    Assessment, ContractError, Refinement, SearchHypothesis, SearchRequest,
+)
 from muse_shroom.queries import build_queries, code_filename_query, refinement_queries
 
 from tests.helpers import repo
@@ -128,6 +130,91 @@ class ContractAndQueryTests(unittest.TestCase):
     def test_request_rejects_missing_core_concepts(self):
         with self.assertRaises(ContractError):
             SearchRequest.from_dict({"request": "anything"})
+
+    def test_non_strict_search_request_still_ignores_unknown_fields(self):
+        parsed = SearchRequest.from_dict({
+            "request": "focus", "core_concepts": ["focus"], "query": "ignored by CLI",
+        })
+        self.assertTrue(parsed.legacy_schema)
+        self.assertEqual(parsed.problem_concepts[0].term, "focus")
+
+    def test_strict_search_request_rejects_unknown_fields(self):
+        with self.assertRaises(ContractError) as raised:
+            SearchRequest.from_dict(
+                {"request": "focus", "problem_concepts": ["focus"], "query": "focus tools"},
+                strict=True,
+            )
+        self.assertIn("query", str(raised.exception))
+        self.assertIn("problem_concepts", str(raised.exception))
+
+    def test_strict_search_request_accepts_v04_fields(self):
+        parsed = SearchRequest.from_dict({
+            "request": "focus",
+            "problem_concepts": [{"term": "focus", "aliases": ["concentration"]}],
+            "mechanisms": ["pomodoro"],
+            "exploration_directions": ["commitment device"],
+        }, strict=True)
+        self.assertFalse(parsed.legacy_schema)
+        self.assertEqual(parsed.problem_concepts[0].term, "focus")
+
+    def test_strict_search_request_keeps_legacy_fields_explicit(self):
+        parsed = SearchRequest.from_dict(
+            {"request": "focus", "core_concepts": ["focus"], "adjacent_concepts": ["timer"]},
+            strict=True,
+        )
+        self.assertTrue(parsed.legacy_schema)
+        with self.assertRaises(ContractError) as raised:
+            SearchRequest.from_dict({
+                "request": "focus",
+                "problem_concepts": ["focus"],
+                "core_concepts": ["focus"],
+            }, strict=True)
+        self.assertIn("legacy", str(raised.exception))
+
+    def test_strict_hypothesis_rejects_unknown_fields_and_requires_decision(self):
+        with self.assertRaises(ContractError) as raised:
+            SearchHypothesis.from_dict({
+                "decision": "continue",
+                "concepts": ["pomodoro"],
+                "rationale": "guessed field",
+                "mechanisms": ["pomodoro"],
+            }, strict=True)
+        message = str(raised.exception)
+        self.assertIn("rationale", message)
+        self.assertIn("mechanisms", message)
+        with self.assertRaises(ContractError):
+            SearchHypothesis.from_dict({"concepts": ["pomodoro"]}, strict=True)
+
+    def test_strict_assessment_rejects_missing_and_unknown_fields(self):
+        evidence = {"repo:owner/tool:readme:overview": "readme_excerpt"}
+        complete = {
+            "repo": "owner/tool",
+            "relevance": 80,
+            "uniqueness": 70,
+            "usability": 75,
+            "difficulty": "unknown",
+            "use_case": "unknown",
+            "category": "focus",
+            "artifact_type": "application",
+            "reasons": [{"text": "documented", "evidence_ids": ["repo:owner/tool:readme:overview"]}],
+            "risks": [],
+        }
+        parsed = Assessment.from_dict(complete, evidence, strict=True)
+        self.assertEqual(parsed.use_case, "unknown")
+        self.assertEqual(parsed.risks, [])
+        missing = dict(complete)
+        del missing["use_case"]
+        with self.assertRaises(ContractError) as raised:
+            Assessment.from_dict(missing, evidence, strict=True)
+        self.assertIn("use_case", str(raised.exception))
+        with self.assertRaises(ContractError) as raised:
+            Assessment.from_dict({**complete, "fit": 9, "caveats": "x"}, evidence, strict=True)
+        self.assertIn("fit", str(raised.exception))
+        no_reasons = dict(complete)
+        no_reasons["reasons"] = []
+        with self.assertRaises(ContractError) as raised:
+            Assessment.from_dict(no_reasons, evidence, strict=True)
+        self.assertIn("reasons", str(raised.exception))
 
     def test_concepts_cannot_inject_github_qualifiers(self):
         request = SearchRequest.from_dict({"request": "x", "core_concepts": ["music stars:>50000"]})

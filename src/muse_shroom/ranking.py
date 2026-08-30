@@ -16,7 +16,10 @@ from .boundary_score import (
     new_mechanisms_for, novelty_score, recalled_mechanism_counts,
     redundancy_penalty,
 )
-from .models import Assessment, ContractError, SearchRequest, repo_key
+from .models import (
+    Assessment, ContractError, RANK_PAYLOAD_FIELDS, SearchRequest,
+    reject_unknown_fields, repo_key,
+)
 from .selection import mechanism_rejected
 from .storage import Store
 
@@ -232,7 +235,13 @@ def _display_mechanism_sequence(items: list[dict[str, Any]],
     return shown, introduced
 
 
-def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[str, Any]:
+def rank_search(
+    store: Store,
+    search_id: str,
+    assessment_payload: Any,
+    *,
+    strict: bool = False,
+) -> dict[str, Any]:
     session = store.load_search(search_id)
     candidates = session["candidates"]
     try:
@@ -247,11 +256,20 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
     for candidate in candidates:
         annotate_candidate_mechanisms(candidate, boundary_request)
     by_name = {repo_key(item): item for item in candidates}
-    raw_assessments = assessment_payload.get("assessments", []) if isinstance(assessment_payload, dict) else assessment_payload
+    if isinstance(assessment_payload, dict):
+        if strict:
+            reject_unknown_fields(
+                assessment_payload, RANK_PAYLOAD_FIELDS, where="muse_rank payload",
+            )
+        raw_assessments = assessment_payload.get("assessments", [])
+    else:
+        raw_assessments = assessment_payload
     if not isinstance(raw_assessments, list):
         raise ContractError("assessments must be a list or an object containing assessments")
     assessments: dict[str, Assessment] = {}
     for raw in raw_assessments:
+        if not isinstance(raw, dict):
+            raise ContractError("each assessment must be an object")
         name = str(raw.get("repo", "")).lower()
         if name not in by_name:
             raise ContractError(f"assessment references unknown candidate: {name}")
@@ -259,7 +277,7 @@ def rank_search(store: Store, search_id: str, assessment_payload: Any) -> dict[s
             str(item.get("id")): str(item.get("kind"))
             for item in by_name[name].get("evidence", [])
         }
-        assessment = Assessment.from_dict(raw, evidence)
+        assessment = Assessment.from_dict(raw, evidence, strict=strict)
         if assessment.mechanism:
             allowed = evidence_mechanism_labels(by_name[name])
             if assessment.mechanism.casefold() not in allowed:

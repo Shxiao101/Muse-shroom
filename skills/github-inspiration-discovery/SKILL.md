@@ -11,6 +11,8 @@ Contracts: [request-contract.md](references/request-contract.md), [hypothesis-co
 
 If the host provides Muse-shroom MCP tools (`muse_search`, `muse_observe`, `muse_iterate`, `muse_rank`), call those with the same JSON contracts. Otherwise use the CLI. Optional `muse_inspect` is debug-only. Do not change the search strategy for MCP vs CLI. When using the CLI, write JSON as UTF-8 files; on Windows, never pipe `Get-Content` into Muse-shroom.
 
+When the user explicitly says to use Muse-shroom (“使用 Muse-shroom”, “use Muse-shroom”, “search with Muse-shroom”), use Muse-shroom as the primary retrieval path. Do not start with generic Web search instead. After a successful Muse-shroom flow, do not repeat the same search through Web unless you have a separate verification reason. Web may still be used later for explicit verification. This is Muse-shroom-first, not a ban on Web.
+
 ## 1. Purpose
 
 Find popular representatives, hidden gems, and transferable adjacent work. Do not use this Skill for known-repo code search or automatic installation.

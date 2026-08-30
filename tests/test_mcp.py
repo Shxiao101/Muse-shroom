@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from muse_shroom.cli import main
+from muse_shroom.explorer.read_model import ExplorerReadModel
 from muse_shroom.models import SearchRequest
 from muse_shroom.search import SearchEngine
 from muse_shroom.storage import Store
@@ -54,6 +55,23 @@ REQUEST = {
     "problem_concepts": ["focus"],
     "mechanisms": ["pomodoro"],
 }
+FOCUS_V04 = {
+    "request": "使用 muse-shroom，帮我找提高专注力的 GitHub 工具。",
+    "problem_concepts": [
+        {"term": "专注力", "aliases": ["focus", "concentration"], "weight": 1.0},
+    ],
+    "mechanisms": [
+        {"term": "pomodoro", "aliases": ["timer"], "weight": 0.7},
+        {"term": "distraction blocking", "aliases": ["website blocker"], "weight": 0.8},
+    ],
+    "exploration_directions": [
+        {"term": "commitment device", "weight": 0.6},
+        {"term": "biofeedback", "weight": 0.5},
+    ],
+    "artifact_types": ["application"],
+    "exclusions": ["awesome list", "course"],
+    "exploration_level": 0.6,
+}
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -62,6 +80,38 @@ def _github() -> FrozenGitHub:
     return FrozenGitHub(
         [("focus", [item]), ("pomodoro", [item]), ("biofeedback", [item])],
         readmes={"focus/timer": "# Timer\nPomodoro.\n## Usage\nRun it."},
+    )
+
+
+def _focus_github() -> FrozenGitHub:
+    pomo = repo(
+        "focus/timer", 40, description="Pomodoro timer for deep work",
+        topics=["pomodoro", "focus"],
+    )
+    block = repo(
+        "tools/blocker", 25, description="Website blocker for distraction blocking",
+        topics=["focus"],
+    )
+    commit = repo(
+        "habit/commit", 8, description="Commitment device that locks apps",
+        topics=["commitment-device"],
+    )
+    readmes = {
+        "focus/timer": "# Timer\nPomodoro for deep work.\n## Installation\npip install\n## Usage\nRun it.",
+        "tools/blocker": "# Blocker\nBlocks distracting websites.\n## Installation\nInstall\n## Usage\nEnable it.",
+        "habit/commit": "# Commit\nCommitment device for self-control.\n## Installation\nInstall\n## Usage\nLock apps.",
+    }
+    return FrozenGitHub(
+        [
+            ("focus", [pomo, block]),
+            ("pomodoro", [pomo]),
+            ("timer", [pomo]),
+            ("distraction", [block]),
+            ("website blocker", [block]),
+            ("commitment", [commit]),
+            ("biofeedback", [commit]),
+        ],
+        readmes=readmes,
     )
 
 
@@ -114,6 +164,26 @@ def _dump(value) -> str:
         return json.dumps(value, default=str)
     except TypeError:
         return str(value)
+
+
+def _as_dict(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        return dump()
+    return json.loads(json.dumps(value, default=str))
+
+
+def _named_tool(listed, name):
+    tools = listed.tools if hasattr(listed, "tools") else listed
+    return next(tool for tool in tools if tool.name == name)
+
+
+def _tool_schema(listed, name) -> dict:
+    tool = _named_tool(listed, name)
+    schema = getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None)
+    return _as_dict(schema)
 
 
 @unittest.skipUnless(
@@ -355,6 +425,207 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
         for name in ("muse_search", "muse_observe", "muse_iterate", "muse_rank"):
             self.assertIn(name, names)
         self.assertNotIn("muse_expand", names)
+
+    async def test_tool_schemas_expose_v04_nested_fields(self):
+        mcp = create_server(data_dir=tempfile.mkdtemp(), github=_github(), log_level="ERROR")
+        self.assertIn("Muse-shroom-first", mcp.instructions or "")
+        self.assertIn("generic Web search", mcp.instructions or "")
+        async with Client(mcp) as client:
+            listed = await client.list_tools()
+        blob = _dump(listed)
+        for token in (
+            "problem_concepts", "mechanisms", "exploration_directions",
+            "decision", "negative_directions", "relevance", "use_case",
+            "artifact_type", "evidence_ids", "reasons", "risks",
+        ):
+            self.assertIn(token, blob)
+        search = _tool_schema(listed, "muse_search")
+        request_schema = search["properties"]["request"]
+        self.assertIn("problem_concepts", request_schema.get("required", []))
+        self.assertEqual(request_schema.get("additionalProperties"), False)
+        self.assertNotIn("core_concepts", request_schema.get("properties", {}))
+        hypothesis = _tool_schema(listed, "muse_iterate")["properties"]["hypothesis"]
+        self.assertIn("decision", hypothesis.get("required", []))
+        self.assertEqual(hypothesis["properties"]["decision"].get("enum"), ["continue", "stop"])
+        assessment_schema = _tool_schema(listed, "muse_rank")["properties"]["assessments"]
+        assessment_blob = _dump(assessment_schema)
+        self.assertIn("use_case", assessment_blob)
+        self.assertIn("evidence_ids", assessment_blob)
+        descriptions = " ".join(
+            getattr(_named_tool(listed, name), "description", "") or ""
+            for name in ("muse_search", "muse_iterate", "muse_rank")
+        )
+        self.assertIn("problem_concepts", descriptions)
+        self.assertIn("decision", descriptions)
+        self.assertIn("reasons", descriptions)
+
+    async def test_muse_search_rejects_unknown_fields_and_exposes_legacy(self):
+        github = _github()
+        with tempfile.TemporaryDirectory() as directory:
+            mcp = create_server(data_dir=directory, github=github, log_level="ERROR")
+            async with Client(mcp) as client:
+                unknown = await client.call_tool("muse_search", {
+                    "request": {"request": "focus", "query": "focus tools", "prompt": "help"},
+                })
+                valid = _payload(await client.call_tool("muse_search", {
+                    "request": REQUEST, "mode": "quick",
+                }))
+                legacy = _payload(await client.call_tool("muse_search", {
+                    "request": {"request": "focus", "core_concepts": ["focus"]},
+                    "mode": "quick",
+                    "refresh": True,
+                }))
+        self.assertTrue(unknown.is_error)
+        self.assertIn("ContractError", _error_text(unknown))
+        self.assertIn("query", _error_text(unknown))
+        self.assertIn("prompt", _error_text(unknown))
+        self.assertNotIn("legacy_schema", valid)
+        self.assertTrue(legacy.get("legacy_schema"))
+        self.assertIn("problem_concepts", legacy.get("contract_warning", ""))
+        self.assertNotEqual(valid["search_id"], legacy["search_id"])
+
+    async def test_muse_iterate_and_rank_reject_unknown_and_missing_fields(self):
+        github = _github()
+        with tempfile.TemporaryDirectory() as directory:
+            mcp = create_server(data_dir=directory, github=github, log_level="ERROR")
+            async with Client(mcp) as client:
+                searched = _payload(await client.call_tool("muse_search", {
+                    "request": REQUEST, "mode": "deep",
+                }))
+                search_id = searched["search_id"]
+                store = Store(directory)
+                try:
+                    excerpt = _excerpt(store, search_id)
+                finally:
+                    store.close()
+                bad_hypothesis = await client.call_tool("muse_iterate", {
+                    "search_id": search_id,
+                    "hypothesis": {
+                        "decision": "continue",
+                        "concepts": ["biofeedback"],
+                        "rationale": "guessed",
+                        "mechanisms": ["pomodoro"],
+                    },
+                })
+                missing_decision = await client.call_tool("muse_iterate", {
+                    "search_id": search_id,
+                    "hypothesis": {"concepts": ["biofeedback"]},
+                })
+                continued = _payload(await client.call_tool("muse_iterate", {
+                    "search_id": search_id,
+                    "hypothesis": {
+                        "decision": "continue",
+                        "reason": "cover biofeedback",
+                        "concepts": ["biofeedback"],
+                    },
+                }))
+                unknown_rank = await client.call_tool("muse_rank", {
+                    "search_id": search_id,
+                    "assessments": [{
+                        **_assessment(excerpt),
+                        "fit": 9,
+                        "caveats": "guessed",
+                    }],
+                })
+                missing_fields = await client.call_tool("muse_rank", {
+                    "search_id": search_id,
+                    "assessments": [{
+                        "repo": "focus/timer",
+                        "relevance": 90,
+                        "uniqueness": 70,
+                        "usability": 80,
+                    }],
+                })
+                explicit_unknown = _payload(await client.call_tool("muse_rank", {
+                    "search_id": search_id,
+                    "assessments": [{
+                        "repo": "focus/timer",
+                        "relevance": 40,
+                        "uniqueness": 40,
+                        "usability": 40,
+                        "difficulty": "unknown",
+                        "use_case": "unknown",
+                        "category": "focus",
+                        "artifact_type": "unknown",
+                        "reasons": [{
+                            "text": "metadata only",
+                            "evidence_ids": ["repo:focus/timer:metadata"],
+                        }],
+                        "risks": [],
+                    }],
+                }))
+        self.assertTrue(bad_hypothesis.is_error)
+        self.assertIn("ContractError", _error_text(bad_hypothesis))
+        self.assertIn("rationale", _error_text(bad_hypothesis))
+        self.assertTrue(missing_decision.is_error)
+        self.assertIn("ContractError", _error_text(missing_decision))
+        self.assertIn("decision", _error_text(missing_decision))
+        self.assertEqual(continued["search_id"], search_id)
+        self.assertTrue(unknown_rank.is_error)
+        self.assertIn("fit", _error_text(unknown_rank))
+        self.assertTrue(missing_fields.is_error)
+        self.assertIn("use_case", _error_text(missing_fields))
+        self.assertEqual(explicit_unknown["search_id"], search_id)
+        self.assertEqual(explicit_unknown["next_action"], "done")
+
+    async def test_fresh_agent_focus_flow_uses_v04_schema_and_one_search_id(self):
+        github = _focus_github()
+        with tempfile.TemporaryDirectory() as directory:
+            mcp = create_server(data_dir=directory, github=github, log_level="ERROR")
+            async with Client(mcp) as client:
+                listed = await client.list_tools()
+                schema_blob = _dump(_tool_schema(listed, "muse_search"))
+                self.assertIn("problem_concepts", schema_blob)
+                self.assertIn("mechanisms", schema_blob)
+                status = _payload(await client.call_tool("muse_status", {}))
+                guessed = await client.call_tool("muse_search", {
+                    "request": {"query": "提高专注力"},
+                })
+                searched = _payload(await client.call_tool("muse_search", {
+                    "request": FOCUS_V04, "mode": "deep",
+                }))
+                search_id = searched["search_id"]
+                observed = _payload(await client.call_tool("muse_observe", {"search_id": search_id}))
+                iterated = _payload(await client.call_tool("muse_iterate", {
+                    "search_id": search_id,
+                    "hypothesis": {
+                        "decision": "continue",
+                        "reason": "cover biofeedback as an unexplored direction",
+                        "target_direction": "biofeedback",
+                        "concepts": ["biofeedback"],
+                    },
+                }))
+                store = Store(directory)
+                try:
+                    names = [
+                        item["full_name"] for item in store.load_search(search_id)["candidates"]
+                        if item.get("selected_for_assessment")
+                    ]
+                    if not names:
+                        names = [item["full_name"] for item in store.load_search(search_id)["candidates"]]
+                    assessments = [
+                        _assessment(_excerpt(store, search_id, name), name) for name in names[:3]
+                    ]
+                finally:
+                    store.close()
+                ranked = _payload(await client.call_tool("muse_rank", {
+                    "search_id": search_id,
+                    "assessments": assessments,
+                }))
+            restored = ExplorerReadModel(data_dir=directory).search_summary(search_id)
+        self.assertTrue(status["database_available"])
+        self.assertTrue(guessed.is_error)
+        self.assertIn("ContractError", _error_text(guessed))
+        self.assertNotIn("legacy_schema", searched)
+        self.assertEqual(observed["search_id"], search_id)
+        self.assertEqual(iterated["search_id"], search_id)
+        self.assertEqual(ranked["search_id"], search_id)
+        self.assertEqual(ranked["next_action"], "done")
+        self.assertIn("display_order", ranked)
+        self.assertGreater(searched["coverage"]["mechanism_count"], 0)
+        self.assertGreater(searched["coverage"]["direction_coverage"], 0)
+        self.assertEqual(restored["search_id"], search_id)
+        self.assertEqual(restored["mode"], "deep")
 
 
 if __name__ == "__main__":
