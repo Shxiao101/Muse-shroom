@@ -274,19 +274,14 @@ def _visible_repos(
     use_ranking: bool,
 ) -> list[dict[str, Any]]:
     if use_ranking and ranking:
-        by_repo = {}
         buckets = ranking.get("buckets") or {}
-        for bucket_name, items in buckets.items():
-            for item in items:
-                repo = str(item.get("repo") or "")
-                if repo:
-                    by_repo[_key(repo)] = {**item, "_bucket": bucket_name}
-        ordered = []
-        for name in ranking.get("display_order") or []:
-            item = by_repo.get(_key(name))
-            if item:
-                ordered.append(item)
-        return ordered[:MAX_GRAPH_REPOS]
+        ranked_items = ranking.get("items")
+        if not isinstance(ranked_items, list):
+            ranked_items = [item for values in buckets.values() for item in values]
+        return [
+            {**item, "_bucket": _bucket_of(str(item.get("repo") or ""), buckets)}
+            for item in ranked_items
+        ][:MAX_GRAPH_REPOS]
     by_name = {_key(item.get("full_name") or ""): item for item in candidates}
     names = _stored_repo_names(snapshot)
     if names is None:
@@ -842,18 +837,27 @@ class ExplorerReadModel:
             buckets = ranking.get("buckets") or {}
             display_order = list(ranking.get("display_order") or [])
             items = []
-            by_repo = {}
             for bucket_name, bucket_items in buckets.items():
                 public_bucket = []
                 for item in bucket_items:
                     public = _public_ranked_item(item, bucket=bucket_name, debug=debug)
                     public_bucket.append(public)
-                    by_repo[_key(item.get("repo") or "")] = public
                 buckets[bucket_name] = public_bucket
-            for name in display_order:
-                item = by_repo.get(_key(name))
-                if item:
-                    items.append(item)
+            ranked_items = ranking.get("items")
+            if not isinstance(ranked_items, list):
+                ranked_items = [
+                    item for name in display_order
+                    for item in (ranking.get("buckets") or {}).get(_bucket_of(name, ranking.get("buckets") or {}) or "", [])
+                    if _key(item.get("repo") or "") == _key(name)
+                ]
+            items = [
+                _public_ranked_item(
+                    item,
+                    bucket=_bucket_of(str(item.get("repo") or ""), ranking.get("buckets") or {}),
+                    debug=debug,
+                )
+                for item in ranked_items
+            ]
             payload = {
                 "search_id": search_id,
                 "ranked": True,
@@ -886,11 +890,16 @@ class ExplorerReadModel:
             bucket = None
             if ranking:
                 bucket = _bucket_of(repo, ranking.get("buckets") or {})
-                for items in (ranking.get("buckets") or {}).values():
-                    for item in items:
-                        if _key(item.get("repo") or "") == _key(repo):
-                            ranked_item = item
-                            break
+                ranked_items = ranking.get("items")
+                if not isinstance(ranked_items, list):
+                    ranked_items = [
+                        item for values in (ranking.get("buckets") or {}).values()
+                        for item in values
+                    ]
+                ranked_item = next((
+                    item for item in ranked_items
+                    if _key(item.get("repo") or "") == _key(repo)
+                ), None)
             public = public_candidate(candidate, detailed=True)
             if not debug:
                 public.pop("selection_score_components", None)

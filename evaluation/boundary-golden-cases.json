@@ -1,69 +1,173 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "cases": [
     {
       "id": "focus",
-      "request": "提高专注力",
-      "mainstream_mechanisms": ["专注计时", "任务流管理", "分心网站屏蔽"],
-      "acceptable_new_mechanism_types": ["行为承诺", "环境与通知干预", "生理反馈"],
-      "avoid_repeating": ["多个同质番茄钟"],
-      "cross_mechanism_directions": ["digital wellbeing", "biofeedback"]
+      "mainstream_mechanisms": [
+        {"id": "focus-timer", "term": "专注计时", "aliases": ["focus timer", "pomodoro", "time boxing"]},
+        {"id": "task-flow", "term": "任务流管理", "aliases": ["task workflow", "task management"]},
+        {"id": "site-blocking", "term": "分心网站屏蔽", "aliases": ["website blocker", "site blocking", "app blocker"]}
+      ],
+      "acceptable_new_mechanisms": [
+        {"id": "commitment", "term": "行为承诺", "aliases": ["commitment device", "behavioral friction"]},
+        {"id": "environment", "term": "环境与通知干预", "aliases": ["digital wellbeing", "notification intervention", "environmental cue"]},
+        {"id": "biofeedback", "term": "生理反馈", "aliases": ["biofeedback", "physiological feedback"]}
+      ],
+      "repetition_groups": [
+        {"id": "timer-clones", "term": "同质番茄钟", "aliases": ["pomodoro", "focus timer", "countdown timer"], "max_results": 3}
+      ],
+      "cross_mechanism_directions": [
+        {"id": "digital-wellbeing", "term": "digital wellbeing", "aliases": ["digital minimalism"]},
+        {"id": "biofeedback-direction", "term": "biofeedback", "aliases": ["physiological feedback"]}
+      ],
+      "thresholds": {"min_mainstream_coverage": 0.34, "min_meaningful_new_mechanisms": 1, "require_cross_mechanism": true}
     },
     {
       "id": "codex-overthinking",
-      "request": "减少 Codex overthinking",
-      "mainstream_mechanisms": ["推理预算", "任务拆分", "停止条件"],
-      "acceptable_new_mechanism_types": ["YAGNI 约束", "审查门禁", "反馈回路"],
-      "avoid_repeating": ["同义 prompt 模板"],
-      "cross_mechanism_directions": ["implementation minimalism", "decision hygiene"]
+      "mainstream_mechanisms": [
+        {"id": "reasoning-budget", "term": "推理预算", "aliases": ["reasoning budget", "token budget"]},
+        {"id": "task-decomposition", "term": "任务拆分", "aliases": ["task decomposition"]},
+        {"id": "stop-condition", "term": "停止条件", "aliases": ["stop condition", "stopping rule"]}
+      ],
+      "acceptable_new_mechanisms": [
+        {"id": "yagni", "term": "YAGNI 约束", "aliases": ["YAGNI", "implementation minimalism"]},
+        {"id": "review-gate", "term": "审查门禁", "aliases": ["review gate", "quality gate"]},
+        {"id": "feedback-loop", "term": "反馈回路", "aliases": ["feedback loop", "decision hygiene"]}
+      ],
+      "repetition_groups": [
+        {"id": "prompt-clones", "term": "同义 prompt 模板", "aliases": ["prompt template", "system prompt"], "max_results": 3}
+      ],
+      "cross_mechanism_directions": [
+        {"id": "minimalism", "term": "implementation minimalism", "aliases": ["YAGNI", "simple implementation"]},
+        {"id": "decision-hygiene", "term": "decision hygiene", "aliases": ["decision record"]}
+      ],
+      "thresholds": {"min_mainstream_coverage": 0.34, "min_meaningful_new_mechanisms": 1, "require_cross_mechanism": true}
     },
     {
       "id": "learning-habit",
-      "request": "帮助程序员形成学习习惯",
-      "mainstream_mechanisms": ["间隔重复", "学习计划", "打卡"],
-      "acceptable_new_mechanism_types": ["承诺装置", "环境提示", "社交问责"],
-      "avoid_repeating": ["多个课程列表"],
-      "cross_mechanism_directions": ["behavior design", "accountability"]
+      "mainstream_mechanisms": [
+        {"id": "spaced-repetition", "term": "间隔重复", "aliases": ["spaced repetition"]},
+        {"id": "study-plan", "term": "学习计划", "aliases": ["study plan", "learning plan"]},
+        {"id": "check-in", "term": "打卡", "aliases": ["habit tracker", "daily check in"]}
+      ],
+      "acceptable_new_mechanisms": [
+        {"id": "commitment", "term": "承诺装置", "aliases": ["commitment device"]},
+        {"id": "environmental-cue", "term": "环境提示", "aliases": ["environmental cue", "behavior design"]},
+        {"id": "accountability", "term": "社交问责", "aliases": ["social accountability", "accountability"]}
+      ],
+      "repetition_groups": [
+        {"id": "course-lists", "term": "课程列表", "aliases": ["course list", "learning resources"], "max_results": 2}
+      ],
+      "cross_mechanism_directions": [
+        {"id": "behavior-design", "term": "behavior design", "aliases": ["behavioral design"]},
+        {"id": "accountability-direction", "term": "accountability", "aliases": ["social accountability"]}
+      ],
+      "thresholds": {"min_mainstream_coverage": 0.34, "min_meaningful_new_mechanisms": 1, "require_cross_mechanism": true}
     },
     {
       "id": "ai-music",
-      "request": "AI 音乐创作辅助",
-      "mainstream_mechanisms": ["生成式作曲", "转录", "音频处理"],
-      "acceptable_new_mechanism_types": ["可视化反馈", "人机协作界面", "硬件控制"],
-      "avoid_repeating": ["多个模型封装"],
-      "cross_mechanism_directions": ["creative coding", "tangible interface"]
+      "mainstream_mechanisms": [
+        {"id": "generation", "term": "生成式作曲", "aliases": ["generative composition", "music generation"]},
+        {"id": "transcription", "term": "转录", "aliases": ["music transcription", "audio transcription"]},
+        {"id": "audio-processing", "term": "音频处理", "aliases": ["audio processing"]}
+      ],
+      "acceptable_new_mechanisms": [
+        {"id": "visual-feedback", "term": "可视化反馈", "aliases": ["music visualization", "visual feedback"]},
+        {"id": "collaborative-interface", "term": "人机协作界面", "aliases": ["collaborative interface", "creative coding"]},
+        {"id": "hardware-control", "term": "硬件控制", "aliases": ["hardware controller", "tangible interface", "MIDI controller"]}
+      ],
+      "repetition_groups": [
+        {"id": "model-wrappers", "term": "模型封装", "aliases": ["model wrapper", "API wrapper"], "max_results": 3}
+      ],
+      "cross_mechanism_directions": [
+        {"id": "creative-coding", "term": "creative coding", "aliases": ["live coding"]},
+        {"id": "tangible-interface", "term": "tangible interface", "aliases": ["hardware interface"]}
+      ],
+      "thresholds": {"min_mainstream_coverage": 0.34, "min_meaningful_new_mechanisms": 1, "require_cross_mechanism": true}
     },
     {
       "id": "phone-distraction",
-      "request": "减少手机分心",
-      "mainstream_mechanisms": ["应用屏蔽", "使用时长统计", "专注模式"],
-      "acceptable_new_mechanism_types": ["摩擦设计", "替代行为", "物理环境干预"],
-      "avoid_repeating": ["多个相同 app blocker"],
-      "cross_mechanism_directions": ["digital minimalism", "commitment device"]
+      "mainstream_mechanisms": [
+        {"id": "app-blocking", "term": "应用屏蔽", "aliases": ["app blocker", "application blocking"]},
+        {"id": "usage-tracking", "term": "使用时长统计", "aliases": ["screen time", "usage tracking"]},
+        {"id": "focus-mode", "term": "专注模式", "aliases": ["focus mode"]}
+      ],
+      "acceptable_new_mechanisms": [
+        {"id": "friction", "term": "摩擦设计", "aliases": ["behavioral friction", "friction design"]},
+        {"id": "replacement", "term": "替代行为", "aliases": ["replacement behavior"]},
+        {"id": "physical-environment", "term": "物理环境干预", "aliases": ["physical environment", "environmental intervention"]}
+      ],
+      "repetition_groups": [
+        {"id": "blocker-clones", "term": "相同 app blocker", "aliases": ["app blocker", "website blocker"], "max_results": 3}
+      ],
+      "cross_mechanism_directions": [
+        {"id": "digital-minimalism", "term": "digital minimalism", "aliases": ["digital wellbeing"]},
+        {"id": "commitment-device", "term": "commitment device", "aliases": ["behavioral commitment"]}
+      ],
+      "thresholds": {"min_mainstream_coverage": 0.34, "min_meaningful_new_mechanisms": 1, "require_cross_mechanism": true}
     },
     {
       "id": "code-review",
-      "request": "提高代码 review 质量",
-      "mainstream_mechanisms": ["静态分析", "PR 模板", "review checklist"],
-      "acceptable_new_mechanism_types": ["认知偏差检查", "变更风险可视化", "教学反馈"],
-      "avoid_repeating": ["多个 linter"],
-      "cross_mechanism_directions": ["decision record", "change impact"]
+      "mainstream_mechanisms": [
+        {"id": "static-analysis", "term": "静态分析", "aliases": ["static analysis", "linter"]},
+        {"id": "pr-template", "term": "PR 模板", "aliases": ["pull request template", "PR template"]},
+        {"id": "review-checklist", "term": "review checklist", "aliases": ["code review checklist"]}
+      ],
+      "acceptable_new_mechanisms": [
+        {"id": "bias-check", "term": "认知偏差检查", "aliases": ["cognitive bias check", "decision hygiene"]},
+        {"id": "risk-visualization", "term": "变更风险可视化", "aliases": ["change risk visualization", "change impact"]},
+        {"id": "teaching-feedback", "term": "教学反馈", "aliases": ["teaching feedback", "review feedback"]}
+      ],
+      "repetition_groups": [
+        {"id": "linter-clones", "term": "多个 linter", "aliases": ["linter", "static analyzer"], "max_results": 3}
+      ],
+      "cross_mechanism_directions": [
+        {"id": "decision-record", "term": "decision record", "aliases": ["ADR", "decision log"]},
+        {"id": "change-impact", "term": "change impact", "aliases": ["impact analysis"]}
+      ],
+      "thresholds": {"min_mainstream_coverage": 0.34, "min_meaningful_new_mechanisms": 1, "require_cross_mechanism": true}
     },
     {
       "id": "long-project-motivation",
-      "request": "帮助长期项目保持动力",
-      "mainstream_mechanisms": ["里程碑", "任务追踪", "进度图"],
-      "acceptable_new_mechanism_types": ["可见进展", "奖励调度", "身份与社群反馈"],
-      "avoid_repeating": ["多个看板"],
-      "cross_mechanism_directions": ["progress visualization", "behavioral economics"]
+      "mainstream_mechanisms": [
+        {"id": "milestone", "term": "里程碑", "aliases": ["milestone"]},
+        {"id": "task-tracking", "term": "任务追踪", "aliases": ["task tracking", "project tracking"]},
+        {"id": "progress-chart", "term": "进度图", "aliases": ["progress chart", "burndown chart"]}
+      ],
+      "acceptable_new_mechanisms": [
+        {"id": "visible-progress", "term": "可见进展", "aliases": ["visible progress", "progress visualization"]},
+        {"id": "reward-schedule", "term": "奖励调度", "aliases": ["reward schedule", "behavioral economics"]},
+        {"id": "identity-community", "term": "身份与社群反馈", "aliases": ["community feedback", "social identity"]}
+      ],
+      "repetition_groups": [
+        {"id": "kanban-clones", "term": "多个看板", "aliases": ["kanban", "task board"], "max_results": 3}
+      ],
+      "cross_mechanism_directions": [
+        {"id": "progress-visualization", "term": "progress visualization", "aliases": ["visible progress"]},
+        {"id": "behavioral-economics", "term": "behavioral economics", "aliases": ["reward design"]}
+      ],
+      "thresholds": {"min_mainstream_coverage": 0.34, "min_meaningful_new_mechanisms": 1, "require_cross_mechanism": true}
     },
     {
       "id": "personal-knowledge",
-      "request": "个人知识管理",
-      "mainstream_mechanisms": ["双向链接", "全文检索", "知识图谱"],
-      "acceptable_new_mechanism_types": ["渐进总结", "情境回忆", "本地优先归档"],
-      "avoid_repeating": ["多个笔记编辑器"],
-      "cross_mechanism_directions": ["memory timeline", "sensemaking"]
+      "mainstream_mechanisms": [
+        {"id": "backlinks", "term": "双向链接", "aliases": ["backlinks", "bidirectional links"]},
+        {"id": "full-text-search", "term": "全文检索", "aliases": ["full text search"]},
+        {"id": "knowledge-graph", "term": "知识图谱", "aliases": ["knowledge graph"]}
+      ],
+      "acceptable_new_mechanisms": [
+        {"id": "progressive-summary", "term": "渐进总结", "aliases": ["progressive summarization"]},
+        {"id": "contextual-recall", "term": "情境回忆", "aliases": ["contextual recall", "memory timeline"]},
+        {"id": "local-archive", "term": "本地优先归档", "aliases": ["local first archive", "local first"]}
+      ],
+      "repetition_groups": [
+        {"id": "editor-clones", "term": "多个笔记编辑器", "aliases": ["note editor", "markdown editor"], "max_results": 3}
+      ],
+      "cross_mechanism_directions": [
+        {"id": "memory-timeline", "term": "memory timeline", "aliases": ["temporal memory"]},
+        {"id": "sensemaking", "term": "sensemaking", "aliases": ["knowledge synthesis"]}
+      ],
+      "thresholds": {"min_mainstream_coverage": 0.34, "min_meaningful_new_mechanisms": 1, "require_cross_mechanism": true}
     }
   ]
 }

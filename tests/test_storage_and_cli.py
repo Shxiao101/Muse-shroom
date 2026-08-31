@@ -14,6 +14,16 @@ from tests.helpers import repo
 
 
 class StorageAndCliTests(unittest.TestCase):
+    def test_rank_receipt_counts_primary_items_without_compatibility_buckets(self):
+        from muse_shroom.cli import _persist_output
+
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = _persist_output(
+                {"items": [{"repo": "one/a"}, {"repo": "two/b"}], "next_action": "done"},
+                str(Path(directory) / "rank.json"),
+            )
+        self.assertEqual(receipt["returned"], 2)
+
     def test_positive_feedback_does_not_create_topic_personalization(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(directory)

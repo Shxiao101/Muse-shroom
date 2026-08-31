@@ -9,7 +9,7 @@ CLI, MCP, and Explorer implementation notes. Agent Skills should follow `skills/
 - `negative_directions` are session-level wrong senses; `rejected_directions` are user refusals; new positive directions go to `add_exploration_directions`.
 - `muse-shroom observe --search-id` restores observation without GitHub calls or writes. After rank, `next_action` is `done`; `can_iterate` is true only for deep mode with remaining budget and no hard stop.
 - Deep mode: at most 3 iterates after search, 6 new queries per round, 30 session search queries, candidate pool 250 (quick 100). `stop.reasons` are hard stops; `stop.signals` are advisory.
-- Rank explanations follow `display_order` (popular, gems, adjacent). `selection_order` is internal pick order.
+- Rank uses a single Boundary-first composition for `items` / `display_order`. The popular, gems, and adjacent fields are compatibility projections computed afterward; `selection_order` is debug-only.
 - Probe stage: at most 2 repos per owner. Deep shortlist uses a boundary lane so one mechanism cannot fill the list.
 - Search JSON is capped at 30KB. Public evidence is at most 3 items per candidate; Release lives on `latest_release`.
 - Relationship expansion runs only when the hypothesis selects `relationship`, `seed`, or `owner`.

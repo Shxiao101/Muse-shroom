@@ -287,6 +287,34 @@ class BoundaryRankingTests(unittest.TestCase):
             [name.casefold() for name in result["boundary_summary"]["new_mechanisms_introduced"]],
         )
 
+    def test_boundary_composition_is_independent_of_compatibility_bucket_order(self):
+        anchor = _item("big/timer", 25000, "Pomodoro timer", kinds=["core"])
+        leap = _item("sense/bio", 40, "Biofeedback focus sensor", kinds=["adjacent"])
+        gem = _item("small/block", 20, "Website blocking", kinds=["core"])
+        for item in (anchor, leap, gem):
+            annotate_candidate_mechanisms(item, FOCUS_REQUEST)
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.create_search("s", FOCUS_REQUEST.to_dict(), "deep")
+            for item in (anchor, leap, gem):
+                store.save_candidate("s", item)
+            result = rank_search(store, "s", [
+                _assess(anchor, relevance=91, uniqueness=60),
+                _assess(leap, relevance=88, uniqueness=94, transferability=88),
+                _assess(gem, relevance=64, uniqueness=62, transferability=45),
+            ])
+            store.close()
+        primary = [item["repo"] for item in result["items"]]
+        compatibility_order = [
+            item["repo"] for name in ("popular", "gems", "adjacent")
+            for item in result["buckets"][name]
+        ]
+        self.assertEqual(primary, result["display_order"])
+        self.assertNotEqual(primary, compatibility_order)
+        without_buckets = dict(result)
+        without_buckets.pop("buckets")
+        self.assertEqual([item["repo"] for item in without_buckets["items"]], primary)
+
     def test_first_display_item_without_mechanisms_does_not_claim_prior_presentation(self):
         unlabeled = _item("plain/tool", 25000, "Useful focus application", kinds=["core"])
         with tempfile.TemporaryDirectory() as directory:

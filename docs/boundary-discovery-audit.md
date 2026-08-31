@@ -21,7 +21,7 @@ SearchRequest → query construction → GitHub recall/enrichment
 | Boundary | Recalled and presented mechanisms are distinct; rejected and negative directions are session state. | Search and session state are serialized together, so ownership was hard to read. | Treat boundary snapshots as search facts and session state as decisions/budgets; expose a trace rather than duplicating fields again. |
 | Iterate | Duplicate queries and bounded stopping already work. | Promotion did not prove that the term came from search evidence. | Reject unsupported promotions and high-priority new directions. |
 | Ranking | Relevance/type gates, novelty, transferability, redundancy, and deterministic MMR already exist. | Historical positive feedback could boost same-topic repositories. | Limit feedback adjustment to exact-repository rejection/difficulty signals. |
-| Presentation | Items already have Anchor/Edge/Leap/Wildcard, new mechanisms, and transferability. | Compatibility buckets remained the only top-level collection. | Add a primary `items` list in exact `display_order`; retain buckets for compatibility. |
+| Presentation | Items have Anchor/Edge/Leap/Wildcard, new mechanisms, and transferability. | Compatibility buckets previously fed display composition. | Compose `items` directly from Boundary objectives; derive buckets afterward for compatibility. |
 | Evaluation | All requested diagnostics existed, but were diagnostic-only. | No formal agentic-loop verdict or fixed mechanism-space cases. | Add a boundary evaluator and eight golden mechanism-space cases. |
 | Explorer | Boundary, iterations, queries, roles, and results were available. | The source of a newly proposed direction was not visible. | Show discovered-term evidence and per-iteration queries/evidence sources. |
 
@@ -37,11 +37,11 @@ SearchRequest → query construction → GitHub recall/enrichment
 
 ## Deliberately deferred
 
-- Automatic free-form mechanism extraction from arbitrary README prose is deferred
-  until a precision fixture exists. Topics are used first because they are structured
-  evidence; guessing noun phrases would inflate boundary gain.
+- Automatic free-form mechanism extraction from arbitrary README prose remains deferred.
+  v0.4.2 adds only a bounded phrase lexicon over repository descriptions, relationship
+  details, and curated README sections; badge text is not a strong signal.
 - Long-term Personal Boundary remains out of scope.
-- `popular/gems/adjacent` remain compatibility fields, not primary product semantics.
+- `popular/gems/adjacent` are derived compatibility fields and no longer feed the primary composition.
 - Formal thresholds should be recalibrated after several recorded agentic-loop packs;
   the evaluator reports an insufficient-data verdict rather than passing single-pass
   runs.

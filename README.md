@@ -1,4 +1,4 @@
-# Muse-shroom
+# Muse-shroom 0.4.2
 
 Muse-shroom 是一个“让当前 Agent 帮你打破 GitHub 信息茧房”的本地搜索内核。它把可复现的 GitHub API 调用、SQLite 缓存、关系扩散和确定性排名放进 Python CLI，把自然语言理解和语义评价留给 Codex、Claude、Cursor 等宿主 Agent。
 
@@ -86,7 +86,7 @@ Cursor（`.cursor/mcp.json`）：
 ## 结果
 
 - 快搜一次 `search` 后 `rank`（`next_action` 为 `rank` 再为 `done`）；深搜在中间按 `observation` 做有限次 `iterate`。
-- rank 以 `items` + `display_order` 作为 Boundary Role 主输出，并保留 `popular` / `gems` / `adjacent` 兼容 buckets。按该顺序解释 `boundary_role`、`new_mechanisms`、`why_different`。
+- rank 由一个 Boundary-first composer 直接生成 `items` + `display_order`，共同优化 Anchor、Edge、Leap、Wildcard、新机制覆盖与重复控制。`popular` / `gems` / `adjacent` 只是在主列表确定后生成的兼容投影，不参与排序。
 - 评估必须引用候选上的 evidence ID；功能结论必须引用 README 片段。
 - 实现细节见 [`docs/search-internals.md`](docs/search-internals.md)。
 
@@ -109,7 +109,7 @@ python -m unittest tests.test_mcp -v
 
 设置 `MUSE_SHROOM_LIVE_SMOKE=1` 后可选运行实时 API 认证/契约 smoke test；稳定测试不会执行它。
 
-人工盲测协议和 8 个模糊需求位于 `evaluation/`。运行 `python evaluation/run_ab.py capture` 可在隔离源码树中录制基线与当前版本的共同 GitHub 响应并生成匿名评审包，`replay` 可完全离线复跑。原始结果同时记录 mechanism count、presented mechanism count、mechanism redundancy、boundary gain 和 direction coverage。使用 `evaluation/boundary_eval.py` 对 agentic-loop pack 做正式 Boundary 评估；单轮结果不会被误判为 Boundary 成功。人工 A/B release gate 仍独立运行。
+人工盲测协议和 8 个模糊需求位于 `evaluation/`。运行 `python evaluation/run_ab.py capture` 可在隔离源码树中录制基线与当前版本的共同 GitHub 响应并生成匿名评审包，`replay` 可完全离线复跑。Boundary release gate 使用独立的 8 个机制空间 case：`python evaluation/run_boundary_eval.py capture` 录制完整 agentic 流程，之后用 `replay` 离线重放并自动生成 verdict。Golden Cases 只参与结果评分，不会注入搜索策略；单轮结果也不会被误判为 Boundary 成功。人工 A/B release gate 仍独立运行。
 
 ## 首版边界
 

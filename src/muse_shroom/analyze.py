@@ -137,6 +137,16 @@ def readme_snippets(readme: str, concept_terms: list[str] | None = None,
         if match is not None:
             candidates.append((kind, match))
 
+    for kind, pattern in (
+        ("features", re.compile(r"\b(features?|capabilities)\b")),
+        ("use_cases", re.compile(r"\b(use cases?|workflows?|scenarios?)\b")),
+        ("motivation", re.compile(r"\b(motivation|why|goals?)\b")),
+        ("philosophy", re.compile(r"\b(philosophy|principles?|design)\b")),
+    ):
+        match = next((index for index, heading in headings if pattern.search(heading)), None)
+        if match is not None:
+            candidates.append((kind, match))
+
     types = {value.lower() for value in (artifact_types or [])}
     if "mcp" in types:
         risk_terms = ("permission", "scope", "tools/list", "inputschema")
@@ -153,7 +163,11 @@ def readme_snippets(readme: str, concept_terms: list[str] | None = None,
 
     snippets: list[dict[str, Any]] = []
     seen_text: set[str] = set()
-    kind_order = {"concept_match": 0, "overview": 1, "installation": 2, "usage": 3, "type_risk": 4}
+    kind_order = {
+        "concept_match": 0, "overview": 1, "features": 2, "use_cases": 3,
+        "motivation": 4, "philosophy": 5, "installation": 6, "usage": 7,
+        "type_risk": 8,
+    }
     candidates.sort(key=lambda item: kind_order.get(item[0], 9))
     for kind, start in candidates:
         text, end = _section_snippet(lines, start)
@@ -162,7 +176,7 @@ def readme_snippets(readme: str, concept_terms: list[str] | None = None,
             continue
         seen_text.add(identity)
         snippets.append({"snippet_type": kind, "text": text, "line_start": start + 1, "line_end": end})
-        if len(snippets) >= 5:
+        if len(snippets) >= 7:
             break
     return snippets
 

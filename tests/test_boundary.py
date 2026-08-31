@@ -131,6 +131,49 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(rejected.rejected_directions, ["biofeedback"])
         self.assertNotIn("biofeedback", rejected.explored_directions)
 
+    def test_discovered_directions_use_curated_structured_sources_without_mechanism_gate(self):
+        request = SearchRequest.from_dict({
+            "request": "focus", "problem_concepts": ["focus"],
+        })
+        description = repo(
+            "one/friction", 4,
+            description="Adds behavioral friction before distracting actions",
+        )
+        description["evidence"] = [{
+            "id": "repo:one/friction:metadata", "kind": "github_metadata", "facts": {},
+        }]
+        readme = repo("two/sensor", 3, description="Focus companion")
+        readme["evidence"] = [
+            {"id": "repo:two/sensor:metadata", "kind": "github_metadata", "facts": {}},
+            {
+                "id": "repo:two/sensor:readme:features", "kind": "readme_excerpt",
+                "facts": {"snippet_type": "features", "text": "Biofeedback guides each focus session."},
+            },
+        ]
+        related = repo("three/minimal", 2, description="Attention helper")
+        related["discovery_paths"] = [{
+            "kind": "relationship", "from": "seed/tool", "relation": "readme_link",
+            "detail": "digital minimalism companion",
+        }]
+        related["evidence"] = [
+            {"id": "repo:three/minimal:metadata", "kind": "github_metadata", "facts": {}},
+            {
+                "id": "relation:seed/tool:readme_link:three/minimal",
+                "kind": "discovery_relation", "facts": {"detail": "digital minimalism companion"},
+            },
+        ]
+
+        boundary = build_boundary([description, readme, related], [], request)
+        by_term = {item["term"]: item for item in boundary.discovered_term_evidence}
+
+        self.assertIn("behavioral friction", by_term)
+        self.assertIn("biofeedback", by_term)
+        self.assertIn("digital minimalism", by_term)
+        self.assertEqual(by_term["behavioral friction"]["sources"][0]["source_field"], "description")
+        self.assertEqual(by_term["biofeedback"]["sources"][0]["source_field"], "readme_features")
+        self.assertEqual(by_term["digital minimalism"]["kind"], "cross_domain_direction")
+        self.assertGreater(by_term["biofeedback"]["confidence"], 0.8)
+
     def test_search_and_expand_save_snapshots_and_compute_delta(self):
         pomodoro = repo("focus/timer", 4, description="Focus helper")
         tracker = repo("focus/tracker", 3, description="Focus helper")

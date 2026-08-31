@@ -402,8 +402,8 @@ MUSE_RANK_DESCRIPTION = (
     "Rank assessed candidates. Each Assessment must include repo, relevance, uniqueness, "
     "usability, difficulty, use_case, category, artifact_type, reasons, and risks. "
     "reasons needs at least one evidence-backed item; risks may be []. Explicit unknown "
-    "is valid; missing fields are not auto-filled. Returns RankResult including buckets, "
-    "display_order, and next_action=done."
+    "is valid; missing fields are not auto-filled. Returns Boundary-first RankResult "
+    "including items, display_order, compatibility buckets, and next_action=done."
 )
 
 

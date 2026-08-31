@@ -7,6 +7,9 @@ from types import SimpleNamespace
 from evaluation.cassette import CassetteGitHub, load_cassette
 from evaluation.run_ab import build_blind_pack, main as run_ab_main
 from evaluation.score_ab import main as score_ab_main, reveal, summarize
+from evaluation.version_worker import (
+    deterministic_assessment, deterministic_hypothesis, main as version_worker_main,
+)
 from muse_shroom import __version__ as muse_shroom_version
 from muse_shroom.models import SearchRequest
 from muse_shroom.queries import build_queries
@@ -16,6 +19,40 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_agentic_policy_uses_observation_only_and_prioritizes_evidence(self):
+        used = set()
+        hypothesis = deterministic_hypothesis({
+            "unexplored_directions": ["requested direction"],
+            "discovered_term_evidence": [{
+                "term": "observed mechanism", "kind": "candidate_mechanism",
+                "confidence": 0.9, "support_count": 2,
+            }],
+        }, used)
+        self.assertEqual(hypothesis["promote_discovered_terms"], ["observed mechanism"])
+        self.assertEqual(hypothesis["target_direction"], "observed mechanism")
+        self.assertNotIn("requested direction", hypothesis.values())
+
+    def test_agentic_policy_falls_back_to_observed_unexplored_direction(self):
+        hypothesis = deterministic_hypothesis({
+            "unexplored_directions": ["requested direction"],
+            "discovered_term_evidence": [],
+        }, set())
+        self.assertEqual(hypothesis["target_direction"], "requested direction")
+        self.assertNotIn("promote_discovered_terms", hypothesis)
+
+    def test_deterministic_rank_fixture_cites_readme_without_claiming_judgment(self):
+        candidate = {
+            "full_name": "owner/tool", "topics": ["focus"],
+            "mechanisms": [{"name": "biofeedback"}],
+            "evidence": [
+                {"id": "metadata", "kind": "github_metadata", "facts": {}},
+                {"id": "excerpt", "kind": "readme_excerpt", "facts": {"text": "Measured feedback."}},
+            ],
+        }
+        assessment = deterministic_assessment(candidate, {"artifact_types": ["application"]})
+        self.assertEqual(assessment["reasons"][0]["evidence_ids"], ["excerpt"])
+        self.assertEqual(assessment["risks"][0]["evidence_ids"], ["metadata"])
+        self.assertIn("human review", assessment["risks"][0]["text"])
     def test_ab_prompt_set_has_two_prompts_per_category(self):
         payload = json.loads((ROOT / "evaluation" / "ab-prompts.json").read_text(encoding="utf-8"))
         prompts = payload["prompts"]
@@ -282,6 +319,17 @@ class EvaluationTests(unittest.TestCase):
                 "replay", "--repository", str(ROOT), "--prompts", str(prompts),
                 "--cassette", str(cassette_path), "--output-dir", str(root / "results"),
             ]), 0)
+            agentic_output = root / "agentic.json"
+            self.assertEqual(version_worker_main([
+                "--source-root", str(ROOT), "--prompts", str(prompts),
+                "--output", str(agentic_output), "--cassette", str(cassette_path),
+                "--data-dir", str(root / "agentic-data"), "--label", "agentic",
+                "--mode", "replay", "--agentic", "--agentic-iterations", "0",
+                "--boundary-rank",
+            ]), 0)
+            agentic = json.loads(agentic_output.read_text(encoding="utf-8"))
+            self.assertEqual(agentic["stage"], "agentic_boundary_rank")
+            self.assertTrue(agentic["results"][0]["ranking"]["display_order"])
             baseline = json.loads((root / "results" / "baseline.raw.json").read_text(encoding="utf-8"))
             candidate = json.loads((root / "results" / "candidate.raw.json").read_text(encoding="utf-8"))
             self.assertEqual(baseline["muse_shroom_version"], "0.2.0")

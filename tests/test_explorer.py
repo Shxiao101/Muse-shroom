@@ -165,6 +165,9 @@ class ExplorerReadModelTests(unittest.TestCase):
             store, _github, search_id = _session(directory, rank=True)
             try:
                 ranking = store.get_ranking(search_id)
+                compatibility_free = dict(ranking)
+                compatibility_free.pop("buckets")
+                store.save_ranking(search_id, compatibility_free)
                 view = ExplorerReadModel(data_dir=directory).result_view(search_id)
             finally:
                 store.close()
@@ -173,6 +176,7 @@ class ExplorerReadModelTests(unittest.TestCase):
             self.assertEqual(summary["status"], "ranked")
             self.assertEqual(view["display_order"], ranking["display_order"])
             self.assertEqual([item["repo"] for item in view["items"]], ranking["display_order"])
+            self.assertEqual(view["buckets"], {"popular": [], "gems": [], "adjacent": []})
             self.assertEqual(
                 [item["repo"] for item in ranking["items"]],
                 ranking["display_order"],

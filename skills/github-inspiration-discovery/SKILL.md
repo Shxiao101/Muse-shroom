@@ -1,6 +1,6 @@
 ---
 name: github-inspiration-discovery
-description: Discover relevant GitHub repositories, including popular representatives, hidden gems, and adjacent inspiration, when a user describes a fuzzy interest, problem, tool, plugin, mod, MCP, or agent skill. Use Muse-shroom for evidence-backed retrieval; do not use it for known-repository code search or automatic installation.
+description: Discover evidence-backed GitHub projects across the user's current solution boundary, including anchors, edges, leaps, and transferable wildcards, for a fuzzy problem, tool, plugin, mod, MCP, or agent skill. Do not use it for known-repository code search or automatic installation.
 ---
 
 # GitHub Inspiration Discovery
@@ -17,7 +17,7 @@ When the user explicitly says to use Muse-shroom (“使用 Muse-shroom”, “u
 
 ## 1. Purpose
 
-Find popular representatives, hidden gems, and transferable adjacent work. Do not use this Skill for known-repo code search or automatic installation.
+Find reliable anchors, nearby mechanism changes, cross-mechanism leaps, and transferable wildcards. Do not use this Skill for known-repo code search or automatic installation.
 
 ## 2. Interpret intent
 
@@ -73,7 +73,7 @@ On a contract error, fix the JSON and retry this step. Do not search again.
 
 ## 8. Rank
 
-Call `muse_rank` with `search_id` and assessments, or `muse-shroom rank --search-id ID --assessments ASSESSMENTS --output RANK.json`. Use [result-contract.md](references/result-contract.md). Do not reorder buckets. A successful rank with `next_action=done` is terminal: stop retrieval and diagnostics immediately. Do not call `muse_observe`, `muse_inspect`, shell commands, or other tools after successful rank. Do not issue no-op shell commands merely to signal progress, delay, or narrate internal state.
+Call `muse_rank` with `search_id` and assessments, or `muse-shroom rank --search-id ID --assessments ASSESSMENTS --output RANK.json`. Use [result-contract.md](references/result-contract.md). Follow `items` / `display_order`; compatibility buckets are not an ordering instruction. A successful rank with `next_action=done` is terminal: stop retrieval and diagnostics immediately. Do not call `muse_observe`, `muse_inspect`, shell commands, or other tools after successful rank. Do not issue no-op shell commands merely to signal progress, delay, or narrate internal state.
 
 ## 9. Present
 

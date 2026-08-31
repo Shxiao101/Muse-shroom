@@ -46,7 +46,7 @@ The release gate passes when all eight prompts are rated, the candidate wins at 
 
 This v1 harness evaluates the 12-repository assessment shortlist and its evidence, which is the stage changed most heavily in v0.3.3. Final Agent-authored semantic assessments and ranking prose remain a separate human-in-the-loop evaluation.
 
-Raw v0.4 results also include `boundary`, `boundary_delta`, and diagnostic-only `boundary_diagnostics`: mechanism count, presented mechanism count, mechanism redundancy, boundary gain, and direction coverage. After Part 2 they also include `loop_diagnostics` for single-pass vs agentic-loop comparison: iterations used, queries per iteration, new mechanisms per iteration, boundary gain per iteration, duplicate query rate (only `skip_reason=duplicate`), candidate novelty per iteration, stop reason, and unexplored directions at stop. Rank output adds `boundary_summary`, `newly_presented_mechanisms`, and per-item `boundary_role`. Compare three packs when possible: single-pass search, agentic retrieval only, and agentic retrieval plus boundary-aware ranking. `version_worker.py` currently records a single-pass search; an agentic-loop pack is produced by replaying the same cassette through `search` plus bounded `iterate` calls. These fields are intentionally excluded from the existing release gate until enough replay data exists to calibrate thresholds. Cassette replay must reproduce the same boundary for the same request and recorded responses.
+Raw v0.4 results also include `boundary`, `boundary_delta`, and diagnostic-only `boundary_diagnostics`: mechanism count, presented mechanism count, mechanism redundancy, boundary gain, and direction coverage. They also include `loop_diagnostics`: iterations used, queries per iteration, new mechanisms per iteration, boundary gain per iteration, duplicate query rate (only `skip_reason=duplicate`), candidate novelty per iteration, stop reason, unexplored directions at stop, and the evidence trace. `version_worker.py` defaults to the historical single-pass A/B behavior; `--agentic` switches it to a deterministic observation-driven policy. The policy can promote only evidence emitted by the current observation and never reads Golden expected directions. Cassette replay must reproduce the same boundary for the same request and recorded responses.
 
 The prompt fixture retains a duplicate `core_concepts` field solely so historical fixture validators can still inspect it. `version_worker.py` detects the checked-out request model: current versions consume the v0.4 fields, while older baseline worktrees receive a generated v0.3 request with problem concepts and mechanisms combined as core concepts.
 
@@ -54,19 +54,31 @@ The probe and shortlist stages cap a single repository owner at two entries. Thi
 
 ## Boundary evaluation
 
-Eight mechanism-space golden cases live in
-`evaluation/boundary-golden-cases.json`. They define mainstream mechanisms,
-acceptable new mechanism types, repetition to avoid, and a required
-cross-mechanism direction; they deliberately do not require a particular
-repository.
+Eight machine-readable mechanism-space Golden Cases live in
+`evaluation/boundary-golden-cases.json`; their matching requests are isolated in
+`evaluation/boundary-prompts.json`. They define concept IDs and aliases for
+mainstream coverage, acceptable new mechanisms, repetition groups, required
+cross-mechanism directions, and release thresholds. They deliberately require
+neither a particular repository nor an exact output phrase.
 
-Run the formal metric evaluator on a raw agentic-loop result pack:
+Capture the complete flow once in a credential-bearing host context, then replay
+it fully offline:
 
 ```console
-python evaluation/boundary_eval.py evaluation/results/candidate.raw.json
+python evaluation/run_boundary_eval.py capture
+python evaluation/run_boundary_eval.py replay
 ```
 
-It reports mechanism redundancy, per-iteration mechanisms and boundary gain,
-direction coverage, presented mechanism count, duplicate query rate, unexplored
-directions at stop, query change, and promotion evidence. A single-pass pack is
-reported as `insufficient_agentic_cases`, never as a Boundary success.
+The command writes a quick single-pass pack, then runs deep search, deterministic
+evidence-backed iterations, a fixture-driven Boundary rank, trace collection,
+and `boundary_eval.py`. Fixture assessments exist only to exercise the ranking
+structure; they explicitly do not replace blind semantic review. The evaluator distinguishes raw boundary
+gain from `meaningful_boundary_gain`, checks mainstream coverage, new-mechanism
+matches, cross-mechanism discovery, and repetition violations, then writes a
+release verdict. Golden data is loaded only by the evaluator after retrieval.
+A single-pass pack remains `insufficient_agentic_cases`, never a Boundary
+success. To score an existing pack directly:
+
+```console
+python evaluation/boundary_eval.py evaluation/results/boundary/boundary-agentic.raw.json
+```

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muse-shroom"
-version = "0.4.1"
-description = "Evidence-backed GitHub discovery for popular projects and hidden gems"
+version = "0.4.2"
+description = "Evidence-backed GitHub boundary discovery for new solution mechanisms"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

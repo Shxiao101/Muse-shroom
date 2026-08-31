@@ -2,10 +2,10 @@
 
 MCP `muse_rank` and `muse-shroom rank` return the same display interface. Do not re-sort it.
 
-Read:
+Read the primary interface:
 
 ```text
-buckets
+items
 display_order
 boundary_role
 new_mechanisms
@@ -18,7 +18,9 @@ incomplete_phase
 next_action
 ```
 
-`display_order` is the order to present repositories: popular, then gems, then adjacent. `boundary_role`, `new_mechanisms`, and `why_different` are computed along that order. `selection_order` is internal pick order for debug only; do not show it to the user.
+`items` is the only recommendation list and is already in `display_order`. The composer directly balances a mainstream anchor, new-mechanism coverage, cross-mechanism leaps, transferable wildcards, and mechanism repetition. `boundary_role`, `new_mechanisms`, and `why_different` are computed along that order. `selection_order` is internal debug information; do not show it to the user.
+
+`buckets.popular`, `buckets.gems`, and `buckets.adjacent` are compatibility/debug projections created after `items` is final. They may be omitted by a future consumer without changing the primary list. Never concatenate or reorder them to construct a presentation.
 
 `next_action` is `done` after a successful rank and is terminal. Do not call observe, inspect, search, iterate, shell, or other diagnostic tools after that successful rank; present the returned result directly.
 

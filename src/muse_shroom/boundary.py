@@ -18,9 +18,27 @@ TECHNOLOGY_DISCOVERED_TERMS = {
     "php", "react", "ruby", "rust", "swift", "typescript", "windows",
 }
 MECHANISM_HINTS = {
-    "automation", "biofeedback", "blocker", "blocking", "commitment",
-    "dashboard", "feedback", "habit", "intervention", "monitoring",
-    "notification", "pomodoro", "reminder", "tracking", "timer", "workflow",
+    "accountability", "automation", "biofeedback", "blocker", "blocking",
+    "commitment", "dashboard", "economics", "feedback", "friction", "habit",
+    "interface", "intervention", "minimalism", "monitoring", "notification",
+    "pomodoro", "reminder", "sensemaking", "tracking", "visualization",
+    "wellbeing", "timer", "workflow",
+}
+DISCOVERY_MECHANISM_PHRASES = {
+    "accountability", "audio reactive", "behavior design", "behavioral economics",
+    "behavioral friction", "biofeedback", "change impact", "commitment device",
+    "creative coding", "decision hygiene", "decision record", "digital minimalism",
+    "digital wellbeing", "environmental cue", "feedback loop", "focus mode",
+    "habit tracking", "hardware controller", "implementation minimalism",
+    "knowledge graph", "local first", "memory timeline", "music visualization",
+    "notification intervention", "physical environment", "progress visualization",
+    "progressive summarization", "replacement behavior", "reward schedule",
+    "risk visualization", "screen time", "sensemaking", "social accountability",
+    "spaced repetition", "tangible interface", "usage tracking", "visual feedback",
+    "website blocker",
+}
+CURATED_README_SNIPPETS = {
+    "overview", "features", "use_cases", "motivation", "philosophy",
 }
 
 
@@ -38,6 +56,14 @@ def _contains_normalized(haystack: str, needle: str) -> bool:
 
 def _contains(surface: str, term: str) -> bool:
     return _contains_normalized(_normalized(surface), _normalized(term))
+
+
+def _structured_phrases(text: Any) -> list[str]:
+    normalized = _normalized(str(text or ""))
+    return sorted(
+        phrase for phrase in DISCOVERY_MECHANISM_PHRASES
+        if _contains_normalized(normalized, phrase)
+    )
 
 
 def _mechanism_concepts(request: SearchRequest) -> list[tuple[str, Concept, str]]:
@@ -183,12 +209,45 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
         )
         for term in concept.terms()
     }
-    counts: Counter[str] = Counter()
+    support_repos: dict[str, set[str]] = {}
     display: dict[str, str] = {}
     sources: dict[str, list[dict[str, Any]]] = {}
+
+    def add_source(raw: str, candidate: dict[str, Any], *, source_field: str,
+                   evidence_id: str, evidence_text: str, confidence: float,
+                   relationship_backed: bool = False) -> None:
+        value = " ".join(str(raw).replace("-", " ").split()).strip()
+        key = _normalized(value)
+        if (
+            not key or key in known or key in GENERIC_DISCOVERED_TERMS
+            or key in TECHNOLOGY_DISCOVERED_TERMS or len(key) < 3 or len(key) > 80
+        ):
+            return
+        repo = str(candidate.get("full_name") or "").strip()
+        if not repo:
+            return
+        display.setdefault(key, value)
+        support_repos.setdefault(key, set()).add(repo.casefold())
+        source = {
+            "repo": repo,
+            "source_field": source_field,
+            "evidence_id": evidence_id,
+            "evidence_text": " ".join(str(evidence_text).split())[:240],
+            "confidence": confidence,
+            "relationship_backed": relationship_backed,
+        }
+        identity = (repo.casefold(), source_field, evidence_id, source["evidence_text"])
+        existing = {
+            (
+                str(item["repo"]).casefold(), item["source_field"],
+                item["evidence_id"], item["evidence_text"],
+            )
+            for item in sources.setdefault(key, [])
+        }
+        if identity not in existing:
+            sources[key].append(source)
+
     for candidate in candidate_list:
-        if not candidate.get("mechanisms"):
-            continue
         repo = str(candidate.get("full_name") or "").strip()
         metadata = next(
             (
@@ -204,26 +263,58 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
             for path in candidate.get("discovery_paths") or []
         )
         for raw in candidate.get("topics") or []:
-            value = " ".join(str(raw).replace("-", " ").split()).strip()
-            key = _normalized(value)
-            if (
-                not key or key in known or key in GENERIC_DISCOVERED_TERMS
-                or key in TECHNOLOGY_DISCOVERED_TERMS
-                or len(key) < 3 or len(key) > 80
-            ):
+            add_source(
+                str(raw), candidate, source_field="topics",
+                evidence_id=str(metadata.get("id") or ""), evidence_text=str(raw),
+                confidence=.95, relationship_backed=relationship_backed,
+            )
+        description = str(candidate.get("description") or "")
+        for phrase in _structured_phrases(description):
+            add_source(
+                phrase, candidate, source_field="description",
+                evidence_id=str(metadata.get("id") or ""), evidence_text=description,
+                confidence=.82, relationship_backed=relationship_backed,
+            )
+        for evidence in candidate.get("evidence") or []:
+            if evidence.get("kind") != "readme_excerpt":
                 continue
-            counts[key] += 1
-            display.setdefault(key, value)
-            source = {
-                "repo": repo,
-                "source_field": "topics",
-                "evidence_id": str(metadata.get("id") or ""),
-                "evidence_text": value,
-                "relationship_backed": relationship_backed,
-            }
-            if source not in sources.setdefault(key, []):
-                sources[key].append(source)
-    ranked = sorted(counts, key=lambda key: (-counts[key], key))
+            facts = evidence.get("facts") or {}
+            if facts.get("snippet_type") not in CURATED_README_SNIPPETS:
+                continue
+            text = str(facts.get("text") or "")
+            for phrase in _structured_phrases(text):
+                add_source(
+                    phrase, candidate, source_field=f"readme_{facts.get('snippet_type')}",
+                    evidence_id=str(evidence.get("id") or ""), evidence_text=text,
+                    confidence=.86, relationship_backed=relationship_backed,
+                )
+        evidence_by_id = {
+            str(item.get("id") or ""): item for item in candidate.get("evidence") or []
+        }
+        for path in candidate.get("discovery_paths") or []:
+            if path.get("kind") != "relationship":
+                continue
+            detail = str(path.get("detail") or "")
+            relation_id = f"relation:{str(path.get('from') or '').lower()}:{path.get('relation')}:{repo.lower()}"
+            relation = evidence_by_id.get(relation_id) or {}
+            for phrase in _structured_phrases(detail):
+                add_source(
+                    phrase, candidate, source_field="relationship_detail",
+                    evidence_id=str(relation.get("id") or relation_id), evidence_text=detail,
+                    confidence=.78, relationship_backed=True,
+                )
+    ranked_all = sorted(
+        support_repos,
+        key=lambda key: (
+            -max(float(item["confidence"]) for item in sources[key]),
+            -len(support_repos[key]), key,
+        ),
+    )
+    non_topic = [
+        key for key in ranked_all
+        if any(source["source_field"] != "topics" for source in sources[key])
+    ]
+    ranked = list(dict.fromkeys([*ranked_all[:4], *non_topic, *ranked_all]))
     result: list[dict[str, Any]] = []
     for key in ranked[:limit]:
         tokens = set(key.split())
@@ -233,7 +324,8 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
         result.append({
             "term": display[key],
             "kind": kind,
-            "support_count": counts[key],
+            "confidence": max(float(item["confidence"]) for item in sources[key]),
+            "support_count": len(support_repos[key]),
             "sources": [
                 {name: value for name, value in source.items() if name != "relationship_backed"}
                 for source in sources[key][:3]

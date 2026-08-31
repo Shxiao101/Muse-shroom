@@ -40,11 +40,10 @@ def _emit(payload: Any, output_format: str = "json") -> None:
     if output_format == "json":
         print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     else:
-        if isinstance(payload, dict) and "buckets" in payload:
-            for title, items in payload["buckets"].items():
-                print(f"\n{title.upper()}")
-                for item in items:
-                    print(f"- {item['repo']} ({item['scores'][title[:-1] if title == 'gems' else title]}) {item.get('url')}")
+        if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+            for item in payload["items"]:
+                role = str(item.get("boundary_role") or "edge").upper()
+                print(f"- [{role}] {item['repo']} {item.get('url')}")
         else:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -71,9 +70,8 @@ def _persist_output(payload: Any, output_path: str) -> dict[str, Any]:
             receipt["stop_reason"] = payload["stop_reason"]
         if payload.get("reused"):
             receipt["reused"] = True
-        buckets = payload.get("buckets")
-        if isinstance(buckets, dict):
-            receipt["returned"] = sum(len(buckets.get(name, [])) for name in ("popular", "gems", "adjacent"))
+        if isinstance(payload.get("items"), list):
+            receipt["returned"] = len(payload["items"])
     return receipt
 
 
@@ -232,8 +230,15 @@ def run(args: argparse.Namespace) -> Any:
             if args.search_id:
                 ranking = store.get_ranking(args.search_id)
                 if ranking:
-                    ranking_item = next((item for bucket in ranking.get("buckets", {}).values()
-                                         for item in bucket if item.get("repo", "").lower() == args.repo.lower()), None)
+                    ranked_items = ranking.get("items")
+                    if not isinstance(ranked_items, list):
+                        ranked_items = [
+                            item for bucket in ranking.get("buckets", {}).values() for item in bucket
+                        ]
+                    ranking_item = next((
+                        item for item in ranked_items
+                        if item.get("repo", "").lower() == args.repo.lower()
+                    ), None)
             return {
                 "schema_version": 2, "repository": public_candidate(candidate, detailed=True),
                 "star_history": history, "growth_available": len(history) >= 2,

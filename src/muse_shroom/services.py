@@ -97,14 +97,15 @@ class MuseCore:
             if search_id:
                 ranking = store.get_ranking(search_id)
                 if ranking:
-                    ranking_item = next(
-                        (
-                            item for bucket in ranking.get("buckets", {}).values()
-                            for item in bucket
-                            if item.get("repo", "").lower() == repo.lower()
-                        ),
-                        None,
-                    )
+                    ranked_items = ranking.get("items")
+                    if not isinstance(ranked_items, list):
+                        ranked_items = [
+                            item for bucket in ranking.get("buckets", {}).values() for item in bucket
+                        ]
+                    ranking_item = next((
+                        item for item in ranked_items
+                        if item.get("repo", "").lower() == repo.lower()
+                    ), None)
             return {
                 "schema_version": 2,
                 "repository": public_candidate(candidate, detailed=True),

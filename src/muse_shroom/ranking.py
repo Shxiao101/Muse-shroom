@@ -235,6 +235,25 @@ def _display_mechanism_sequence(items: list[dict[str, Any]],
     return shown, introduced
 
 
+def _compatibility_buckets(
+    items: list[dict[str, Any]], by_name: dict[str, dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Project a completed Boundary composition onto the legacy lane fields."""
+    buckets: dict[str, list[dict[str, Any]]] = {
+        "popular": [], "gems": [], "adjacent": [],
+    }
+    for item in items:
+        kinds = set(by_name[item["repo"].lower()].get("matched_kinds") or [])
+        popularity = float(item["scores"]["components"].get("popularity_percentile") or 0)
+        if "adjacent" in kinds:
+            buckets["adjacent"].append(item)
+        elif popularity >= 60:
+            buckets["popular"].append(item)
+        else:
+            buckets["gems"].append(item)
+    return buckets
+
+
 def rank_search(
     store: Store,
     search_id: str,
@@ -338,6 +357,12 @@ def rank_search(
             easy * .09 + type_quality * .09 + relation * .11
             + evidence_completeness * .10 + feedback_adjustment
         )
+        boundary_score = (
+            assessment.relevance * .32 + assessment.uniqueness * .16
+            + assessment.usability * .12 + type_quality * .12
+            + evidence_completeness * .13 + popularity * .08
+            + relation * .07 + feedback_adjustment
+        )
         novelty = novelty_score(
             candidate, presented=presented_before, recalled_counts=pool_counts, exploration=exploration,
         )
@@ -360,6 +385,7 @@ def rank_search(
                 "popular": round(max(0, min(100, popular_score)), 2),
                 "gem": round(max(0, min(100, gem_score)), 2),
                 "adjacent": round(max(0, min(100, adjacent_score)), 2),
+                "boundary": round(max(0, min(100, boundary_score)), 2),
                 "components": {
                     "popularity_percentile": round(popularity, 2), "activity": round(activity, 2),
                     "type_quality": round(type_quality, 2), "relationship": round(relation, 2),
@@ -393,36 +419,27 @@ def rank_search(
         "pool_counts": pool_counts,
         "mode": mode,
     }
-    adjacent_pool = []
-    for item in eligible:
-        kinds = set(by_name[item["repo"].lower()].get("matched_kinds", []))
-        transfer = item["assessment"].get("transferability")
-        transfer = 50.0 if transfer is None else float(transfer)
-        new = new_mechanisms_for(item, presented_before)
-        if "adjacent" in kinds or (new and transfer >= 70):
-            adjacent_pool.append(item)
-    adjacent = _mmr_select(adjacent_pool, 2, [], "adjacent", boundary_ctx=boundary_ctx)
-    used = {item["repo"].lower() for item in adjacent}
-    popular_pool = [
+    anchor_pool = [
         item for item in eligible
-        if item["repo"].lower() not in used
-        and item["scores"]["components"]["popularity_percentile"] >= 60
+        if item["scores"]["components"]["popularity_percentile"] >= 60
+        and "adjacent" not in set(by_name[item["repo"].lower()].get("matched_kinds") or [])
     ]
-    popular = _mmr_select(popular_pool, 4, adjacent, "popular", boundary_ctx=boundary_ctx)
-    used.update(item["repo"].lower() for item in popular)
-    gem_pool = [item for item in eligible if item["repo"].lower() not in used and item["scores"]["components"]["underexposure"] >= 20]
-    gems = _mmr_select(gem_pool, 4, adjacent + popular, "gem", boundary_ctx=boundary_ctx)
-    selection_items = adjacent + popular + gems
-    display_items = popular + gems + adjacent
-    # Iteration snapshots describe the internal exploration history, while the
-    # ranked list is the final user-visible presentation.  Score novelty against
-    # exploration history above, but explain novelty sequentially within this
-    # display so the first visible occurrence owns each mechanism.
+    anchor = _mmr_select(anchor_pool, 1, [], "boundary", boundary_ctx=boundary_ctx)
+    used = {item["repo"].lower() for item in anchor}
+    remaining = [item for item in eligible if item["repo"].lower() not in used]
+    display_items = anchor + _mmr_select(
+        remaining, max(0, 10 - len(anchor)), anchor, "boundary",
+        boundary_ctx=boundary_ctx,
+    )
+    # The user-visible order is composed directly against Boundary contribution,
+    # novelty, transferability, redundancy, and one mainstream anchor. Legacy
+    # lanes are projected only after this order is final.
     display_presented_before: list[str] = []
     _explain_ranked_items(display_items, display_presented_before, by_name)
     ranked_items = display_items
-    selection_order = [item["repo"] for item in selection_items]
     display_order = [item["repo"] for item in display_items]
+    selection_order = list(display_order)
+    buckets = _compatibility_buckets(display_items, by_name)
     returned_names = {item["repo"].lower() for item in ranked_items}
     boundary = build_boundary(
         candidates, [presentation_by_name[name] for name in returned_names],
@@ -448,7 +465,7 @@ def rank_search(
         "schema_version": 2, "search_id": search_id,
         "stale": bool(session["stale"]), "incomplete_phase": session["incomplete_phase"],
         "next_action": "done",
-        "buckets": {"popular": popular, "gems": gems, "adjacent": adjacent},
+        "buckets": buckets,
         "items": ranked_items,
         "display_order": display_order,
         "selection_order": selection_order,
@@ -458,7 +475,7 @@ def rank_search(
         "coverage": {
             "recalled": len(candidates), "assessed": len(assessments), "eligible": len(eligible),
             "returned": len(ranked_items),
-            "adjacent_share": round(len(adjacent) / max(1, len(ranked_items)), 3),
+            "adjacent_share": round(len(buckets["adjacent"]) / max(1, len(ranked_items)), 3),
             "mechanism_count": len(boundary["recalled_mechanisms"]),
             "presented_mechanism_count": len(boundary["presented_mechanisms"]),
             "mechanism_redundancy": redundancy,

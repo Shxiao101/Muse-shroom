@@ -251,6 +251,31 @@ def _compact_search_output(output: dict[str, Any], limit: int = SEARCH_OUTPUT_MA
         for item in candidates if isinstance(item.get("selection_score_components"), dict)
         and len(item["selection_score_components"]) > 1
     ])
+    term_evidence_lists = [
+        container.get("discovered_term_evidence")
+        for container in (output.get("boundary") or {}, output.get("observation") or {})
+        if isinstance(container.get("discovered_term_evidence"), list)
+    ]
+    stages.append([
+        (item, "sources", [
+            {
+                **source,
+                "evidence_text": str(source.get("evidence_text") or "")[:120],
+            }
+            for source in (item.get("sources") or [])[:1]
+        ])
+        for values in term_evidence_lists for item in values
+        if len(item.get("sources") or []) > 1
+        or any(len(str(source.get("evidence_text") or "")) > 120 for source in item.get("sources") or [])
+    ])
+    stages.append([
+        (container, "discovered_term_evidence", values[:5])
+        for container, values in (
+            (output.get("boundary") or {}, (output.get("boundary") or {}).get("discovered_term_evidence")),
+            (output.get("observation") or {}, (output.get("observation") or {}).get("discovered_term_evidence")),
+        )
+        if isinstance(values, list) and len(values) > 5
+    ])
 
     for stage in stages:
         if apply(stage):

@@ -7,7 +7,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from cassette import CassetteGitHub
+try:
+    from cassette import CassetteGitHub
+except ModuleNotFoundError:  # Imported as evaluation.version_worker in tests.
+    from evaluation.cassette import CassetteGitHub
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -21,6 +24,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("capture", "replay"), required=True)
     parser.add_argument("--search-interval", type=float, default=0.0)
     parser.add_argument("--candidate-limit", type=int, default=24)
+    parser.add_argument("--agentic", action="store_true")
+    parser.add_argument("--agentic-iterations", type=int, default=2)
+    parser.add_argument("--boundary-rank", action="store_true")
     return parser
 
 
@@ -42,12 +48,105 @@ def _compact(candidate: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def deterministic_hypothesis(observation: dict[str, Any], used: set[str]) -> dict[str, Any] | None:
+    """Choose only an observed direction; golden answers never enter this policy."""
+    evidence = sorted(
+        observation.get("discovered_term_evidence") or [],
+        key=lambda item: (
+            0 if item.get("kind") in {"candidate_mechanism", "cross_domain_direction"} else 1,
+            -float(item.get("confidence") or 0),
+            -int(item.get("support_count") or 0),
+            str(item.get("term") or "").casefold(),
+        ),
+    )
+    for item in evidence:
+        term = str(item.get("term") or "").strip()
+        key = term.casefold()
+        if not term or key in used:
+            continue
+        used.add(key)
+        return {
+            "decision": "continue",
+            "target_direction": term,
+            "promote_discovered_terms": [term],
+            "strategies": ["keyword"],
+            "reason": "deterministic evaluation: promote observed evidence-backed term",
+        }
+    for value in observation.get("unexplored_directions") or []:
+        term = str(value).strip()
+        key = term.casefold()
+        if not term or key in used:
+            continue
+        used.add(key)
+        return {
+            "decision": "continue",
+            "target_direction": term,
+            "strategies": ["keyword"],
+            "reason": "deterministic evaluation: cover observed unexplored direction",
+        }
+    return None
+
+
+def deterministic_assessment(candidate: dict[str, Any], request_payload: dict[str, Any]) -> dict[str, Any]:
+    """Build a traceable ranking fixture; this is not a semantic quality judge."""
+    evidence = list(candidate.get("evidence") or [])
+    excerpt = next((item for item in evidence if item.get("kind") == "readme_excerpt"), None)
+    metadata = next((item for item in evidence if item.get("kind") == "github_metadata"), None)
+    citation = excerpt or metadata or (evidence[0] if evidence else None)
+    if citation is None or not citation.get("id"):
+        raise ValueError(f"evaluation candidate lacks evidence: {candidate.get('full_name')}")
+    excerpt_text = str(((excerpt or {}).get("facts") or {}).get("text") or "").strip()
+    mechanisms = list(candidate.get("mechanisms") or [])
+    topics = list(candidate.get("topics") or [])
+    artifact_types = list(request_payload.get("artifact_types") or [])
+    return {
+        "repo": candidate["full_name"],
+        "relevance": 75,
+        "uniqueness": 72,
+        "usability": 70 if excerpt else 45,
+        "difficulty": "unknown",
+        "use_case": excerpt_text[:180] if excerpt_text else "unknown",
+        "category": (
+            str((mechanisms[0] or {}).get("name") or "") if mechanisms
+            else str(topics[0]) if topics else "boundary candidate"
+        ),
+        "artifact_type": str(artifact_types[0]) if artifact_types else "application",
+        "reasons": [{
+            "text": "Deterministic evaluation fixture based on candidate evidence",
+            "evidence_ids": [citation["id"]],
+        }],
+        "risks": [{
+            "text": "Semantic usefulness still requires blind human review",
+            "evidence_ids": [(metadata or citation)["id"]],
+        }],
+        "transferability": 65,
+        "boundary_value": 70 if mechanisms else 45,
+    }
+
+
+def _compact_ranking(ranking: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not ranking:
+        return None
+    return {
+        "display_order": list(ranking.get("display_order") or []),
+        "items": [{
+            "repo": item.get("repo"),
+            "boundary_role": item.get("boundary_role"),
+            "new_mechanisms": list(item.get("new_mechanisms") or []),
+            "why_different": item.get("why_different"),
+        } for item in ranking.get("items") or []],
+        "boundary_summary": ranking.get("boundary_summary") or {},
+        "coverage": ranking.get("coverage") or {},
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     sys.path.insert(0, str(args.source_root.resolve() / "src"))
     github_module = importlib.import_module("muse_shroom.github")
     models_module = importlib.import_module("muse_shroom.models")
     search_module = importlib.import_module("muse_shroom.search")
+    ranking_module = importlib.import_module("muse_shroom.ranking")
     storage_module = importlib.import_module("muse_shroom.storage")
     version_module = importlib.import_module("muse_shroom")
 
@@ -82,10 +181,49 @@ def main(argv: list[str] | None = None) -> int:
                 request = models_module.SearchRequest.from_dict(legacy_payload)
             else:
                 request = models_module.SearchRequest.from_dict(request_payload)
-            output = engine.search(request, "quick")
+            output = engine.search(request, "deep" if args.agentic else "quick")
+            if args.agentic:
+                used_directions: set[str] = set()
+                for _ in range(max(0, args.agentic_iterations)):
+                    observation = output.get("observation") or {}
+                    hypothesis = deterministic_hypothesis(observation, used_directions)
+                    if hypothesis is None or output.get("next_action") != "iterate":
+                        break
+                    output = engine.iterate(output["search_id"], hypothesis)
+                    if output.get("next_action") != "iterate":
+                        break
+                    output = engine.observe(output["search_id"])
+                if output.get("next_action") == "iterate":
+                    output = engine.iterate(output["search_id"], {
+                        "decision": "stop",
+                        "stop_reason": "deterministic evaluation policy exhausted",
+                    })
             candidates = list(output.get("candidates", []))[:args.candidate_limit]
             session = store.load_search(output["search_id"])
+            if args.agentic:
+                selected = [
+                    item for item in session.get("candidates", [])
+                    if item.get("selected_for_assessment")
+                ]
+                candidates = selected[:args.candidate_limit]
+            ranking = None
+            if args.boundary_rank:
+                if not args.agentic:
+                    raise ValueError("--boundary-rank requires --agentic")
+                assessments = [
+                    deterministic_assessment(candidate, request_payload)
+                    for candidate in candidates
+                ]
+                if assessments:
+                    ranking = ranking_module.rank_search(
+                        store, output["search_id"], assessments,
+                    )
             boundary = dict(output.get("boundary") or {})
+            if ranking:
+                boundary = dict(ranking.get("boundary") or boundary)
+            elif args.agentic:
+                snapshot = store.latest_boundary_snapshot(output["search_id"]) or {}
+                boundary = dict(snapshot.get("boundary") or boundary)
             assignments = sum(len(item.get("mechanisms") or []) for item in candidates)
             presented_count = len(boundary.get("presented_mechanisms") or [])
             try:
@@ -127,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                 },
                 "loop_diagnostics": loop_diagnostics,
+                "ranking": _compact_ranking(ranking),
                 "stale": bool(output.get("stale", False)),
                 "incomplete_phase": output.get("incomplete_phase"),
                 "candidates": [_compact(candidate) for candidate in candidates],
@@ -142,7 +281,12 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "schema_version": 1, "label": args.label,
         "muse_shroom_version": getattr(version_module, "__version__", "unknown"),
-        "stage": "assessment_shortlist", "results": results,
+        "stage": (
+            "agentic_boundary_rank" if args.boundary_rank
+            else "agentic_assessment_shortlist" if args.agentic
+            else "assessment_shortlist"
+        ),
+        "agentic": bool(args.agentic), "results": results,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
