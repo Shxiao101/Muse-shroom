@@ -135,6 +135,23 @@ NON_MECHANISM_ENDINGS = {
     "option", "processing", "question", "recognition", "session", "solution",
     "specification", "testing", "vision", "writing",
 }
+CONFIRMATION_SPECIFICITY_SCORES = {
+    "mechanism": 95,
+    "intervention": 95,
+    "workflow_pattern": 90,
+    "behavioral_signal": 85,
+    "project_category": 35,
+}
+CONFIRMATION_SOURCE_SCORES = {
+    "readme_concept_match": 95,
+    "readme_features": 90,
+    "readme_use_cases": 90,
+    "readme_motivation": 75,
+    "readme_overview": 70,
+    "description": 65,
+    "topics": 40,
+    "relationship_detail": 25,
+}
 
 
 def _normalized(value: str) -> str:
@@ -164,6 +181,71 @@ def _canonical_token_key(value: str) -> str:
         MECHANISM_TOKEN_EQUIVALENTS.get(token, token)
         for token in _normalized(value).split()
     )
+
+
+def _confirmation_priority(item: dict[str, Any], known_terms: Iterable[str]) -> dict[str, Any]:
+    """Score novelty and confirmability using only observed request/evidence data."""
+    candidate = str(item.get("term") or item.get("candidate") or "")
+    sources = list(item.get("sources") or item.get("discovery_evidence") or [])
+    core_sources = [source for source in sources if source.get("core_use_case")]
+    repos = {
+        str(source.get("repo") or "").casefold()
+        for source in core_sources if str(source.get("repo") or "").strip()
+    }
+    relevance = max(0, min(100, int(item.get("evidence_relevance_score") or 0)))
+    specificity = str(item.get("mechanism_specificity") or "project_category")
+    specificity_score = CONFIRMATION_SPECIFICITY_SCORES.get(specificity, 25)
+    source_quality = max(
+        (
+            CONFIRMATION_SOURCE_SCORES.get(str(source.get("source_field") or ""), 30)
+            for source in sources
+        ),
+        default=0,
+    )
+    request_anchored = any(source.get("request_anchored") for source in core_sources)
+    mechanism_anchored = any(source.get("mechanism_anchored") for source in core_sources)
+    transfer_plausible = mechanism_anchored and specificity_score >= 85
+    confirmability = round(min(100, (
+        0.30 * relevance
+        + 0.20 * specificity_score
+        + 0.15 * source_quality
+        + (15 if core_sources else 0)
+        + (10 if request_anchored else 0)
+        + (5 if mechanism_anchored else 0)
+        + (5 if len(repos) >= 2 else 0)
+        + (5 if transfer_plausible else 0)
+    )))
+    overlap = max(
+        (_token_overlap(candidate, str(term)) for term in known_terms if str(term).strip()),
+        default=0.0,
+    )
+    novelty = round(max(0, 100 * (1 - overlap)))
+    priority = round(0.70 * confirmability + 0.30 * novelty)
+    reasons = []
+    if request_anchored:
+        reasons.append("request_anchored")
+    if mechanism_anchored:
+        reasons.append("mechanism_anchored")
+    if transfer_plausible:
+        reasons.append("transfer_plausible")
+    if core_sources:
+        reasons.append("core_use_case")
+    if len(repos) >= 2:
+        reasons.append("independent_repo_support")
+    if specificity_score >= 85:
+        reasons.append("specific_mechanism")
+    else:
+        reasons.append("category_like")
+    if source_quality >= 70:
+        reasons.append("strong_source")
+    else:
+        reasons.append("weak_source")
+    return {
+        "novelty_score": novelty,
+        "confirmability_score": confirmability,
+        "confirmation_priority_score": priority,
+        "confirmation_priority_reason": ",".join(reasons),
+    }
 
 
 def _request_relevance(text: str, concepts: Iterable[Concept]) -> tuple[bool, bool]:
@@ -1100,8 +1182,21 @@ def build_boundary(candidates: Iterable[dict[str, Any]], presented: Iterable[dic
         and concept.term.casefold() not in blocked_keys
     ]
     term_evidence = discovered_term_evidence(candidate_list, request)
-    queue = [
-        {
+    known_confirmation_terms = [
+        *(concept.term for concept in request.mechanisms),
+        *(concept.term for concept in request.exploration_directions),
+        *confirmed_keys,
+        *(
+            str(record.get("candidate") or "")
+            for record in confirmation_records
+            if record.get("confirmation_status") == "confirmed"
+        ),
+    ]
+    queue = []
+    for item in term_evidence:
+        if item.get("disposition") != "needs_confirmation":
+            continue
+        queued = {
             "candidate": str(item["term"]),
             "discovery_evidence": list(item.get("sources") or []),
             "confirmation_queries": [],
@@ -1113,9 +1208,12 @@ def build_boundary(candidates: Iterable[dict[str, Any]], presented: Iterable[dic
             "promotion_confidence": item.get("promotion_confidence"),
             "support_count": item.get("support_count"),
         }
-        for item in term_evidence
-        if item.get("disposition") == "needs_confirmation"
-    ]
+        queued.update(_confirmation_priority(item, known_confirmation_terms))
+        queue.append(queued)
+    queue.sort(key=lambda item: (
+        -int(item.get("confirmation_priority_score") or 0),
+        str(item.get("candidate") or "").casefold(),
+    ))
     return SearchBoundary(
         recalled_mechanisms=recalled,
         presented_mechanisms=presented_names,

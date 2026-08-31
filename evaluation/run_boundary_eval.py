@@ -32,6 +32,10 @@ def _confirmation_records(raw_path: Path) -> list[dict[str, object]]:
                     "candidate": item.get("candidate"),
                     "confirmation_status": item.get("confirmation_status"),
                     "confirmation_reason": item.get("confirmation_reason"),
+                    "novelty_score": item.get("novelty_score"),
+                    "confirmability_score": item.get("confirmability_score"),
+                    "confirmation_priority_score": item.get("confirmation_priority_score"),
+                    "confirmation_priority_reason": item.get("confirmation_priority_reason"),
                     "confirmation_queries": list(item.get("confirmation_queries") or []),
                     "discovery_repos": sorted({
                         str(source.get("repo"))
@@ -59,22 +63,34 @@ def _write_confirmation_analysis(verdict_path: Path, dev_raw: Path,
         suites[name] = {
             "metrics": {
                 key: aggregate.get(key) for key in (
+                    "confirmation_candidates_total", "confirmation_candidates_attempted",
+                    "confirmation_candidates_skipped", "confirmation_skipped_count",
+                    "confirmation_budget_exhausted_count",
                     "confirmation_planned_count", "confirmation_executed_count",
                     "confirmation_confirmed_count", "confirmation_rejected_count",
                     "confirmation_unresolved_count", "confirmation_query_count",
                     "confirmed_meaningful_count", "confirmed_synonym_count",
                     "confirmation_precision", "confirmation_recall",
+                    "confirmed_per_attempted_candidate", "meaningful_per_attempted_candidate",
+                    "queries_per_confirmed_mechanism",
+                    "queries_per_meaningful_confirmation",
                     "confirmation_cost_per_confirmed_mechanism",
                 )
             },
             "records": _confirmation_records(raw),
         }
+    development = ((suites.get("development") or {}).get("metrics") or {})
+    holdout = ((suites.get("holdout") or {}).get("metrics") or {})
     output.write_text(json.dumps({
         "schema_version": 1,
         "note": (
             "confirmed_wrong_domain_count and blind precision require human labels; "
             "automatic precision is Golden-known precision only"
         ),
+        "development_confirmation_yield": development.get(
+            "confirmed_per_attempted_candidate"
+        ),
+        "holdout_confirmation_yield": holdout.get("confirmed_per_attempted_candidate"),
         "suites": suites,
     }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

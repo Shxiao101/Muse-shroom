@@ -423,15 +423,17 @@ def confirmation_queries(candidate: str, request: SearchRequest, *,
         seen_contexts.add(key)
         contexts.append((value, kind))
 
-    for concept in request.problem_concepts:
-        add_context(concept.term, "confirmation_problem")
-        for alias in concept.aliases[:1]:
-            add_context(alias, "confirmation_problem")
-    for anchor in anchors:
-        add_context(str(anchor), "confirmation_anchor")
-    for repo in seed_repos:
-        if "/" in str(repo):
-            add_context(str(repo), "confirmation_seed")
+    problem = next(
+        (concept.term for concept in request.problem_concepts if concept.term.strip()), "",
+    )
+    add_context(problem, "confirmation_problem")
+    anchor = next((
+        str(value) for value in anchors
+        if str(value).strip() and " ".join(str(value).casefold().split()) != term_key
+    ), "")
+    add_context(anchor, "confirmation_anchor")
+    seed = next((str(value) for value in seed_repos if "/" in str(value)), "")
+    add_context(seed, "confirmation_seed")
 
     planned: list[dict[str, Any]] = []
     for context, kind in contexts[:3]:

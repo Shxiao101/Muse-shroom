@@ -7,7 +7,9 @@ from typing import Any, Iterable
 
 from .analyze import _is_thin_overview, github_links, make_evidence, safe_readme
 from .boundary import annotate_candidate_mechanisms, build_boundary
-from .confirmation import evaluate_confirmation, pending_confirmation_candidates
+from .confirmation import (
+    confirmation_query_stage_limit, evaluate_confirmation, plan_confirmation_candidates,
+)
 from .github import (
     ApiResult, GitHubAuthenticationError, GitHubClient, GitHubError,
     GitHubNotFoundError,
@@ -20,6 +22,7 @@ from .iteration import (
 )
 from .models import (
     Concept, DEFAULT_CONSECUTIVE_NO_GAIN, DEFAULT_CONFIRMATION_CANDIDATE_LIMIT,
+    DEFAULT_CONFIRMATION_CASE_LIMIT,
     DEFAULT_CONFIRMATION_ENRICH_LIMIT, DEFAULT_CONFIRMATION_QUERY_LIMIT,
     DEFAULT_DEEP_CANDIDATE_LIMIT,
     DEFAULT_MAX_ITERATIONS, DEFAULT_QUERIES_PER_ITERATION,
@@ -846,11 +849,16 @@ class SearchEngine:
             confirmed_directions=state.get("confirmed_directions") or [],
             confirmation_records=existing_records,
         ).to_dict()
-        pending = pending_confirmation_candidates(
-            assessment, existing_records,
-            limit=DEFAULT_CONFIRMATION_CANDIDATE_LIMIT,
+        attempted_before = sum(
+            item.get("confirmation_status") not in {"skipped_budget", "skipped_duplicate"}
+            and bool(item.get("confirmation_queries"))
+            for item in existing_records
         )
-        if not pending:
+        pending, candidate_skips = plan_confirmation_candidates(
+            assessment, existing_records, limit=DEFAULT_CONFIRMATION_CANDIDATE_LIMIT,
+            attempt_budget=max(0, DEFAULT_CONFIRMATION_CASE_LIMIT - attempted_before),
+        )
+        if not pending and not candidate_skips:
             return False, None, False, 0, [], []
 
         anchors = [
@@ -858,108 +866,109 @@ class SearchEngine:
             if str(item.get("term") or "").strip()
         ]
         known_fingerprints = self.store.query_fingerprints(search_id)
-        planned: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
-        candidate_plans: list[list[dict[str, Any]]] = []
+        records = list(candidate_skips)
+        stale = False
+        cached_at = None
+        failed = False
+        enriched = 0
+        query_budget = DEFAULT_CONFIRMATION_QUERY_LIMIT
         for item in pending:
             seeds = [
                 str(source.get("repo") or "")
                 for source in item.get("discovery_evidence") or []
                 if "/" in str(source.get("repo") or "")
             ]
-            specificity = str(item.get("mechanism_specificity") or "")
-            per_candidate_limit = (
-                3 if specificity == "workflow_pattern"
-                else 2 if specificity == "project_category" else 1
-            )
             queries, blocked = confirmation_queries(
                 str(item.get("candidate") or ""), request,
                 anchors=anchors, seed_repos=seeds,
                 known_fingerprints=known_fingerprints,
-                limit=per_candidate_limit,
+                limit=confirmation_query_stage_limit(item),
             )
-            candidate_plans.append(queries)
             skipped.extend(blocked)
-            known_fingerprints.update(str(query["fingerprint"]) for query in queries)
-        for query_index in range(3):
-            for queries in candidate_plans:
-                if query_index >= len(queries):
-                    continue
-                if len(planned) < DEFAULT_CONFIRMATION_QUERY_LIMIT:
-                    planned.append(queries[query_index])
-                else:
-                    skipped.append({
-                        **queries[query_index],
-                        "skipped": True,
-                        "skip_reason": "confirmation_budget",
-                    })
-        for item in skipped:
-            self.store.add_query_history(
-                search_id, item["query"], item["kind"], 0,
-                iteration=iteration, fingerprint=item["fingerprint"], skipped=True,
-                skip_reason=str(item.get("skip_reason") or "duplicate"),
-            )
+            for blocked_query in blocked:
+                self.store.add_query_history(
+                    search_id, blocked_query["query"], blocked_query["kind"], 0,
+                    iteration=iteration, fingerprint=blocked_query["fingerprint"],
+                    skipped=True,
+                    skip_reason=str(blocked_query.get("skip_reason") or "duplicate"),
+                )
+            item_queries: list[dict[str, Any]] = []
+            record: dict[str, Any] | None = None
+            for query_index, query in enumerate(queries):
+                if query_budget <= 0:
+                    break
+                before_names = set(candidates)
+                stage_failed = False
+                try:
+                    stage_stale, stage_cache, executed, recall_skipped = self._recall(
+                        search_id, [query], candidates, iteration=iteration,
+                        known_fingerprints=self.store.query_fingerprints(search_id),
+                    )
+                    stale = stale or stage_stale
+                    cached_at = cached_at or stage_cache
+                    item_queries.extend(executed)
+                    skipped.extend(recall_skipped)
+                    known_fingerprints.update(
+                        str(executed_query["fingerprint"])
+                        for executed_query in executed
+                    )
+                    query_budget -= len(executed)
+                except GitHubAuthenticationError:
+                    raise
+                except GitHubError:
+                    stage_failed = True
+                    failed = True
 
-        before_names = set(candidates)
-        failed = False
-        stale = False
-        cached_at = None
-        executed: list[dict[str, Any]] = []
-        recall_skipped: list[dict[str, Any]] = []
-        try:
-            stale, cached_at, executed, recall_skipped = self._recall(
-                search_id, planned, candidates, iteration=iteration,
-                known_fingerprints=self.store.query_fingerprints(search_id),
-            )
-        except GitHubAuthenticationError:
-            raise
-        except GitHubError:
-            failed = True
-        skipped.extend(recall_skipped)
-
-        confirmation_names = {
-            name for name, candidate in candidates.items()
-            if name not in before_names or any(
-                path.get("kind") == "query"
-                and str(path.get("query_kind") or "").startswith("confirmation_")
-                for path in candidate.get("discovery_paths") or []
-            )
-        }
-        confirmation_candidates = {
-            name: candidates[name] for name in confirmation_names if name in candidates
-        }
-        enriched = 0
-        enrich_failed = False
-        if confirmation_candidates:
-            enrich_stale, enrich_cache, enrich_failed, enriched = self._enrich(
-                confirmation_candidates, request, limit=DEFAULT_CONFIRMATION_ENRICH_LIMIT,
-            )
-            stale = stale or enrich_stale
-            cached_at = cached_at or enrich_cache
-        for candidate in candidates.values():
-            annotate_candidate_mechanisms(candidate, request)
-
-        refreshed = build_boundary(
-            candidates.values(), selected, request,
-            confirmed_directions=state.get("confirmed_directions") or [],
-            confirmation_records=existing_records,
-        ).to_dict()
-        refreshed_by_term = {
-            str(item.get("term") or "").casefold(): item
-            for item in refreshed.get("discovered_term_evidence") or []
-        }
-        records: list[dict[str, Any]] = []
-        for item in pending:
-            term = str(item.get("candidate") or "")
-            item_queries = [
-                query for query in executed
-                if str(query.get("term") or "").casefold() == term.casefold()
-            ]
-            records.append(evaluate_confirmation(
-                item, refreshed_by_term.get(term.casefold()), item_queries,
-                failed=failed or enrich_failed,
-            ))
-        return stale, cached_at, failed or enrich_failed, enriched, records, skipped
+                confirmation_names = {
+                    name for name, candidate in candidates.items()
+                    if name not in before_names or any(
+                        path.get("kind") == "query"
+                        and str(path.get("query_kind") or "").startswith("confirmation_")
+                        for path in candidate.get("discovery_paths") or []
+                    )
+                }
+                confirmation_candidates = {
+                    name: candidates[name] for name in confirmation_names if name in candidates
+                }
+                enrich_failed = False
+                enrich_left = max(0, DEFAULT_CONFIRMATION_ENRICH_LIMIT - enriched)
+                if confirmation_candidates and enrich_left:
+                    enrich_stale, enrich_cache, enrich_failed, enrich_count = self._enrich(
+                        confirmation_candidates, request, limit=enrich_left,
+                    )
+                    enriched += enrich_count
+                    stale = stale or enrich_stale
+                    cached_at = cached_at or enrich_cache
+                    failed = failed or enrich_failed
+                for candidate in candidates.values():
+                    annotate_candidate_mechanisms(candidate, request)
+                refreshed = build_boundary(
+                    candidates.values(), selected, request,
+                    confirmed_directions=state.get("confirmed_directions") or [],
+                    confirmation_records=[*existing_records, *records],
+                ).to_dict()
+                refreshed_by_term = {
+                    str(evidence.get("term") or "").casefold(): evidence
+                    for evidence in refreshed.get("discovered_term_evidence") or []
+                }
+                term = str(item.get("candidate") or "")
+                final_stage = (
+                    query_index == len(queries) - 1
+                    or query_budget <= 0
+                    or stage_failed
+                    or enrich_failed
+                )
+                record = evaluate_confirmation(
+                    item, refreshed_by_term.get(term.casefold()), item_queries,
+                    failed=stage_failed or enrich_failed, final=final_stage,
+                )
+                if record.get("confirmation_status") == "confirmed" or final_stage:
+                    break
+            if record is None:
+                record = evaluate_confirmation(item, None, [], final=False)
+            records.append(record)
+        return stale, cached_at, failed, enriched, records, skipped
 
     def search(self, request: SearchRequest, mode: str, *, refresh: bool = False) -> dict[str, Any]:
         if mode not in {"quick", "deep"}:

@@ -3,9 +3,11 @@ import unittest
 
 from muse_shroom.boundary import build_boundary
 from muse_shroom.confirmation import (
+    confirmation_query_stage_limit,
     confirmation_metrics,
     evaluate_confirmation,
     pending_confirmation_candidates,
+    plan_confirmation_candidates,
 )
 from muse_shroom.iteration import session_loop_diagnostics
 from muse_shroom.models import SearchRequest
@@ -62,9 +64,14 @@ class ConfirmationTests(unittest.TestCase):
         self.assertTrue(by_term["decision monitoring"]["promotable"])
         self.assertEqual(by_term["decision log"]["disposition"], "needs_confirmation")
         self.assertFalse(by_term["decision log"]["promotable"])
-        self.assertIn(
-            "decision log", {item["candidate"] for item in boundary["confirmation_queue"]}
+        queued = next(
+            item for item in boundary["confirmation_queue"]
+            if item["candidate"] == "decision log"
         )
+        self.assertGreater(queued["confirmation_priority_score"], 0)
+        self.assertGreater(queued["confirmability_score"], 0)
+        self.assertGreater(queued["novelty_score"], 0)
+        self.assertTrue(queued["confirmation_priority_reason"])
 
     def test_explicit_incidental_evidence_is_rejected_before_confirmation(self):
         request = SearchRequest.from_dict({
@@ -329,6 +336,154 @@ class ConfirmationTests(unittest.TestCase):
         self.assertIn("decision log", result["boundary_delta"]["new_mechanisms"])
         self.assertEqual(diagnostics["executed_iteration_count"], 1)
         self.assertGreater(diagnostics["confirmation_query_count"], 0)
+        self.assertEqual(len(decision["confirmation_queries"]), 1)
+
+    def test_second_query_runs_only_after_first_is_unresolved(self):
+        discovery = repo("one/meeting", 20, description="Meeting efficiency helper")
+        confirmation = repo(
+            "two/meeting", 10, description="Decision log for meeting efficiency",
+        )
+        github = FrozenGitHub(
+            [
+                ('"decision log" "meeting efficiency"', []),
+                ('"decision log" "one/meeting"', [confirmation]),
+                ("meeting followup", []),
+                ("meeting efficiency", [discovery]),
+            ],
+            readmes={
+                "one/meeting": "# Meetings\n## Features\nA decision log records outcomes.",
+                "two/meeting": (
+                    "# Decisions\n## Features\nA decision log improves meeting efficiency."
+                ),
+            },
+        )
+        request = SearchRequest.from_dict({
+            "request": "improve meeting efficiency",
+            "problem_concepts": ["meeting efficiency"],
+        })
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                engine = SearchEngine(store, github, relation_budget=0)
+                first = engine.search(request, "deep")
+                result = engine.iterate(first["search_id"], {
+                    "decision": "continue",
+                    "concepts": ["meeting followup"],
+                    "strategies": ["keyword"],
+                    "reason": "exercise progressive confirmation",
+                })
+            finally:
+                store.close()
+
+        decision = next(
+            item for item in result["boundary"]["mechanism_confirmations"]
+            if item["candidate"] == "decision log"
+        )
+        self.assertEqual(decision["confirmation_status"], "confirmed")
+        self.assertEqual(len(decision["confirmation_queries"]), 2)
+
+    def test_confirmation_candidates_are_ordered_and_skipped_by_budget(self):
+        boundary = {"confirmation_queue": [
+            {"candidate": "weak category", "confirmation_priority_score": 35,
+             "confirmability_score": 30, "novelty_score": 90},
+            {"candidate": "strong mechanism", "confirmation_priority_score": 90,
+             "confirmability_score": 92, "novelty_score": 85},
+            {"candidate": "medium mechanism", "confirmation_priority_score": 70,
+             "confirmability_score": 75, "novelty_score": 60},
+        ]}
+
+        selected, skipped = plan_confirmation_candidates(
+            boundary, limit=2, attempt_budget=2,
+        )
+
+        self.assertEqual(
+            [item["candidate"] for item in selected],
+            ["strong mechanism", "medium mechanism"],
+        )
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0]["candidate"], "weak category")
+        self.assertEqual(skipped[0]["confirmation_status"], "skipped_budget")
+
+    def test_relationship_stage_is_reserved_for_high_priority_candidate(self):
+        self.assertEqual(confirmation_query_stage_limit({
+            "confirmation_priority_score": 80,
+            "confirmability_score": 75,
+        }), 3)
+        self.assertEqual(confirmation_query_stage_limit({
+            "confirmation_priority_score": 74,
+            "confirmability_score": 90,
+        }), 2)
+
+    def test_skipped_candidate_is_not_counted_as_rejected_or_attempted(self):
+        records = [
+            {"candidate": "one", "confirmation_status": "confirmed",
+             "confirmation_queries": ["q1"]},
+            {"candidate": "two", "confirmation_status": "rejected",
+             "confirmation_queries": ["q2", "q3"]},
+            {"candidate": "three", "confirmation_status": "skipped_budget",
+             "confirmation_queries": []},
+        ]
+
+        metrics = confirmation_metrics(records)
+
+        self.assertEqual(metrics["confirmation_candidates_total"], 3)
+        self.assertEqual(metrics["confirmation_candidates_attempted"], 2)
+        self.assertEqual(metrics["confirmation_candidates_skipped"], 1)
+        self.assertEqual(metrics["confirmation_budget_exhausted_count"], 1)
+        self.assertEqual(metrics["confirmation_rejected_count"], 1)
+        self.assertEqual(metrics["confirmation_confirmed_count"], 1)
+        self.assertEqual(metrics["confirmed_per_attempted_candidate"], 0.5)
+
+    def test_same_canonical_mechanism_is_recorded_once(self):
+        boundary = {"confirmation_queue": [
+            {"candidate": "browser automation", "confirmation_priority_score": 90},
+            {"candidate": "web automation", "confirmation_priority_score": 80},
+        ]}
+
+        selected, skipped = plan_confirmation_candidates(
+            boundary, limit=2, attempt_budget=2,
+        )
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0]["confirmation_status"], "skipped_duplicate")
+
+    def test_same_repo_core_phrase_variant_is_recorded_once(self):
+        shared_source = [{"repo": "one/compressor"}]
+        boundary = {"confirmation_queue": [
+            {"candidate": "adaptive context compression",
+             "confirmation_priority_score": 90,
+             "discovery_evidence": shared_source},
+            {"candidate": "intelligent context compression",
+             "confirmation_priority_score": 80,
+             "discovery_evidence": shared_source},
+            {"candidate": "adaptive data encryption",
+             "confirmation_priority_score": 70,
+             "discovery_evidence": shared_source},
+        ]}
+
+        selected, skipped = plan_confirmation_candidates(
+            boundary, limit=3, attempt_budget=3,
+        )
+
+        self.assertEqual(
+            [item["candidate"] for item in selected],
+            ["adaptive context compression", "adaptive data encryption"],
+        )
+        self.assertEqual(
+            [item["candidate"] for item in skipped],
+            ["intelligent context compression"],
+        )
+        self.assertEqual(skipped[0]["confirmation_status"], "skipped_duplicate")
+
+    def test_failed_confirmation_is_distinct_from_not_executed(self):
+        item = {"candidate": "decision log", "discovery_evidence": []}
+
+        record = evaluate_confirmation(item, None, [], failed=True)
+
+        self.assertEqual(record["confirmation_status"], "unresolved")
+        self.assertEqual(record["confirmation_reason"], "confirmation_search_failed")
 
     def test_queue_selection_deduplicates_surface_synonyms(self):
         boundary = {"confirmation_queue": [

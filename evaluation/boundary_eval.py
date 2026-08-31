@@ -23,10 +23,15 @@ FORMAL_METRICS = (
     "planned_iteration_count", "executed_iteration_count",
     "retrieval_changing_iteration_count",
     "confirmation_planned_count", "confirmation_executed_count",
+    "confirmation_candidates_total", "confirmation_candidates_attempted",
+    "confirmation_candidates_skipped", "confirmation_skipped_count",
+    "confirmation_budget_exhausted_count",
     "confirmation_confirmed_count", "confirmation_rejected_count",
     "confirmation_precision", "confirmation_recall",
     "confirmed_meaningful_count", "confirmed_wrong_domain_count",
-    "confirmed_synonym_count", "confirmation_cost_per_confirmed_mechanism",
+    "confirmed_synonym_count", "confirmed_per_attempted_candidate",
+    "meaningful_per_attempted_candidate", "queries_per_confirmed_mechanism",
+    "queries_per_meaningful_confirmation", "confirmation_cost_per_confirmed_mechanism",
 )
 
 
@@ -307,6 +312,11 @@ def case_metrics(result: dict[str, Any], case: dict[str, Any] | None = None) -> 
         if loop.get("confirmation_confirmed_count") is not None
         else len(confirmed_terms)
     )
+    confirmation_attempted_count = int(
+        loop.get("confirmation_candidates_attempted")
+        if loop.get("confirmation_candidates_attempted") is not None
+        else loop.get("confirmation_executed_count") or 0
+    )
     return {
         "prompt_id": result.get("prompt_id"),
         "retrieval_mechanism_redundancy": retrieval_redundancy,
@@ -326,6 +336,19 @@ def case_metrics(result: dict[str, Any], case: dict[str, Any] | None = None) -> 
         "retrieval_changing_iteration_count": retrieval_changing_iterations,
         "confirmation_planned_count": int(loop.get("confirmation_planned_count") or 0),
         "confirmation_executed_count": int(loop.get("confirmation_executed_count") or 0),
+        "confirmation_candidates_total": int(
+            loop.get("confirmation_candidates_total")
+            if loop.get("confirmation_candidates_total") is not None
+            else loop.get("confirmation_planned_count") or 0
+        ),
+        "confirmation_candidates_attempted": confirmation_attempted_count,
+        "confirmation_candidates_skipped": int(
+            loop.get("confirmation_candidates_skipped") or 0
+        ),
+        "confirmation_skipped_count": int(loop.get("confirmation_skipped_count") or 0),
+        "confirmation_budget_exhausted_count": int(
+            loop.get("confirmation_budget_exhausted_count") or 0
+        ),
         "confirmation_confirmed_count": confirmation_confirmed_count,
         "confirmation_rejected_count": int(loop.get("confirmation_rejected_count") or 0),
         "confirmation_unresolved_count": int(loop.get("confirmation_unresolved_count") or 0),
@@ -339,6 +362,18 @@ def case_metrics(result: dict[str, Any], case: dict[str, Any] | None = None) -> 
         "confirmed_meaningful_count": len(confirmed_meaningful_matches),
         "confirmed_wrong_domain_count": None,
         "confirmed_synonym_count": confirmed_synonyms,
+        "confirmed_per_attempted_candidate": round(
+            confirmation_confirmed_count / max(1, confirmation_attempted_count), 3
+        ),
+        "meaningful_per_attempted_candidate": round(
+            len(confirmed_meaningful_matches) / max(1, confirmation_attempted_count), 3
+        ),
+        "queries_per_confirmed_mechanism": round(
+            confirmation_query_count / max(1, confirmation_confirmed_count), 3
+        ),
+        "queries_per_meaningful_confirmation": round(
+            confirmation_query_count / max(1, len(confirmed_meaningful_matches)), 3
+        ),
         "confirmation_cost_per_confirmed_mechanism": round(
             confirmation_query_count / max(1, confirmation_confirmed_count), 3
         ),
@@ -420,6 +455,21 @@ def summarize(payload: dict[str, Any], golden_cases: dict[str, dict[str, Any]] |
             "confirmation_executed_count": sum(
                 item["confirmation_executed_count"] for item in cases
             ),
+            "confirmation_candidates_total": sum(
+                item["confirmation_candidates_total"] for item in cases
+            ),
+            "confirmation_candidates_attempted": sum(
+                item["confirmation_candidates_attempted"] for item in cases
+            ),
+            "confirmation_candidates_skipped": sum(
+                item["confirmation_candidates_skipped"] for item in cases
+            ),
+            "confirmation_skipped_count": sum(
+                item["confirmation_skipped_count"] for item in cases
+            ),
+            "confirmation_budget_exhausted_count": sum(
+                item["confirmation_budget_exhausted_count"] for item in cases
+            ),
             "confirmation_confirmed_count": sum(
                 item["confirmation_confirmed_count"] for item in cases
             ),
@@ -434,6 +484,16 @@ def summarize(payload: dict[str, Any], golden_cases: dict[str, dict[str, Any]] |
                 item["confirmed_meaningful_count"] for item in cases
             ),
             "confirmed_synonym_count": sum(item["confirmed_synonym_count"] for item in cases),
+            "confirmed_per_attempted_candidate": round(
+                sum(item["confirmation_confirmed_count"] for item in cases)
+                / max(1, sum(item["confirmation_candidates_attempted"] for item in cases)),
+                3,
+            ),
+            "meaningful_per_attempted_candidate": round(
+                sum(item["confirmed_meaningful_count"] for item in cases)
+                / max(1, sum(item["confirmation_candidates_attempted"] for item in cases)),
+                3,
+            ),
             "confirmation_precision": round(
                 sum(item["confirmed_meaningful_count"] for item in cases)
                 / max(1, sum(item["confirmation_confirmed_count"] for item in cases)),
@@ -445,6 +505,16 @@ def summarize(payload: dict[str, Any], golden_cases: dict[str, dict[str, Any]] |
             "confirmation_cost_per_confirmed_mechanism": round(
                 sum(item["confirmation_query_count"] for item in cases)
                 / max(1, sum(item["confirmation_confirmed_count"] for item in cases)),
+                3,
+            ),
+            "queries_per_confirmed_mechanism": round(
+                sum(item["confirmation_query_count"] for item in cases)
+                / max(1, sum(item["confirmation_confirmed_count"] for item in cases)),
+                3,
+            ),
+            "queries_per_meaningful_confirmation": round(
+                sum(item["confirmation_query_count"] for item in cases)
+                / max(1, sum(item["confirmed_meaningful_count"] for item in cases)),
                 3,
             ),
         },
