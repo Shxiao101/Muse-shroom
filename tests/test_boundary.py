@@ -4,7 +4,10 @@ from pathlib import Path
 
 from evaluation.cassette import CassetteGitHub
 from muse_shroom import github as github_module
-from muse_shroom.boundary import annotate_candidate_mechanisms, build_boundary
+from muse_shroom.boundary import (
+    annotate_candidate_mechanisms, boundary_delta, build_boundary,
+    normalize_mechanism_surfaces,
+)
 from muse_shroom.models import SearchRequest
 from muse_shroom.queries import build_queries
 from muse_shroom.ranking import rank_search
@@ -211,7 +214,12 @@ class BoundaryTests(unittest.TestCase):
             try:
                 engine = SearchEngine(store, github, relation_budget=0)
                 first = engine.search(request, "deep")
-                expanded = engine.expand(first["search_id"], {"concepts": ["usage logger"]})
+                expanded = engine.iterate(first["search_id"], {
+                    "decision": "continue",
+                    "reason": "test the still-unconfirmed usage direction",
+                    "target_direction": "usage tracking",
+                    "concepts": ["usage logger"],
+                })
                 stored = store.get_candidate("focus/timer", first["search_id"])
                 excerpt = next(
                     item["id"] for item in stored["evidence"]
@@ -231,11 +239,168 @@ class BoundaryTests(unittest.TestCase):
             finally:
                 store.close()
 
-        self.assertEqual([item["stage"] for item in snapshots], ["search", "expand", "rank"])
+        self.assertEqual([item["stage"] for item in snapshots], ["search", "iterate", "rank"])
         self.assertEqual(first["boundary"]["recalled_mechanisms"], ["pomodoro"])
         self.assertIn("usage tracking", expanded["boundary_delta"]["new_mechanisms"])
         self.assertEqual(expanded["boundary"]["unexplored_directions"], ["biofeedback"])
         self.assertIn("pomodoro", ranked["boundary"]["presented_mechanisms"])
+
+    def test_lexical_direction_match_is_not_exploration_confirmation(self):
+        candidate = repo("focus/timer", 4, description="Pomodoro attention workflow")
+        github = FrozenGitHub(
+            [("focus", [candidate]), ("attention workflow", [candidate])],
+            readmes={"focus/timer": "# Timer\nAttention workflow for focused work."},
+        )
+        request = SearchRequest.from_dict({
+            "request": "focus", "problem_concepts": ["focus"],
+            "exploration_directions": ["attention workflow"],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                output = SearchEngine(store, github, relation_budget=0).search(request, "deep")
+            finally:
+                store.close()
+
+        self.assertEqual(output["boundary"]["explored_directions"], [])
+        self.assertEqual(output["boundary"]["unexplored_directions"], ["attention workflow"])
+
+    def test_discovery_avoids_sentence_fragments_and_governance_boilerplate(self):
+        request = SearchRequest.from_dict({
+            "request": "organize photos", "problem_concepts": ["photo organization"],
+        })
+        candidate = repo("photos/tool", 4, description="Photo organizer")
+        candidate["evidence"] = [
+            {"id": "repo:photos/tool:metadata", "kind": "github_metadata", "facts": {}},
+            {"id": "repo:photos/tool:readme:features", "kind": "readme_excerpt", "facts": {
+                "snippet_type": "features",
+                "text": "Jupyter-based. Instant feedback. Duplicate detection uses perceptual hashing.",
+            }},
+            {"id": "repo:photos/tool:readme:philosophy", "kind": "readme_excerpt", "facts": {
+                "snippet_type": "philosophy", "text": "Accountability and monitoring principles.",
+            }},
+        ]
+
+        boundary = build_boundary([candidate], [], request)
+        terms = {item["term"] for item in boundary.discovered_term_evidence}
+
+        self.assertIn("instant feedback", terms)
+        self.assertIn("perceptual hashing", terms)
+        self.assertNotIn("based instant feedback", terms)
+        self.assertNotIn("and monitoring", terms)
+        self.assertNotIn("accountability", terms)
+        hashing = next(
+            item for item in boundary.discovered_term_evidence
+            if item["term"] == "perceptual hashing"
+        )
+        self.assertIn("perceptual hashing", hashing["sources"][0]["evidence_text"].casefold())
+
+    def test_discovery_prefers_mechanism_compounds_and_rejects_generic_fragments(self):
+        request = SearchRequest.from_dict({
+            "request": "make meetings useful", "problem_concepts": ["meeting efficiency"],
+            "mechanisms": ["agenda template"],
+        })
+        candidate = repo("meetings/tool", 4, description="Meeting efficiency helper")
+        candidate["selected_for_assessment"] = True
+        candidate["discovery_paths"] = [{
+            "kind": "query", "term": "agenda template", "query": "agenda template",
+        }]
+        candidate["evidence"] = [
+            {"id": "repo:meetings/tool:metadata", "kind": "github_metadata", "facts": {}},
+            {"id": "repo:meetings/tool:readme:concept_match", "kind": "readme_excerpt", "facts": {
+                "snippet_type": "concept_match",
+                "text": (
+                    "assets/decision_log_template.md - Bilingual decision log template. "
+                    "Every contribution includes a full description and an ultimate solution."
+                ),
+            }},
+        ]
+
+        boundary = build_boundary([candidate], [], request)
+        by_term = {item["term"]: item for item in boundary.discovered_term_evidence}
+
+        self.assertIn("decision log", by_term)
+        self.assertEqual(by_term["decision log"]["kind"], "candidate_mechanism")
+        self.assertNotIn("bilingual decision", by_term)
+        self.assertNotIn("each contribution", by_term)
+        self.assertNotIn("full description", by_term)
+        self.assertNotIn("ultimate solution", by_term)
+
+    def test_discovery_does_not_transfer_relevance_across_use_case_boundaries(self):
+        request = SearchRequest.from_dict({
+            "request": "organize photos",
+            "problem_concepts": ["personal photo organization"],
+            "mechanisms": ["folder organization"],
+        })
+        candidate = repo("photos/faces", 4, description="Face recognition examples")
+        candidate["selected_for_assessment"] = True
+        candidate["evidence"] = [
+            {"id": "repo:photos/faces:metadata", "kind": "github_metadata", "facts": {}},
+            {"id": "repo:photos/faces:readme:concept_match", "kind": "readme_excerpt", "facts": {
+                "snippet_type": "concept_match",
+                "text": (
+                    "Personal photo organization. "
+                    "Educational platforms: student attendance tracking."
+                ),
+            }},
+        ]
+
+        boundary = build_boundary([candidate], [], request)
+        by_term = {item["term"]: item for item in boundary.discovered_term_evidence}
+
+        self.assertEqual(by_term["attendance tracking"]["kind"], "project_category")
+
+    def test_mechanism_normalization_preserves_surfaces_without_merging_distinct_terms(self):
+        evidence = [
+            {"term": "recognition beat tracking", "sources": [{"repo": "music/tool"}]},
+            {"term": "beat tracking", "sources": [{"repo": "music/tool"}]},
+        ]
+        canonical, mappings = normalize_mechanism_surfaces(
+            ["based instant feedback", "instant feedback", "recognition beat tracking",
+             "beat tracking", "usage tracking"],
+            evidence,
+        )
+
+        self.assertEqual(
+            canonical,
+            ["beat tracking", "instant feedback", "usage tracking"],
+        )
+        self.assertIn({
+            "surface_term": "based instant feedback",
+            "canonical_term": "instant feedback",
+            "normalization_reason": "fragment_prefix",
+        }, mappings)
+        self.assertIn({
+            "surface_term": "recognition beat tracking",
+            "canonical_term": "beat tracking",
+            "normalization_reason": "shared_evidence_containment",
+        }, mappings)
+
+    def test_boundary_delta_uses_canonical_gain_and_retains_surface_trace(self):
+        evidence = [
+            {"term": "recognition beat tracking", "sources": [{"repo": "music/tool"}]},
+            {"term": "beat tracking", "sources": [{"repo": "music/tool"}]},
+        ]
+        previous = {
+            "recalled_mechanisms": ["beat tracking"],
+            "presented_mechanisms": [],
+            "discovered_term_evidence": evidence,
+        }
+        current = {
+            "recalled_mechanisms": ["beat tracking", "recognition beat tracking"],
+            "presented_mechanisms": [],
+            "discovered_term_evidence": evidence,
+        }
+
+        delta = boundary_delta(current, previous).to_dict()
+
+        self.assertEqual(delta["new_mechanisms"], [])
+        self.assertEqual(delta["new_mechanism_surfaces"], ["recognition beat tracking"])
+        self.assertEqual(delta["mechanism_normalizations"], [{
+            "surface_term": "recognition beat tracking",
+            "canonical_term": "beat tracking",
+            "normalization_reason": "shared_evidence_containment",
+        }])
 
     def test_cassette_replay_reproduces_the_same_boundary(self):
         class Delegate:

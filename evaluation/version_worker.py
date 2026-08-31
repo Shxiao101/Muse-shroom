@@ -64,15 +64,16 @@ def _mechanism_redundancy(candidates: list[dict[str, Any]]) -> float:
 
 def deterministic_hypothesis(observation: dict[str, Any], used: set[str]) -> dict[str, Any] | None:
     """Choose only an observed direction; golden answers never enter this policy."""
-    evidence = sorted(
-        observation.get("discovered_term_evidence") or [],
-        key=lambda item: (
-            0 if item.get("kind") in {"candidate_mechanism", "cross_domain_direction"} else 1,
-            -float(item.get("confidence") or 0),
-            -int(item.get("support_count") or 0),
-            str(item.get("term") or "").casefold(),
-        ),
-    )
+    evidence = [
+        item for _, item in sorted(
+            enumerate(observation.get("discovered_term_evidence") or []),
+            key=lambda pair: (
+                0 if pair[1].get("kind") == "candidate_mechanism"
+                else 1 if pair[1].get("kind") == "cross_domain_direction" else 2,
+                pair[0],
+            ),
+        )
+    ]
     def promote(item: dict[str, Any]) -> dict[str, Any] | None:
         term = str(item.get("term") or "").strip()
         key = term.casefold()
@@ -209,7 +210,14 @@ def main(argv: list[str] | None = None) -> int:
                 request = models_module.SearchRequest.from_dict(request_payload)
             output = engine.search(request, "deep" if args.agentic else "quick")
             if args.agentic:
-                used_directions: set[str] = set()
+                used_directions = {
+                    str(item.get("term") or "").strip().casefold()
+                    for item in (
+                        ((output.get("observation") or {}).get("query_summary") or {})
+                        .get("executed") or []
+                    )
+                    if str(item.get("term") or "").strip()
+                }
                 for _ in range(max(0, args.agentic_iterations)):
                     observation = output.get("observation") or {}
                     hypothesis = deterministic_hypothesis(observation, used_directions)
@@ -273,6 +281,9 @@ def main(argv: list[str] | None = None) -> int:
             except (ImportError, AttributeError, KeyError):
                 loop_diagnostics = {
                     "iterations_used": 0, "mode": "single-pass",
+                    "planned_iteration_count": 0,
+                    "executed_iteration_count": 0,
+                    "retrieval_changing_iteration_count": 0,
                     "queries_per_iteration": [], "new_mechanisms_per_iteration": [],
                     "boundary_gain_per_iteration": [], "duplicate_query_rate": 0.0,
                     "candidate_novelty_per_iteration": [], "stop_reason": None,

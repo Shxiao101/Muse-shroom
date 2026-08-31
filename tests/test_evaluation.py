@@ -61,6 +61,19 @@ class EvaluationTests(unittest.TestCase):
         }, set())
         self.assertIsNone(hypothesis)
 
+    def test_agentic_policy_skips_used_evidence_and_tries_the_next_direction(self):
+        hypothesis = deterministic_hypothesis({
+            "unexplored_directions": ["already queried request direction"],
+            "discovered_term_evidence": [
+                {"term": "already queried mechanism", "kind": "candidate_mechanism",
+                 "confidence": 0.95, "support_count": 3},
+                {"term": "fresh mechanism", "kind": "candidate_mechanism",
+                 "confidence": 0.8, "support_count": 1},
+            ],
+        }, {"already queried mechanism", "already queried request direction"})
+
+        self.assertEqual(hypothesis["target_direction"], "fresh mechanism")
+
     def test_deterministic_rank_fixture_cites_readme_without_claiming_judgment(self):
         candidate = {
             "full_name": "owner/tool", "topics": ["focus"],

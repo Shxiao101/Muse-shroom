@@ -23,6 +23,7 @@ def default_session_state() -> dict[str, Any]:
         "iteration": 0,
         "negative_directions": [],
         "exploration_additions": [],
+        "confirmed_directions": [],
         "relation_calls_used": 0,
         "consecutive_no_gain": 0,
         "stop_reason": None,
@@ -419,10 +420,33 @@ def session_loop_diagnostics(store: Any, search_id: str) -> dict[str, Any]:
         item for item in iterations
         if item.get("event") in {None, "iterate", "expand", "search"}
     ]
+    planned_events = [
+        item for item in iterations
+        if item.get("event") in {None, "iterate", "expand"}
+    ]
+    executed_iteration_events = [
+        item for item in planned_events
+        if int((item.get("query_summary") or {}).get("executed_count") or 0) > 0
+    ]
+    retrieval_changes: list[bool] = []
+    previous_pool: set[str] = set()
+    for snapshot in snapshots:
+        pool = {
+            str(repo).casefold()
+            for repo in ((snapshot.get("visible_repos") or {}).get("pool_repos") or [])
+            if str(repo).strip()
+        }
+        if snapshot.get("stage") in {"iterate", "expand"}:
+            retrieval_changes.append(bool(pool - previous_pool))
+        if pool:
+            previous_pool = pool
     return {
         "iterations_used": max(
             (item.get("iteration") or 0) for item in executed_events
         ) if executed_events else 0,
+        "planned_iteration_count": len(planned_events),
+        "executed_iteration_count": len(executed_iteration_events),
+        "retrieval_changing_iteration_count": sum(retrieval_changes),
         "queries_per_iteration": _counts_by_iteration(executed),
         "new_mechanisms_per_iteration": [
             len(item["new_mechanisms"]) for item in per_iteration
@@ -503,6 +527,10 @@ def boundary_trace(store: Any, search_id: str) -> list[dict[str, Any]]:
             "mechanisms_found": list(boundary.get("recalled_mechanisms") or []),
             "directions_uncovered": list(delta.get("new_directions") or []),
             "new_mechanisms": list(delta.get("new_mechanisms") or []),
+            "new_mechanism_surfaces": list(
+                delta.get("new_mechanism_surfaces") or delta.get("new_mechanisms") or []
+            ),
+            "mechanism_normalizations": list(delta.get("mechanism_normalizations") or []),
             "boundary_gain": len(delta.get("new_mechanisms") or []),
         })
     return trace

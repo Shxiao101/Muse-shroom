@@ -177,6 +177,37 @@ class BoundaryEvaluationTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "needs_review")
         self.assertEqual(case["unknown_boundary_gain"], 1)
         self.assertEqual(case["unknown_mechanisms"][0]["repos"], ["lab/cadence"])
+        review = result["blind_unknown_review"]
+        self.assertEqual(review["items"][0]["mechanism"], "neuroadaptive cadence")
+        self.assertIsNone(review["items"][0]["label"])
+        self.assertNotIn("acceptable_new_mechanisms", json.dumps(review))
+
+    def test_planned_executed_and_retrieval_changing_iterations_are_separate(self):
+        payload = {"results": [{
+            "prompt_id": "focus",
+            "loop_diagnostics": {
+                "iterations_used": 2,
+                "planned_iteration_count": 2,
+                "executed_iteration_count": 1,
+                "retrieval_changing_iteration_count": 1,
+                "boundary_gain_per_iteration": [0, 1],
+                "boundary_trace": [
+                    {"stage": "search", "queries": ["focus"],
+                     "mechanisms_found": ["focus timer"]},
+                    {"stage": "iterate", "queries": [], "new_mechanisms": []},
+                    {"stage": "iterate", "queries": ["biofeedback"],
+                     "new_mechanisms": ["biofeedback"]},
+                ],
+            },
+        }]}
+
+        result = summarize(payload)
+        case = result["cases"][0]
+        self.assertEqual(case["planned_iteration_count"], 2)
+        self.assertEqual(case["executed_iteration_count"], 1)
+        self.assertEqual(case["retrieval_changing_iteration_count"], 1)
+        self.assertEqual(result["agentic_case_count"], 1)
+        self.assertEqual(result["aggregate"]["duplicate_only_iteration_count"], 1)
 
     def test_holdout_terms_are_not_in_production_phrase_hints(self):
         self.assertEqual(find_leaks(), [])

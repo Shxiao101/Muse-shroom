@@ -697,7 +697,7 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ranked["next_action"], "done")
         self.assertIn("display_order", ranked)
         self.assertGreater(searched["coverage"]["mechanism_count"], 0)
-        self.assertGreater(searched["coverage"]["direction_coverage"], 0)
+        self.assertEqual(searched["coverage"]["direction_coverage"], 0)
         self.assertEqual(restored["search_id"], search_id)
         self.assertEqual(restored["mode"], "deep")
 

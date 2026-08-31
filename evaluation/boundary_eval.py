@@ -20,6 +20,8 @@ FORMAL_METRICS = (
     "mainstream_coverage", "new_mechanism_match_count", "cross_mechanism_discovery",
     "repetition_penalty", "direction_coverage", "presented_mechanism_count",
     "duplicate_query_rate", "unexplored_directions_at_stop",
+    "planned_iteration_count", "executed_iteration_count",
+    "retrieval_changing_iteration_count",
 )
 
 
@@ -254,6 +256,24 @@ def case_metrics(result: dict[str, Any], case: dict[str, Any] | None = None) -> 
     )
     scope = str(diagnostics.get("redundancy_scope") or scope)
     gains = list(loop.get("boundary_gain_per_iteration") or [])
+    iteration_steps = [
+        item for item in trace if item.get("stage") in {"iterate", "expand"}
+    ]
+    planned_iterations = int(
+        loop.get("planned_iteration_count")
+        if loop.get("planned_iteration_count") is not None
+        else len(iteration_steps)
+    )
+    executed_iterations = int(
+        loop.get("executed_iteration_count")
+        if loop.get("executed_iteration_count") is not None
+        else sum(bool(item.get("queries")) for item in iteration_steps)
+    )
+    retrieval_changing_iterations = int(
+        loop.get("retrieval_changing_iteration_count")
+        if loop.get("retrieval_changing_iteration_count") is not None
+        else sum(bool(item.get("new_mechanisms")) for item in iteration_steps if item.get("queries"))
+    )
     return {
         "prompt_id": result.get("prompt_id"),
         "retrieval_mechanism_redundancy": retrieval_redundancy,
@@ -268,6 +288,9 @@ def case_metrics(result: dict[str, Any], case: dict[str, Any] | None = None) -> 
         "duplicate_query_rate": float(loop.get("duplicate_query_rate") or 0),
         "unexplored_directions_at_stop": list(loop.get("unexplored_directions_at_stop") or []),
         "iterations_used": int(loop.get("iterations_used") or 0),
+        "planned_iteration_count": planned_iterations,
+        "executed_iteration_count": executed_iterations,
+        "retrieval_changing_iteration_count": retrieval_changing_iterations,
         "queries_changed_after_initial": _queries_changed(trace),
         "evidence_backed_promotions": not missing_evidence,
         "missing_promotion_evidence": missing_evidence,
@@ -283,7 +306,7 @@ def summarize(payload: dict[str, Any], golden_cases: dict[str, dict[str, Any]] |
         raise ValueError("results must be a non-empty array")
     golden_cases = golden_cases if golden_cases is not None else load_golden()
     cases = [case_metrics(item, golden_cases.get(str(item.get("prompt_id")))) for item in raw_results]
-    agentic = [item for item in cases if item["iterations_used"] > 0]
+    agentic = [item for item in cases if item["executed_iteration_count"] > 0]
     scored = [item for item in cases if item["golden_case_found"]]
     unknown_count = sum(item["unknown_boundary_gain"] for item in scored)
     if agentic and len(scored) == len(cases):
@@ -314,8 +337,8 @@ def summarize(payload: dict[str, Any], golden_cases: dict[str, dict[str, Any]] |
     else:
         expanded_share = meaningful_share = 0.0
         verdict, passed = "insufficient_data", None
-    return {
-        "schema_version": 3, "suite": suite, "formal_metrics": list(FORMAL_METRICS),
+    result = {
+        "schema_version": 4, "suite": suite, "formal_metrics": list(FORMAL_METRICS),
         "case_count": len(cases), "agentic_case_count": len(agentic),
         "golden_case_count": len(scored),
         "aggregate": {
@@ -330,9 +353,41 @@ def summarize(payload: dict[str, Any], golden_cases: dict[str, dict[str, Any]] |
             "agentic_boundary_expansion_share": round(expanded_share, 3),
             "meaningful_boundary_expansion_share": round(meaningful_share, 3),
             "unknown_mechanism_review_count": unknown_count,
+            "planned_iteration_count": sum(item["planned_iteration_count"] for item in cases),
+            "executed_iteration_count": sum(item["executed_iteration_count"] for item in cases),
+            "retrieval_changing_iteration_count": sum(
+                item["retrieval_changing_iteration_count"] for item in cases
+            ),
+            "executed_iteration_case_share": round(len(agentic) / len(cases), 3),
+            "duplicate_only_iteration_count": sum(
+                max(0, item["planned_iteration_count"] - item["executed_iteration_count"])
+                for item in cases
+            ),
         },
         "verdict": verdict, "passed": passed, "cases": cases,
     }
+    if suite == "development":
+        raw_by_id = {str(item.get("prompt_id")): item for item in raw_results}
+        result["blind_unknown_review"] = {
+            "labels": [
+                "meaningful", "noise", "synonym", "too_generic",
+                "wrong_domain", "insufficient_evidence",
+            ],
+            "items": [
+                {
+                    "prompt_id": case_result["prompt_id"],
+                    "request": (raw_by_id.get(str(case_result["prompt_id"])) or {}).get("request") or {},
+                    "mechanism": unknown["term"],
+                    "evidence": unknown["evidence_sources"],
+                    "repos": unknown["repos"],
+                    "iteration_source": unknown["iteration"],
+                    "label": None,
+                }
+                for case_result in cases
+                for unknown in case_result["unknown_mechanisms"]
+            ],
+        }
+    return result
 
 
 def summarize_suites(development_payload: dict[str, Any], holdout_payload: dict[str, Any],
@@ -351,7 +406,7 @@ def summarize_suites(development_payload: dict[str, Any], holdout_payload: dict[
     else:
         verdict, passed = "pass", True
     return {
-        "schema_version": 3, "verdict": verdict, "passed": passed,
+        "schema_version": 4, "verdict": verdict, "passed": passed,
         "development": development, "holdout": holdout,
     }
 

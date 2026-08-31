@@ -128,7 +128,11 @@ class ExplorerReadModelTests(unittest.TestCase):
                 self.assertEqual(by_name["pomodoro"]["origin"], "requested_mechanism")
             unexplored = {name.casefold() for name in view["overview"]["unexplored"]}
             recalled = {name.casefold() for name in view["overview"]["recalled"]}
-            self.assertFalse(unexplored & recalled)
+            lexical_only = unexplored & recalled
+            self.assertIn("biofeedback", lexical_only)
+            for name in lexical_only:
+                self.assertTrue(by_name[name]["confirmed"])
+                self.assertIn("unexplored", by_name[name]["states"])
             for term in view["overview"]["discovered_terms"]:
                 node = by_name.get(term.casefold())
                 if node:

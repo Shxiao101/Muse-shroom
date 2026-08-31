@@ -289,6 +289,7 @@ class AgenticLoopTests(unittest.TestCase):
                 covered = engine.iterate(first["search_id"], {
                     "decision": "continue",
                     "reason": "confirm remaining direction",
+                    "target_direction": "pomodoro",
                     "concepts": ["pomodoro timer"],
                 })
                 agent_stopped = engine.iterate(first["search_id"], {

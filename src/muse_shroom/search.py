@@ -800,6 +800,7 @@ class SearchEngine:
             enriched_count=enriched_count, relation_calls=0, code_calls=0,
             stage="search", rejected_directions=[], iteration=0,
             query_summary=self._query_summary(executed, skipped),
+            confirmed_directions=[],
         )
         output["next_action"] = "iterate" if mode == "deep" else "rank"
         if output.get("observation"):
@@ -828,6 +829,7 @@ class SearchEngine:
             session["candidates"], selected, request,
             rejected_directions=(snapshot.get("boundary") or {}).get("rejected_directions", []),
             negative_directions=state.get("negative_directions") or [],
+            confirmed_directions=state.get("confirmed_directions") or [],
         ).to_dict()
         remaining = remaining_budget(
             iteration=int(state.get("iteration") or 0),
@@ -1063,9 +1065,20 @@ class SearchEngine:
             incomplete = "relationship_partial_failure"
         else:
             incomplete = None
+        executed_any = bool(executed) or calls > 0 or code_calls > 0
+        confirmed_directions = list(state.get("confirmed_directions") or [])
+        if executed_any:
+            confirmed_directions = merge_unique(
+                confirmed_directions,
+                [
+                    *hypothesis.promote_discovered_terms,
+                    *([hypothesis.target_direction] if hypothesis.target_direction else []),
+                ],
+            )
         state["iteration"] = iteration
         state["negative_directions"] = negatives
         state["exploration_additions"] = additions
+        state["confirmed_directions"] = confirmed_directions
         state["relation_calls_used"] = int(state.get("relation_calls_used") or 0) + calls
         after_remaining = remaining_budget(
             iteration=iteration,
@@ -1085,10 +1098,10 @@ class SearchEngine:
             negative_directions=negatives, hypothesis=hypothesis.to_dict(),
             query_summary=self._query_summary(executed, skipped),
             remaining=after_remaining, exploration_additions=additions,
+            confirmed_directions=confirmed_directions,
             negative_terms=negatives, rejected_terms=rejected,
         )
         delta = output.get("boundary_delta") or {}
-        executed_any = bool(executed) or calls > 0 or code_calls > 0
         skipped_all = bool(skipped) and not executed_any
         gained = meaningful_gain(
             delta, previous_origins, (output.get("boundary") or {}).get("mechanism_origins"),
@@ -1209,6 +1222,7 @@ class SearchEngine:
                 hard_stop: bool = False,
                 remaining: dict[str, int] | None = None,
                 exploration_additions: list[dict[str, Any]] | None = None,
+                confirmed_directions: list[str] | None = None,
                 negative_terms: Iterable[str] = (),
                 rejected_terms: Iterable[str] = ()) -> dict[str, Any]:
         concept_terms = self._concept_terms(request)
@@ -1263,6 +1277,7 @@ class SearchEngine:
             candidates.values(), selected, request,
             rejected_directions=rejected_directions,
             negative_directions=negatives,
+            confirmed_directions=confirmed_directions,
         ).to_dict()
         coverage.update({
             "iteration": iteration,
@@ -1332,6 +1347,7 @@ class SearchEngine:
             session["candidates"], selected, request,
             rejected_directions=(snapshot.get("boundary") or {}).get("rejected_directions", []),
             negative_directions=state.get("negative_directions") or [],
+            confirmed_directions=state.get("confirmed_directions") or [],
         ).to_dict()
         explored = boundary.get("explored_directions", [])
         unexplored = boundary.get("unexplored_directions", [])

@@ -338,7 +338,10 @@ class SearchBoundary:
 @dataclass(slots=True)
 class BoundaryDelta:
     new_mechanisms: list[str] = field(default_factory=list)
+    new_mechanism_surfaces: list[str] = field(default_factory=list)
     new_presented_mechanisms: list[str] = field(default_factory=list)
+    new_presented_mechanism_surfaces: list[str] = field(default_factory=list)
+    mechanism_normalizations: list[dict[str, str]] = field(default_factory=list)
     new_directions: list[str] = field(default_factory=list)
     new_terms: list[str] = field(default_factory=list)
 

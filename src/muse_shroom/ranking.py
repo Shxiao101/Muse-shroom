@@ -445,6 +445,7 @@ def rank_search(
         candidates, [presentation_by_name[name] for name in returned_names],
         boundary_request, rejected_directions=rejected,
         negative_directions=negatives,
+        confirmed_directions=(store.get_session_state(search_id).get("confirmed_directions") or []),
     ).to_dict()
     delta = store.save_boundary_snapshot(
         search_id, "rank", boundary,
