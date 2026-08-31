@@ -68,6 +68,8 @@ def deterministic_hypothesis(observation: dict[str, Any], used: set[str]) -> dic
         item for _, item in sorted(
             enumerate(observation.get("discovered_term_evidence") or []),
             key=lambda pair: (
+                0 if pair[1].get("promotion_confidence") == "high"
+                else 1 if pair[1].get("promotion_confidence") == "medium" else 2,
                 0 if pair[1].get("kind") == "candidate_mechanism"
                 else 1 if pair[1].get("kind") == "cross_domain_direction" else 2,
                 pair[0],
@@ -91,6 +93,8 @@ def deterministic_hypothesis(observation: dict[str, Any], used: set[str]) -> dic
     for item in evidence:
         if item.get("kind") not in {"candidate_mechanism", "cross_domain_direction"}:
             continue
+        if item.get("promotable") is False:
+            continue
         hypothesis = promote(item)
         if hypothesis is not None:
             return hypothesis
@@ -100,10 +104,28 @@ def deterministic_hypothesis(observation: dict[str, Any], used: set[str]) -> dic
         if not term or key in used:
             continue
         used.add(key)
+        anchor = next(
+            (
+                str(item.get("term") or "").strip()
+                for item in observation.get("anchors") or []
+                if str(item.get("term") or "").strip().casefold() != key
+            ),
+            "",
+        )
+        seed = next(
+            (
+                str(item.get("repo") or "").strip()
+                for item in observation.get("anchors") or []
+                if "/" in str(item.get("repo") or "")
+            ),
+            "",
+        )
         return {
             "decision": "continue",
             "target_direction": term,
-            "strategies": ["keyword"],
+            **({"concepts": [f"{term} {anchor}"]} if anchor else {}),
+            **({"seeds": [seed]} if seed else {}),
+            "strategies": ["keyword", *(["relationship"] if seed else [])],
             "reason": "deterministic evaluation: cover observed unexplored direction",
         }
     return None
@@ -210,14 +232,20 @@ def main(argv: list[str] | None = None) -> int:
                 request = models_module.SearchRequest.from_dict(request_payload)
             output = engine.search(request, "deep" if args.agentic else "quick")
             if args.agentic:
-                used_directions = {
-                    str(item.get("term") or "").strip().casefold()
-                    for item in (
-                        ((output.get("observation") or {}).get("query_summary") or {})
-                        .get("executed") or []
-                    )
-                    if str(item.get("term") or "").strip()
-                }
+                # The committed synthetic fixture freezes the historical query
+                # set. Real evaluations may combine an uncovered direction with
+                # an observed anchor and relationship seed.
+                used_directions: set[str] = (
+                    {
+                        str(item.get("term") or "").strip().casefold()
+                        for item in (
+                            ((output.get("observation") or {}).get("query_summary") or {})
+                            .get("executed") or []
+                        )
+                        if str(item.get("term") or "").strip()
+                    }
+                    if args.synthetic_fixture else set()
+                )
                 for _ in range(max(0, args.agentic_iterations)):
                     observation = output.get("observation") or {}
                     hypothesis = deterministic_hypothesis(observation, used_directions)

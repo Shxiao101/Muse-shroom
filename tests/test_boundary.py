@@ -174,7 +174,10 @@ class BoundaryTests(unittest.TestCase):
         self.assertIn("digital minimalism", by_term)
         self.assertEqual(by_term["behavioral friction"]["sources"][0]["source_field"], "description")
         self.assertEqual(by_term["biofeedback"]["sources"][0]["source_field"], "readme_features")
-        self.assertEqual(by_term["digital minimalism"]["kind"], "cross_domain_direction")
+        self.assertEqual(by_term["digital minimalism"]["kind"], "project_category")
+        self.assertFalse(by_term["digital minimalism"]["promotable"])
+        self.assertEqual(by_term["biofeedback"]["promotion_confidence"], "high")
+        self.assertTrue(by_term["biofeedback"]["promotable"])
         self.assertGreater(by_term["biofeedback"]["confidence"], 0.8)
 
     def test_discovered_directions_filter_generic_and_explicitly_excluded_topics(self):
@@ -241,7 +244,8 @@ class BoundaryTests(unittest.TestCase):
 
         self.assertEqual([item["stage"] for item in snapshots], ["search", "iterate", "rank"])
         self.assertEqual(first["boundary"]["recalled_mechanisms"], ["pomodoro"])
-        self.assertIn("usage tracking", expanded["boundary_delta"]["new_mechanisms"])
+        self.assertNotIn("usage tracking", expanded["boundary_delta"]["new_mechanisms"])
+        self.assertIn("usage tracking", expanded["boundary_delta"]["new_directions"])
         self.assertEqual(expanded["boundary"]["unexplored_directions"], ["biofeedback"])
         self.assertIn("pomodoro", ranked["boundary"]["presented_mechanisms"])
 
@@ -349,6 +353,90 @@ class BoundaryTests(unittest.TestCase):
         by_term = {item["term"]: item for item in boundary.discovered_term_evidence}
 
         self.assertEqual(by_term["attendance tracking"]["kind"], "project_category")
+
+    def test_evidence_relevance_and_specificity_gate_keep_low_quality_terms_traceable(self):
+        request = SearchRequest.from_dict({
+            "request": "reduce coding agent overthinking",
+            "problem_concepts": ["coding agent overthinking"],
+            "mechanisms": ["reasoning budget", "stop condition"],
+            "exploration_directions": ["agent workflow"],
+        })
+        unrelated = repo(
+            "browser/tool", 4,
+            description="Token-efficient browser automation for AI agents",
+            topics=["browser-automation"],
+        )
+        unrelated["selected_for_assessment"] = True
+        unrelated["evidence"] = [{
+            "id": "repo:browser/tool:metadata", "kind": "github_metadata", "facts": {},
+        }]
+        relevant = repo(
+            "agents/guard", 4,
+            description=(
+                "A stop-condition guard for coding agent overthinking with "
+                "decision monitoring"
+            ),
+        )
+        relevant["selected_for_assessment"] = True
+        relevant["evidence"] = [{
+            "id": "repo:agents/guard:metadata", "kind": "github_metadata", "facts": {},
+        }]
+
+        boundary = build_boundary([unrelated, relevant], [], request)
+        by_term = {item["term"]: item for item in boundary.discovered_term_evidence}
+
+        self.assertIn("browser automation", by_term)
+        self.assertFalse(by_term["browser automation"]["promotable"])
+        self.assertEqual(by_term["browser automation"]["promotion_confidence"], "low")
+        self.assertLess(by_term["browser automation"]["evidence_relevance_score"], 50)
+        self.assertIn("decision monitoring", by_term)
+        self.assertTrue(by_term["decision monitoring"]["promotable"])
+        self.assertEqual(by_term["decision monitoring"]["mechanism_specificity"], "behavioral_signal")
+        self.assertIn("local_problem", by_term["decision monitoring"]["evidence_relevance_reason"])
+
+    def test_umbrella_category_is_not_promotable_even_when_request_relevant(self):
+        request = SearchRequest.from_dict({
+            "request": "keep long projects motivating",
+            "problem_concepts": ["long project motivation"],
+            "mechanisms": ["progress chart"],
+        })
+        candidate = repo(
+            "project/dashboard", 4,
+            description="Data visualization and progress chart for long project motivation",
+        )
+        candidate["selected_for_assessment"] = True
+        candidate["evidence"] = [{
+            "id": "repo:project/dashboard:metadata", "kind": "github_metadata", "facts": {},
+        }]
+
+        boundary = build_boundary([candidate], [], request)
+        item = next(
+            value for value in boundary.discovered_term_evidence
+            if value["term"] == "data visualization"
+        )
+
+        self.assertEqual(item["mechanism_specificity"], "domain_category")
+        self.assertFalse(item["promotable"])
+        self.assertEqual(item["promotion_confidence"], "low")
+
+    def test_token_equivalent_mechanisms_do_not_create_boundary_gain(self):
+        previous = {
+            "recalled_mechanisms": ["browser automation"],
+            "presented_mechanisms": [],
+        }
+        current = {
+            "recalled_mechanisms": ["browser automation", "web automation"],
+            "presented_mechanisms": [],
+        }
+
+        delta = boundary_delta(current, previous).to_dict()
+
+        self.assertEqual(delta["new_mechanisms"], [])
+        self.assertIn({
+            "surface_term": "web automation",
+            "canonical_term": "browser automation",
+            "normalization_reason": "token_equivalence",
+        }, delta["mechanism_normalizations"])
 
     def test_mechanism_normalization_preserves_surfaces_without_merging_distinct_terms(self):
         evidence = [

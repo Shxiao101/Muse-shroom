@@ -36,8 +36,12 @@ class EvaluationTests(unittest.TestCase):
         hypothesis = deterministic_hypothesis({
             "unexplored_directions": ["requested direction"],
             "discovered_term_evidence": [],
+            "anchors": [{"term": "observed anchor", "repo": "owner/seed"}],
         }, set())
         self.assertEqual(hypothesis["target_direction"], "requested direction")
+        self.assertEqual(hypothesis["concepts"], ["requested direction observed anchor"])
+        self.assertEqual(hypothesis["seeds"], ["owner/seed"])
+        self.assertEqual(hypothesis["strategies"], ["keyword", "relationship"])
         self.assertNotIn("promote_discovered_terms", hypothesis)
 
     def test_agentic_policy_prefers_requested_direction_to_generic_project_category(self):

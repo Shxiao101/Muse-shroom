@@ -23,6 +23,54 @@ TECHNOLOGY_DISCOVERED_TERMS = {
     "go", "html", "javascript", "kotlin", "linux", "macos", "nodejs",
     "php", "react", "ruby", "rust", "swift", "typescript", "windows",
 }
+REQUEST_RELEVANCE_STOPWORDS = {
+    "a", "ai", "an", "and", "agent", "app", "application", "assistant",
+    "coding", "creation", "for", "from", "help", "improvement", "in",
+    "management", "of", "on", "or", "programmer", "project", "quality",
+    "software", "the", "to", "tool", "using", "with", "workflow",
+}
+INCIDENTAL_CONTEXT_CUES = {
+    "changelog", "contributing", "contribution guide", "dependency",
+    "disclosure", "issue template", "pull request template", "release notes",
+}
+LIST_REPOSITORY_CUES = {
+    "awesome list", "awesome-list", "curated list", "list of resources",
+}
+BROAD_CATEGORY_HEADS = {
+    "ai", "data", "digital", "general", "project", "software", "technology",
+}
+GENERIC_MECHANISM_MODIFIERS = {
+    "advanced", "leading", "modern", "new", "next",
+}
+UMBRELLA_CATEGORY_TAILS = {
+    "automation", "management", "visualization", "wellbeing", "workflow",
+}
+BEHAVIOR_SIGNAL_TAILS = {
+    "detection", "monitoring", "recognition", "sensing", "tracking",
+}
+INTERVENTION_TAILS = {
+    "blocker", "blocking", "feedback", "friction", "intervention", "reminder",
+}
+WORKFLOW_PATTERN_TAILS = {
+    "auditing", "checklist", "device", "log", "loop", "record", "replay",
+    "schedule", "template", "training", "workflow",
+}
+ARTIFACT_TAILS = {
+    "document", "documentation", "foundation", "graph", "implement",
+    "instrument", "journal", "version",
+}
+NON_TRANSFERABLE_CATEGORY_TAILS = {
+    "configuration", "qualification", "transportation",
+}
+TRANSFER_MECHANISM_TAILS = {
+    "collaboration", "compression", "coordination", "decision", "execution",
+    "filtering", "generation", "orchestration", "planning", "prioritization",
+    "recognition", "reflection", "retrieval", "scheduling", "summarization",
+    "synchronization",
+}
+MECHANISM_TOKEN_EQUIVALENTS = {
+    "web": "browser",
+}
 MECHANISM_HINTS = {
     "accountability", "automation", "biofeedback", "blocker", "blocking",
     "commitment", "dashboard", "economics", "feedback", "friction", "habit",
@@ -109,6 +157,127 @@ def _token_overlap(left: str, right: str) -> float:
     left_tokens = set(_normalized(left).split())
     right_tokens = set(_normalized(right).split())
     return len(left_tokens & right_tokens) / max(1, len(left_tokens | right_tokens))
+
+
+def _canonical_token_key(value: str) -> str:
+    return " ".join(
+        MECHANISM_TOKEN_EQUIVALENTS.get(token, token)
+        for token in _normalized(value).split()
+    )
+
+
+def _request_relevance(text: str, concepts: Iterable[Concept]) -> tuple[bool, bool]:
+    """Return exact-phrase and informative-token request relevance signals."""
+    normalized = _normalized(text)
+    text_tokens = set(normalized.split())
+    exact = False
+    token_match = False
+    for concept in concepts:
+        for raw in concept.terms():
+            term = _normalized(raw)
+            if not term:
+                continue
+            if _contains_normalized(normalized, term):
+                exact = True
+            informative = {
+                token for token in term.split()
+                if token not in REQUEST_RELEVANCE_STOPWORDS
+            }
+            overlap = informative & text_tokens
+            if overlap and (
+                len(informative) <= 1
+                or len(overlap) >= 2
+                or len(overlap) / len(informative) >= 0.67
+            ):
+                token_match = True
+    return exact, token_match
+
+
+def _candidate_primary_text(candidate: dict[str, Any]) -> str:
+    values = [
+        str(candidate.get("description") or ""),
+        " ".join(str(value).replace("-", " ") for value in candidate.get("topics") or []),
+    ]
+    for evidence in candidate.get("evidence") or []:
+        if evidence.get("kind") != "readme_excerpt":
+            continue
+        facts = evidence.get("facts") or {}
+        if facts.get("snippet_type") in {"overview", "features", "use_cases", "motivation"}:
+            values.append(str(facts.get("text") or ""))
+    return " ".join(values)
+
+
+def _incidental_source(candidate: dict[str, Any], source_field: str, text: str) -> tuple[bool, str]:
+    normalized = _normalized(text)
+    primary = _normalized(_candidate_primary_text(candidate))
+    if any(_contains_normalized(normalized, _normalized(cue)) for cue in INCIDENTAL_CONTEXT_CUES):
+        return True, "incidental_readme"
+    if re.search(
+        r"\bv?\d+\.\d+(?:\.\d+)?\b|\bpr\s*#\d+\b",
+        str(text).casefold(),
+    ):
+        return True, "changelog_or_release"
+    if any(_contains_normalized(primary, _normalized(cue)) for cue in LIST_REPOSITORY_CUES):
+        return True, "list_item"
+    repo_name = str(candidate.get("full_name") or "").split("/")[-1].casefold()
+    topic_keys = {
+        _normalized(str(value).replace("-", " "))
+        for value in candidate.get("topics") or []
+    }
+    if repo_name.startswith("awesome-") or {"awesome", "awesome list"} & topic_keys:
+        return True, "list_item"
+    if source_field == "relationship_detail":
+        return True, "relationship_only"
+    return False, "core_context"
+
+
+def _specificity_class(term: str) -> str:
+    tokens = _normalized(term).split()
+    if not tokens:
+        return "project_category"
+    if len(tokens) >= 2 and tokens[0] in GENERIC_MECHANISM_MODIFIERS:
+        return "project_category"
+    if tokens[-1] in UMBRELLA_CATEGORY_TAILS and (
+        len(tokens) == 1 or tokens[0] in BROAD_CATEGORY_HEADS
+    ):
+        return "domain_category"
+    if tokens[-1] in ARTIFACT_TAILS:
+        return "artifact"
+    if tokens[-1] in NON_TRANSFERABLE_CATEGORY_TAILS:
+        return "project_category"
+    if tokens[-1] in BEHAVIOR_SIGNAL_TAILS:
+        return "behavioral_signal"
+    if tokens[-1] in INTERVENTION_TAILS:
+        return "intervention"
+    if tokens[-1] in WORKFLOW_PATTERN_TAILS:
+        return "workflow_pattern"
+    if tokens[0].endswith("ed") and tokens[-1] in UMBRELLA_CATEGORY_TAILS:
+        return "project_category"
+    if all(token in TECHNOLOGY_DISCOVERED_TERMS for token in tokens):
+        return "technology"
+    if (
+        set(tokens) & MECHANISM_HINTS
+        or _normalized(term) in {_normalized(value) for value in DISCOVERY_PHRASE_HINTS}
+        or tokens[-1] in TRANSFER_MECHANISM_TAILS
+    ):
+        return "mechanism"
+    return "project_category"
+
+
+def _specificity_with_context(term: str, sources: Iterable[dict[str, Any]]) -> str:
+    specificity = _specificity_class(term)
+    if specificity != "artifact":
+        return specificity
+    context = _normalized(" ".join(
+        str(source.get("full_evidence_text") or source.get("evidence_text") or "")
+        for source in sources
+    ))
+    if any(
+        _contains_normalized(context, cue)
+        for cue in ("methodology", "workflow pattern", "intervention method")
+    ):
+        return "workflow_pattern"
+    return specificity
 
 
 def _term_distance(text: str, term: str, anchors: Iterable[str]) -> int:
@@ -294,6 +463,9 @@ def normalize_mechanism_surfaces(
         for item in evidence if _normalized(item.get("term"))
     }
     normalized_surfaces = {_normalized(value): value for value in surfaces}
+    equivalent_surfaces: dict[str, str] = {}
+    for value in surfaces:
+        equivalent_surfaces.setdefault(_canonical_token_key(value), value)
     canonical_values: list[str] = []
     mappings: list[dict[str, str]] = []
     for surface in surfaces:
@@ -305,6 +477,11 @@ def normalize_mechanism_surfaces(
             tokens = tokens[1:]
             canonical_key = " ".join(tokens)
             reason = "fragment_prefix"
+        equivalent_key = _canonical_token_key(canonical_key)
+        equivalent = equivalent_surfaces.get(equivalent_key)
+        if reason == "identity" and equivalent and _normalized(equivalent) != key:
+            canonical_key = _normalized(equivalent)
+            reason = "token_equivalence"
         if reason == "identity" and len(tokens) >= 3:
             shorter_terms = sorted(
                 (
@@ -488,6 +665,11 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
         for concept in request.problem_concepts + request.exploration_directions
         for term in concept.terms()
     }
+    problem_known = {
+        _normalized(term)
+        for concept in request.problem_concepts
+        for term in concept.terms()
+    }
     exclusions = {
         _normalized(value) for value in request.exclusions if _normalized(value)
     }
@@ -545,6 +727,85 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
         }
         mechanism_distance = _term_distance(local_evidence, value, mechanism_known)
         direction_distance = _term_distance(local_evidence, value, direction_known)
+        problem_distance = _term_distance(local_evidence, value, problem_known)
+        local_problem_exact, local_problem_token = _request_relevance(
+            local_evidence, request.problem_concepts
+        )
+        local_mechanism_exact, local_mechanism_token = _request_relevance(
+            local_evidence, request.mechanisms
+        )
+        local_direction_exact, local_direction_token = _request_relevance(
+            local_evidence, request.exploration_directions
+        )
+        local_problem_exact = local_problem_exact and problem_distance <= 18
+        local_mechanism_exact = local_mechanism_exact and mechanism_distance <= 12
+        local_direction_exact = local_direction_exact and direction_distance <= 12
+        primary_text = _candidate_primary_text(candidate)
+        primary_problem_exact, primary_problem_token = _request_relevance(
+            primary_text, request.problem_concepts
+        )
+        primary_mechanism_exact, primary_mechanism_token = _request_relevance(
+            primary_text, request.mechanisms
+        )
+        primary_direction_exact, primary_direction_token = _request_relevance(
+            primary_text, request.exploration_directions
+        )
+        incidental, context_reason = _incidental_source(
+            candidate, source_field, local_evidence
+        )
+        relevance_score = {
+            "readme_use_cases": 28,
+            "readme_features": 26,
+            "readme_overview": 24,
+            "description": 24,
+            "readme_motivation": 20,
+            "readme_concept_match": 16,
+            "topics": 14,
+            "relationship_detail": 8,
+        }.get(source_field, 10)
+        relevance_reasons = [context_reason]
+        if local_problem_exact:
+            relevance_score += 44
+            relevance_reasons.append("local_problem")
+        elif local_problem_token:
+            relevance_score += 24
+            relevance_reasons.append("local_problem_token")
+        if local_mechanism_exact:
+            relevance_score += 32
+            relevance_reasons.append("local_mechanism")
+        elif local_mechanism_token:
+            relevance_score += 12
+        if local_direction_exact:
+            relevance_score += 18
+            relevance_reasons.append("local_direction")
+        elif local_direction_token:
+            relevance_score += 8
+        if primary_problem_exact:
+            relevance_score += 20
+            relevance_reasons.append("repo_problem")
+        elif primary_problem_token:
+            relevance_score += 10
+        if primary_mechanism_exact or primary_direction_exact:
+            relevance_score += 24
+            relevance_reasons.append("repo_request_alignment")
+        elif primary_mechanism_token or primary_direction_token:
+            relevance_score += 5
+        if path_terms & mechanism_known:
+            relevance_score += 10
+            relevance_reasons.append("mechanism_retrieval")
+        if candidate.get("selected_for_assessment"):
+            relevance_score += 6
+            relevance_reasons.append("assessment_shortlist")
+        if incidental:
+            relevance_score = min(relevance_score, 38)
+        request_anchored = bool(
+            local_problem_exact or local_problem_token
+            or primary_problem_exact
+        )
+        source["evidence_relevance_score"] = max(0, min(100, relevance_score))
+        source["evidence_relevance_reason"] = ",".join(dict.fromkeys(relevance_reasons))
+        source["core_use_case"] = not incidental
+        source["request_anchored"] = request_anchored and not incidental
         if (
             mechanism_distance <= 12
             and any(_contains_normalized(evidence_normalized, term) for term in mechanism_known)
@@ -636,29 +897,52 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
                     confidence=.78, relationship_backed=True,
                 )
     def term_kind(key: str) -> str:
-        if any(source["relationship_backed"] for source in sources[key]):
-            return "cross_domain_direction"
-        hinted = any(_normalized(phrase) == key for phrase in DISCOVERY_PHRASE_HINTS)
-        assessment_backed = any(
-            source["assessment_backed"] and int(source["relevance_rank"]) < 3
+        _, _, _, promotable, _ = term_quality(key)
+        if not promotable:
+            return "project_category"
+        if any(
+            source["relationship_backed"] and source["request_anchored"]
             for source in sources[key]
+        ):
+            return "cross_domain_direction"
+        return "candidate_mechanism"
+
+    def term_quality(key: str) -> tuple[int, str, str, bool, str]:
+        anchored_sources = [source for source in sources[key] if source["request_anchored"]]
+        score_sources = anchored_sources or sources[key]
+        source_scores = [int(source["evidence_relevance_score"]) for source in score_sources]
+        score = max(source_scores, default=0)
+        if len(support_repos[key]) >= 2:
+            score = min(100, score + 12)
+        if len({str(source["source_field"]) for source in sources[key]}) >= 2:
+            score = min(100, score + 6)
+        specificity = _specificity_with_context(key, sources[key])
+        promotable_specificity = specificity in {
+            "mechanism", "behavioral_signal", "intervention", "workflow_pattern",
+        }
+        request_anchored = bool(anchored_sources)
+        confidence = (
+            "high" if promotable_specificity and request_anchored and score >= 75
+            else "medium" if promotable_specificity and request_anchored and score >= 50
+            else "low"
         )
-        directly_relevant = any(
-            int(source["relevance_rank"]) <= 1 for source in sources[key]
+        promotable = confidence in {"high", "medium"}
+        best = max(
+            score_sources, key=lambda source: int(source["evidence_relevance_score"]),
+            default={},
         )
-        return (
-            "candidate_mechanism"
-            if _looks_mechanistic(key) and assessment_backed and (
-                hinted
-                or directly_relevant
-                or any(_source_mechanism_signal(source, key) for source in sources[key])
-                )
-            else "project_category"
-        )
+        reason = str(best.get("evidence_relevance_reason") or "no relevant evidence")
+        if specificity == "domain_category":
+            reason = f"{reason},umbrella_category"
+        elif not promotable_specificity:
+            reason = f"{reason},insufficient_specificity"
+        return score, reason, specificity, promotable, confidence
 
     ranked = sorted(
         support_repos,
         key=lambda key: (
+            0 if term_quality(key)[3] else 1,
+            {"high": 0, "medium": 1, "low": 2}[term_quality(key)[4]],
             0 if term_kind(key) == "cross_domain_direction"
             else 1 if term_kind(key) == "candidate_mechanism" else 2,
             min(int(item["relevance_rank"]) for item in sources[key]),
@@ -675,17 +959,27 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
     result: list[dict[str, Any]] = []
     for key in ranked[:limit]:
         kind = term_kind(key)
+        relevance_score, relevance_reason, specificity, promotable, promotion_confidence = (
+            term_quality(key)
+        )
         result.append({
             "term": display[key],
             "kind": kind,
             "confidence": max(float(item["confidence"]) for item in sources[key]),
+            "evidence_relevance_score": relevance_score,
+            "evidence_relevance_reason": relevance_reason,
+            "mechanism_specificity": specificity,
+            "promotion_confidence": promotion_confidence,
+            "promotable": promotable,
             "support_count": len(support_repos[key]),
             "sources": [
                 {
                     name: value for name, value in source.items()
                     if name not in {
                         "relationship_backed", "assessment_backed", "relevance_rank",
-                        "relevance_distance", "full_evidence_text",
+                        "relevance_distance", "full_evidence_text", "core_use_case",
+                        "evidence_relevance_score", "evidence_relevance_reason",
+                        "request_anchored",
                     }
                 }
                 for source in sources[key][:3]
@@ -791,12 +1085,19 @@ def boundary_delta(current: dict[str, Any], previous: dict[str, Any] | None) -> 
         previous.get("presented_mechanisms") or [], evidence,
     )
 
-    def canonical_new(current_values: list[str], previous_values: list[str]) -> list[str]:
-        old = {_normalized(value) for value in previous_values}
-        return [value for value in current_values if _normalized(value) not in old]
+    def canonical_new(current_values: list[str], previous_values: list[str],
+                      excluded_values: Iterable[str] = ()) -> list[str]:
+        old = {
+            _canonical_token_key(value)
+            for value in (*previous_values, *excluded_values)
+        }
+        return [value for value in current_values if _canonical_token_key(value) not in old]
 
     return BoundaryDelta(
-        new_mechanisms=canonical_new(current_mechanisms, previous_mechanisms),
+        new_mechanisms=canonical_new(
+            current_mechanisms, previous_mechanisms,
+            previous.get("unexplored_directions") or [],
+        ),
         new_mechanism_surfaces=new_values("recalled_mechanisms"),
         new_presented_mechanisms=canonical_new(current_presented, previous_presented),
         new_presented_mechanism_surfaces=new_values("presented_mechanisms"),

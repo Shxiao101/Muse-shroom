@@ -27,6 +27,8 @@ def _run_worker(args: argparse.Namespace, prompts: Path, output: Path, data_dir:
         command.extend([
             "--agentic", "--agentic-iterations", str(args.iterations), "--boundary-rank",
         ])
+    if args.ci:
+        command.append("--synthetic-fixture")
     subprocess.run(command, cwd=ROOT, check=True)
 
 

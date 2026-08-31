@@ -300,6 +300,11 @@ def validate_hypothesis_evidence(hypothesis: SearchHypothesis, request: SearchRe
         str(term).casefold() for term in boundary.get("discovered_terms") or []
         if str(term).strip()
     }
+    promotable_names = {
+        str(item.get("term") or "").casefold()
+        for item in boundary.get("discovered_term_evidence") or []
+        if str(item.get("term") or "").strip() and item.get("promotable") is not False
+    }
     evidence_ids = {
         str(item.get("id"))
         for candidate in candidates
@@ -317,7 +322,7 @@ def validate_hypothesis_evidence(hypothesis: SearchHypothesis, request: SearchRe
             continue
         if addition.evidence == "user_request":
             continue
-        if addition.evidence == "discovered_term" and key in discovered:
+        if addition.evidence == "discovered_term" and key in promotable_names:
             continue
         if addition.evidence in evidence_ids:
             continue
@@ -327,15 +332,15 @@ def validate_hypothesis_evidence(hypothesis: SearchHypothesis, request: SearchRe
         )
     for term in hypothesis.promote_discovered_terms:
         key = term.casefold()
-        if key not in discovered or key not in discovered_names:
+        if key not in discovered or key not in discovered_names or key not in promotable_names:
             raise ContractError(
-                f"promote_discovered_terms entry {term!r} is not an evidence-backed "
-                "term from the latest observation"
+                f"promote_discovered_terms entry {term!r} is not a promotable, "
+                "evidence-backed term from the latest observation"
             )
     if hypothesis.target_direction:
         key = hypothesis.target_direction.casefold()
         allowed = (
-            requested_directions | discovered_names | addition_terms
+            requested_directions | promotable_names | addition_terms
             | {term.casefold() for term in hypothesis.promote_discovered_terms}
         )
         if key not in allowed:

@@ -253,7 +253,11 @@ def _compact_search_output(output: dict[str, Any], limit: int = SEARCH_OUTPUT_MA
     ])
     term_evidence_lists = [
         container.get("discovered_term_evidence")
-        for container in (output.get("boundary") or {}, output.get("observation") or {})
+        for container in (
+            output.get("boundary") or {},
+            output.get("observation") or {},
+            (output.get("observation") or {}).get("boundary") or {},
+        )
         if isinstance(container.get("discovered_term_evidence"), list)
     ]
     stages.append([
@@ -273,6 +277,12 @@ def _compact_search_output(output: dict[str, Any], limit: int = SEARCH_OUTPUT_MA
         for container, values in (
             (output.get("boundary") or {}, (output.get("boundary") or {}).get("discovered_term_evidence")),
             (output.get("observation") or {}, (output.get("observation") or {}).get("discovered_term_evidence")),
+            (
+                (output.get("observation") or {}).get("boundary") or {},
+                ((output.get("observation") or {}).get("boundary") or {}).get(
+                    "discovered_term_evidence"
+                ),
+            ),
         )
         if isinstance(values, list) and len(values) > 5
     ])

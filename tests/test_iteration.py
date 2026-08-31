@@ -4,7 +4,7 @@ from pathlib import Path
 
 from evaluation.cassette import CassetteGitHub
 from muse_shroom import github as github_module
-from muse_shroom.iteration import session_loop_diagnostics
+from muse_shroom.iteration import session_loop_diagnostics, validate_hypothesis_evidence
 from muse_shroom.models import ContractError, SearchHypothesis, SearchRequest
 from muse_shroom.queries import hypothesis_queries, query_fingerprint
 from muse_shroom.ranking import rank_search
@@ -70,6 +70,28 @@ class IterationContractTests(unittest.TestCase):
                             for item in executed))
         self.assertEqual(skipped, [])
 
+    def test_low_confidence_discovered_term_cannot_be_promoted(self):
+        request = SearchRequest.from_dict(FOCUS_REQUEST)
+        hypothesis = SearchHypothesis.from_dict({
+            "decision": "continue",
+            "target_direction": "browser automation",
+            "promote_discovered_terms": ["browser automation"],
+            "concepts": ["browser automation"],
+        })
+        boundary = {
+            "discovered_terms": ["browser automation"],
+            "discovered_term_evidence": [{
+                "term": "browser automation",
+                "kind": "candidate_mechanism",
+                "promotion_confidence": "low",
+                "promotable": False,
+                "sources": [{"repo": "browser/tool"}],
+            }],
+        }
+
+        with self.assertRaisesRegex(ContractError, "not a promotable"):
+            validate_hypothesis_evidence(hypothesis, request, boundary, [])
+
 
 class AgenticLoopTests(unittest.TestCase):
     def test_focus_ambiguity_observation_supports_a_corrective_hypothesis(self):
@@ -132,7 +154,10 @@ class AgenticLoopTests(unittest.TestCase):
         pomodoros = [
             repo(
                 f"pomo/timer{index}", 12 + index,
-                description="Pomodoro timer",
+                description=(
+                    "Pomodoro focus timer with a commitment device"
+                    if index == 0 else "Pomodoro timer"
+                ),
                 topics=(
                     ["pomodoro", "commitment-device"]
                     if index == 0 else ["pomodoro"]
@@ -218,17 +243,24 @@ class AgenticLoopTests(unittest.TestCase):
                 store.close()
 
     def test_discovered_terms_are_not_mechanisms_until_promoted_and_evidenced(self):
-        timer = repo("focus/timer", 4, description="Pomodoro timer", topics=["digital-wellbeing"])
-        wellbeing = repo("habits/wellbeing", 3, description="Digital wellbeing dashboard")
+        timer = repo(
+            "focus/timer", 4,
+            description="Pomodoro focus timer with a commitment device",
+            topics=["commitment-device"],
+        )
+        commitment = repo(
+            "habits/commitment", 3,
+            description="Commitment device for focus goals",
+        )
         github = FrozenGitHub(
             [
-                ("digital wellbeing", [wellbeing]),
+                ("commitment device", [commitment]),
                 ("pomodoro", [timer]),
                 ("focus", [timer]),
             ],
             readmes={
                 "focus/timer": "# Timer\nA Pomodoro workflow.\n## Usage\nRun it.",
-                "habits/wellbeing": "# Wellbeing\nDigital wellbeing tracker.\n## Usage\nOpen the dashboard.",
+                "habits/commitment": "# Commitment\nA commitment device for focus goals.\n## Usage\nLock a goal.",
             },
         )
         request = SearchRequest.from_dict({
@@ -242,13 +274,13 @@ class AgenticLoopTests(unittest.TestCase):
             try:
                 engine = SearchEngine(store, github, relation_budget=0)
                 first = engine.search(request, "deep")
-                self.assertIn("digital wellbeing", first["boundary"]["discovered_terms"])
-                self.assertNotIn("digital wellbeing", first["boundary"]["recalled_mechanisms"])
+                self.assertIn("commitment device", first["boundary"]["discovered_terms"])
+                self.assertNotIn("commitment device", first["boundary"]["recalled_mechanisms"])
                 second = engine.iterate(first["search_id"], {
                     "decision": "continue",
-                    "reason": "README topics suggest digital wellbeing is related",
-                    "promote_discovered_terms": ["digital wellbeing"],
-                    "concepts": ["digital wellbeing"],
+                    "reason": "README topics suggest a commitment device is related",
+                    "promote_discovered_terms": ["commitment device"],
+                    "concepts": ["commitment device"],
                 })
                 trace = session_loop_diagnostics(
                     store, first["search_id"]
@@ -256,14 +288,14 @@ class AgenticLoopTests(unittest.TestCase):
             finally:
                 store.close()
 
-        self.assertIn("digital wellbeing", second["boundary"]["recalled_mechanisms"])
-        self.assertIn("digital wellbeing", second["boundary"]["explored_directions"])
+        self.assertIn("commitment device", second["boundary"]["recalled_mechanisms"])
+        self.assertIn("commitment device", second["boundary"]["explored_directions"])
         additions = second["observation"]["exploration_additions"]
-        self.assertTrue(any(item["term"] == "digital wellbeing" for item in additions))
+        self.assertTrue(any(item["term"] == "commitment device" for item in additions))
         self.assertEqual(additions[0]["source_iteration"], 1)
         self.assertEqual(
             trace[-1]["evidence_sources"][0]["term"],
-            "digital wellbeing",
+            "commitment device",
         )
 
     def test_stop_conditions_prevent_unbounded_loops(self):
@@ -589,13 +621,15 @@ class AgenticLoopTests(unittest.TestCase):
                     )]})
                 return github_module.ApiResult({"items": [repo(
                     "focus/timer", 4, description="Pomodoro focus timer",
-                    topics=["digital-wellbeing"],
+                    topics=["commitment-device"],
                 )]})
 
             def readme(self, full_name):
-                if full_name.lower() == "habits/wellbeing":
-                    return github_module.ApiResult("# Wellbeing\nDigital wellbeing.\n## Usage\nRun it.")
-                return github_module.ApiResult("# Timer\nA Pomodoro focus timer.\n## Usage\nRun it.")
+                if full_name.lower() == "habits/commitment":
+                    return github_module.ApiResult("# Commitment\nA commitment device for focus.\n## Usage\nRun it.")
+                return github_module.ApiResult(
+                    "# Timer\nA Pomodoro focus timer with a commitment device.\n## Usage\nRun it."
+                )
 
             def latest_release(self, full_name):
                 raise github_module.GitHubNotFoundError("missing")
@@ -608,9 +642,9 @@ class AgenticLoopTests(unittest.TestCase):
         })
         hypothesis = {
             "decision": "continue",
-            "reason": "promote discovered wellbeing term",
-            "promote_discovered_terms": ["digital wellbeing"],
-            "concepts": ["digital wellbeing"],
+            "reason": "promote discovered commitment mechanism",
+            "promote_discovered_terms": ["commitment device"],
+            "concepts": ["commitment device"],
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
