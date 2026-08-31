@@ -7,25 +7,29 @@ from typing import Any, Iterable
 
 from .analyze import _is_thin_overview, github_links, make_evidence, safe_readme
 from .boundary import annotate_candidate_mechanisms, build_boundary
+from .confirmation import evaluate_confirmation, pending_confirmation_candidates
 from .github import (
     ApiResult, GitHubAuthenticationError, GitHubClient, GitHubError,
     GitHubNotFoundError,
 )
 from .iteration import (
     apply_hypothesis_to_request, build_observation, default_session_state,
+    evidence_anchors,
     hard_stop_reason, iteration_stop_reasons, meaningful_gain, merge_unique,
     remaining_budget, validate_hypothesis_evidence,
 )
 from .models import (
-    DEFAULT_CONSECUTIVE_NO_GAIN, DEFAULT_DEEP_CANDIDATE_LIMIT,
+    Concept, DEFAULT_CONSECUTIVE_NO_GAIN, DEFAULT_CONFIRMATION_CANDIDATE_LIMIT,
+    DEFAULT_CONFIRMATION_ENRICH_LIMIT, DEFAULT_CONFIRMATION_QUERY_LIMIT,
+    DEFAULT_DEEP_CANDIDATE_LIMIT,
     DEFAULT_MAX_ITERATIONS, DEFAULT_QUERIES_PER_ITERATION,
     DEFAULT_QUICK_CANDIDATE_LIMIT, DEFAULT_README_ENRICH_PER_ITERATION,
     DEFAULT_SESSION_QUERY_BUDGET, HARD_STOP_REASONS,
     Refinement, SearchHypothesis, SearchRequest, repo_key,
 )
 from .queries import (
-    build_queries, code_filename_query, hypothesis_queries, indexed_groups,
-    query_fingerprint, reverse_reference_query,
+    build_queries, code_filename_query, confirmation_queries, hypothesis_queries,
+    indexed_groups, query_fingerprint, reverse_reference_query,
 )
 from .selection import (
     SHORTLIST_LIMIT, candidate_allowed, covered_core_ids, probe_select,
@@ -286,6 +290,57 @@ def _compact_search_output(output: dict[str, Any], limit: int = SEARCH_OUTPUT_MA
         )
         if isinstance(values, list) and len(values) > 5
     ])
+    confirmation_containers = [
+        (container, name, values)
+        for container in (
+            output.get("boundary") or {},
+            (output.get("observation") or {}).get("boundary") or {},
+            output.get("observation") or {},
+        )
+        for name in ("confirmation_queue", "mechanism_confirmations")
+        if isinstance((values := container.get(name)), list)
+    ]
+    stages.append([
+        (record, name, [
+            {
+                key: source[key]
+                for key in (
+                    "repo", "source_field", "evidence_id", "evidence_text",
+                    "core_use_case", "request_anchored",
+                    "mechanism_anchored",
+                    "evidence_relevance_score", "retrieval_stage",
+                )
+                if key in source
+            } | {
+                "evidence_text": str(source.get("evidence_text") or "")[:120],
+            }
+            for source in (record.get(name) or [])[:1]
+        ])
+        for _, _, values in confirmation_containers for record in values
+        for name in ("discovery_evidence", "confirmation_evidence")
+        if len(record.get(name) or []) > 1
+        or any(
+            len(str(source.get("evidence_text") or "")) > 120
+            for source in record.get(name) or []
+        )
+    ])
+    stages.append([
+        (container, name, values[:3])
+        for container, name, values in confirmation_containers
+        if len(values) > 3
+    ])
+    observation = output.get("observation") or {}
+    stages.append([
+        (observation, name, None)
+        for name in ("confirmation_queue", "mechanism_confirmations")
+        if observation.get(name)
+    ])
+    observation_boundary = observation.get("boundary") or {}
+    stages.append([
+        (observation_boundary, name, None)
+        for name in ("confirmation_queue", "mechanism_confirmations")
+        if observation_boundary.get(name)
+    ])
 
     for stage in stages:
         if apply(stage):
@@ -321,6 +376,23 @@ def _compact_search_output(output: dict[str, Any], limit: int = SEARCH_OUTPUT_MA
         item.update(minimal)
     output["coverage"]["candidate_details_truncated"] = True
     output["coverage"]["output_truncation_level"] = "assessment_minimal"
+    if _sync_output_bytes(output) > limit:
+        observation = output.get("observation") or {}
+        for key in (
+            "discovered_term_evidence", "confirmation_queue", "mechanism_confirmations",
+        ):
+            observation.pop(key, None)
+            (observation.get("boundary") or {}).pop(key, None)
+        boundary = output.get("boundary") or {}
+        evidence = list(boundary.get("discovered_term_evidence") or [])[:3]
+        for item in evidence:
+            item["sources"] = list(item.get("sources") or [])[:1]
+        boundary["discovered_term_evidence"] = evidence
+        boundary["confirmation_queue"] = list(boundary.get("confirmation_queue") or [])[:2]
+        boundary["mechanism_confirmations"] = list(
+            boundary.get("mechanism_confirmations") or []
+        )[:3]
+        output["coverage"]["boundary_details_truncated"] = True
     if _sync_output_bytes(output) > limit:
         raise ValueError(f"assessment-grade search output exceeds {limit} bytes")
 
@@ -758,6 +830,137 @@ class SearchEngine:
             ),
         }
 
+    def _run_confirmations(self, search_id: str, candidates: dict[str, dict[str, Any]],
+                           request: SearchRequest, state: dict[str, Any], *,
+                           iteration: int) -> tuple[
+                               bool, str | None, bool, int,
+                               list[dict[str, Any]], list[dict[str, Any]],
+                           ]:
+        """Run a bounded confirmation sub-stage without creating an iteration event."""
+        existing_records = list(state.get("confirmation_records") or [])
+        selected = [
+            item for item in candidates.values() if item.get("selected_for_assessment")
+        ]
+        assessment = build_boundary(
+            candidates.values(), selected, request,
+            confirmed_directions=state.get("confirmed_directions") or [],
+            confirmation_records=existing_records,
+        ).to_dict()
+        pending = pending_confirmation_candidates(
+            assessment, existing_records,
+            limit=DEFAULT_CONFIRMATION_CANDIDATE_LIMIT,
+        )
+        if not pending:
+            return False, None, False, 0, [], []
+
+        anchors = [
+            str(item.get("term") or "") for item in evidence_anchors(selected or candidates.values())
+            if str(item.get("term") or "").strip()
+        ]
+        known_fingerprints = self.store.query_fingerprints(search_id)
+        planned: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        candidate_plans: list[list[dict[str, Any]]] = []
+        for item in pending:
+            seeds = [
+                str(source.get("repo") or "")
+                for source in item.get("discovery_evidence") or []
+                if "/" in str(source.get("repo") or "")
+            ]
+            specificity = str(item.get("mechanism_specificity") or "")
+            per_candidate_limit = (
+                3 if specificity == "workflow_pattern"
+                else 2 if specificity == "project_category" else 1
+            )
+            queries, blocked = confirmation_queries(
+                str(item.get("candidate") or ""), request,
+                anchors=anchors, seed_repos=seeds,
+                known_fingerprints=known_fingerprints,
+                limit=per_candidate_limit,
+            )
+            candidate_plans.append(queries)
+            skipped.extend(blocked)
+            known_fingerprints.update(str(query["fingerprint"]) for query in queries)
+        for query_index in range(3):
+            for queries in candidate_plans:
+                if query_index >= len(queries):
+                    continue
+                if len(planned) < DEFAULT_CONFIRMATION_QUERY_LIMIT:
+                    planned.append(queries[query_index])
+                else:
+                    skipped.append({
+                        **queries[query_index],
+                        "skipped": True,
+                        "skip_reason": "confirmation_budget",
+                    })
+        for item in skipped:
+            self.store.add_query_history(
+                search_id, item["query"], item["kind"], 0,
+                iteration=iteration, fingerprint=item["fingerprint"], skipped=True,
+                skip_reason=str(item.get("skip_reason") or "duplicate"),
+            )
+
+        before_names = set(candidates)
+        failed = False
+        stale = False
+        cached_at = None
+        executed: list[dict[str, Any]] = []
+        recall_skipped: list[dict[str, Any]] = []
+        try:
+            stale, cached_at, executed, recall_skipped = self._recall(
+                search_id, planned, candidates, iteration=iteration,
+                known_fingerprints=self.store.query_fingerprints(search_id),
+            )
+        except GitHubAuthenticationError:
+            raise
+        except GitHubError:
+            failed = True
+        skipped.extend(recall_skipped)
+
+        confirmation_names = {
+            name for name, candidate in candidates.items()
+            if name not in before_names or any(
+                path.get("kind") == "query"
+                and str(path.get("query_kind") or "").startswith("confirmation_")
+                for path in candidate.get("discovery_paths") or []
+            )
+        }
+        confirmation_candidates = {
+            name: candidates[name] for name in confirmation_names if name in candidates
+        }
+        enriched = 0
+        enrich_failed = False
+        if confirmation_candidates:
+            enrich_stale, enrich_cache, enrich_failed, enriched = self._enrich(
+                confirmation_candidates, request, limit=DEFAULT_CONFIRMATION_ENRICH_LIMIT,
+            )
+            stale = stale or enrich_stale
+            cached_at = cached_at or enrich_cache
+        for candidate in candidates.values():
+            annotate_candidate_mechanisms(candidate, request)
+
+        refreshed = build_boundary(
+            candidates.values(), selected, request,
+            confirmed_directions=state.get("confirmed_directions") or [],
+            confirmation_records=existing_records,
+        ).to_dict()
+        refreshed_by_term = {
+            str(item.get("term") or "").casefold(): item
+            for item in refreshed.get("discovered_term_evidence") or []
+        }
+        records: list[dict[str, Any]] = []
+        for item in pending:
+            term = str(item.get("candidate") or "")
+            item_queries = [
+                query for query in executed
+                if str(query.get("term") or "").casefold() == term.casefold()
+            ]
+            records.append(evaluate_confirmation(
+                item, refreshed_by_term.get(term.casefold()), item_queries,
+                failed=failed or enrich_failed,
+            ))
+        return stale, cached_at, failed or enrich_failed, enriched, records, skipped
+
     def search(self, request: SearchRequest, mode: str, *, refresh: bool = False) -> dict[str, Any]:
         if mode not in {"quick", "deep"}:
             raise ValueError("mode must be quick or deep")
@@ -840,10 +1043,11 @@ class SearchEngine:
             rejected_directions=(snapshot.get("boundary") or {}).get("rejected_directions", []),
             negative_directions=state.get("negative_directions") or [],
             confirmed_directions=state.get("confirmed_directions") or [],
+            confirmation_records=state.get("confirmation_records") or [],
         ).to_dict()
         remaining = remaining_budget(
             iteration=int(state.get("iteration") or 0),
-            queries_used=self.store.query_count(search_id),
+            queries_used=self.store.normal_query_count(search_id),
             relation_calls_used=int(state.get("relation_calls_used") or 0),
             max_iterations=int(state["max_iterations"]) if "max_iterations" in state else self.max_iterations,
             queries_per_iteration=(
@@ -861,7 +1065,8 @@ class SearchEngine:
             relation_budget=int(state["relation_budget"]) if "relation_budget" in state else self.relation_budget,
         )
         coverage = {
-            "queries_executed": self.store.query_count(search_id),
+            "queries_executed": self.store.normal_query_count(search_id),
+            "confirmation_queries_executed": self.store.confirmation_query_count(search_id),
             "mechanism_count": len(boundary.get("recalled_mechanisms") or []),
             "presented_mechanism_count": len(boundary.get("presented_mechanisms") or []),
             "direction_coverage": round(
@@ -923,7 +1128,7 @@ class SearchEngine:
         previous_snapshot = self.store.latest_boundary_snapshot(search_id) or {}
         previous_boundary = previous_snapshot.get("boundary") or {}
         previous_origins = previous_boundary.get("mechanism_origins") or {}
-        queries_used = self.store.query_count(search_id)
+        queries_used = self.store.normal_query_count(search_id)
         remaining = remaining_budget(
             iteration=state["iteration"],
             queries_used=queries_used,
@@ -1065,16 +1270,6 @@ class SearchEngine:
                 candidates, request, limit=leftover,
             )
             stale, cached_at = stale or s, cached_at or cache_time
-        if calls >= self.relation_budget:
-            incomplete = "relationship_budget_reached"
-        elif recall_failed or code_failed:
-            incomplete = "refinement_partial_failure"
-        elif first_enrich_failed or second_enrich_failed:
-            incomplete = "enrichment_partial_failure"
-        elif relation_failed:
-            incomplete = "relationship_partial_failure"
-        else:
-            incomplete = None
         executed_any = bool(executed) or calls > 0 or code_calls > 0
         confirmed_directions = list(state.get("confirmed_directions") or [])
         if executed_any:
@@ -1085,6 +1280,56 @@ class SearchEngine:
                     *([hypothesis.target_direction] if hypothesis.target_direction else []),
                 ],
             )
+        state["confirmed_directions"] = confirmed_directions
+        (
+            confirmation_stale,
+            confirmation_cache,
+            confirmation_failed,
+            confirmation_enriched,
+            confirmation_records,
+            _confirmation_skipped,
+        ) = self._run_confirmations(
+            search_id, candidates, request, state, iteration=iteration,
+        )
+        stale, cached_at = stale or confirmation_stale, cached_at or confirmation_cache
+        all_confirmation_records = [
+            *list(state.get("confirmation_records") or []),
+            *confirmation_records,
+        ]
+        confirmed_terms = [
+            str(item.get("candidate") or "")
+            for item in confirmation_records
+            if item.get("confirmation_status") == "confirmed"
+        ]
+        known_directions = {
+            concept.term.casefold() for concept in request.exploration_directions
+        }
+        for term in confirmed_terms:
+            if term and term.casefold() not in known_directions:
+                request.exploration_directions.append(Concept.from_value(term))
+                additions.append({
+                    "term": term,
+                    "reason": "confirmed by independent core-use-case evidence",
+                    "evidence": "confirmation",
+                    "source_iteration": iteration,
+                })
+                known_directions.add(term.casefold())
+        confirmed_directions = merge_unique(confirmed_directions, confirmed_terms)
+        state["confirmation_records"] = all_confirmation_records
+        state["confirmed_directions"] = confirmed_directions
+        self.store.update_search_request(search_id, request.to_dict())
+        if calls >= self.relation_budget:
+            incomplete = "relationship_budget_reached"
+        elif recall_failed or code_failed:
+            incomplete = "refinement_partial_failure"
+        elif first_enrich_failed or second_enrich_failed:
+            incomplete = "enrichment_partial_failure"
+        elif relation_failed:
+            incomplete = "relationship_partial_failure"
+        elif confirmation_failed:
+            incomplete = "confirmation_partial_failure"
+        else:
+            incomplete = None
         state["iteration"] = iteration
         state["negative_directions"] = negatives
         state["exploration_additions"] = additions
@@ -1092,7 +1337,7 @@ class SearchEngine:
         state["relation_calls_used"] = int(state.get("relation_calls_used") or 0) + calls
         after_remaining = remaining_budget(
             iteration=iteration,
-            queries_used=self.store.query_count(search_id),
+            queries_used=self.store.normal_query_count(search_id),
             relation_calls_used=state["relation_calls_used"],
             max_iterations=self.max_iterations,
             queries_per_iteration=self.queries_per_iteration,
@@ -1102,13 +1347,14 @@ class SearchEngine:
         )
         output = self._finish(
             search_id, candidates, request, stale, cached_at, incomplete,
-            enriched_count=first_enriched + second_enriched,
+            enriched_count=first_enriched + second_enriched + confirmation_enriched,
             relation_calls=calls, code_calls=code_calls, stage=stage,
             rejected_directions=rejected, iteration=iteration,
             negative_directions=negatives, hypothesis=hypothesis.to_dict(),
             query_summary=self._query_summary(executed, skipped),
             remaining=after_remaining, exploration_additions=additions,
             confirmed_directions=confirmed_directions,
+            confirmation_records=all_confirmation_records,
             negative_terms=negatives, rejected_terms=rejected,
         )
         delta = output.get("boundary_delta") or {}
@@ -1208,7 +1454,8 @@ class SearchEngine:
         core_total = len(indexed_groups(request.core_concepts, "core"))
         core_covered = len(covered_core_ids(selected, request))
         return {
-            "queries_executed": self.store.query_count(search_id),
+            "queries_executed": self.store.normal_query_count(search_id),
+            "confirmation_queries_executed": self.store.confirmation_query_count(search_id),
             "enriched": sum("readme" in item for item in items),
             "enriched_this_phase": enriched_count,
             "omitted": max(0, len(items) - len(selected)),
@@ -1233,6 +1480,7 @@ class SearchEngine:
                 remaining: dict[str, int] | None = None,
                 exploration_additions: list[dict[str, Any]] | None = None,
                 confirmed_directions: list[str] | None = None,
+                confirmation_records: list[dict[str, Any]] | None = None,
                 negative_terms: Iterable[str] = (),
                 rejected_terms: Iterable[str] = ()) -> dict[str, Any]:
         concept_terms = self._concept_terms(request)
@@ -1288,6 +1536,7 @@ class SearchEngine:
             rejected_directions=rejected_directions,
             negative_directions=negatives,
             confirmed_directions=confirmed_directions,
+            confirmation_records=confirmation_records or [],
         ).to_dict()
         coverage.update({
             "iteration": iteration,
@@ -1310,7 +1559,7 @@ class SearchEngine:
         )
         budget = remaining or remaining_budget(
             iteration=iteration,
-            queries_used=self.store.query_count(search_id),
+            queries_used=self.store.normal_query_count(search_id),
             relation_calls_used=relation_calls,
             max_iterations=self.max_iterations,
             queries_per_iteration=self.queries_per_iteration,
@@ -1358,6 +1607,7 @@ class SearchEngine:
             rejected_directions=(snapshot.get("boundary") or {}).get("rejected_directions", []),
             negative_directions=state.get("negative_directions") or [],
             confirmed_directions=state.get("confirmed_directions") or [],
+            confirmation_records=state.get("confirmation_records") or [],
         ).to_dict()
         explored = boundary.get("explored_directions", [])
         unexplored = boundary.get("unexplored_directions", [])
@@ -1374,7 +1624,7 @@ class SearchEngine:
         )
         remaining = remaining_budget(
             iteration=int(state.get("iteration") or 0),
-            queries_used=self.store.query_count(search_id),
+            queries_used=self.store.normal_query_count(search_id),
             relation_calls_used=int(state.get("relation_calls_used") or 0),
             max_iterations=self.max_iterations,
             queries_per_iteration=self.queries_per_iteration,

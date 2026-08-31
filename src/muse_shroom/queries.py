@@ -402,6 +402,67 @@ def hypothesis_queries(hypothesis: SearchHypothesis, request: SearchRequest,
     return executed, skipped
 
 
+def confirmation_queries(candidate: str, request: SearchRequest, *,
+                         anchors: Iterable[str] = (), seed_repos: Iterable[str] = (),
+                         known_fingerprints: Iterable[str] = (),
+                         limit: int = 3) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build bounded candidate-to-problem queries for mechanism confirmation."""
+    term = candidate.strip()
+    if not term or limit <= 0:
+        return [], []
+    suffix = _qualifiers(request)
+    contexts: list[tuple[str, str]] = []
+    seen_contexts: set[str] = set()
+    term_key = " ".join(term.casefold().split())
+
+    def add_context(raw: str, kind: str) -> None:
+        value = str(raw).strip()
+        key = " ".join(value.casefold().split())
+        if not value or not key or key == term_key or key in seen_contexts:
+            return
+        seen_contexts.add(key)
+        contexts.append((value, kind))
+
+    for concept in request.problem_concepts:
+        add_context(concept.term, "confirmation_problem")
+        for alias in concept.aliases[:1]:
+            add_context(alias, "confirmation_problem")
+    for anchor in anchors:
+        add_context(str(anchor), "confirmation_anchor")
+    for repo in seed_repos:
+        if "/" in str(repo):
+            add_context(str(repo), "confirmation_seed")
+
+    planned: list[dict[str, Any]] = []
+    for context, kind in contexts[:3]:
+        query = " ".join(
+            f'{_quote(term)} {_quote(context)} in:name,description,topics,readme {suffix}'.split()
+        )
+        planned.append({
+            "query": query,
+            "kind": kind,
+            "sort": "stars",
+            "concept_id": f"confirmation:{term_key}",
+            "term": term,
+            "lane_kind": "adjacent",
+            "fingerprint": query_fingerprint(query),
+        })
+
+    known = set(known_fingerprints)
+    executed: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for item in planned:
+        if item["fingerprint"] in known:
+            skipped.append({**item, "skipped": True, "skip_reason": "duplicate"})
+            continue
+        if len(executed) >= limit:
+            skipped.append({**item, "skipped": True, "skip_reason": "confirmation_budget"})
+            continue
+        known.add(item["fingerprint"])
+        executed.append(item)
+    return executed, skipped
+
+
 def refinement_queries(refinement: Refinement, request: SearchRequest,
                        limit: int = 10) -> list[dict[str, str]]:
     concepts = refinement.concepts

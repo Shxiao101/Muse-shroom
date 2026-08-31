@@ -12,6 +12,73 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "evaluation" / "fixtures"
 
 
+def _confirmation_records(raw_path: Path) -> list[dict[str, object]]:
+    payload = json.loads(raw_path.read_text(encoding="utf-8"))
+    records: list[dict[str, object]] = []
+    for result in payload.get("results") or []:
+        seen: set[tuple[str, str]] = set()
+        trace = (result.get("loop_diagnostics") or {}).get("boundary_trace") or []
+        for step in trace:
+            for item in step.get("confirmations") or []:
+                identity = (
+                    str(item.get("candidate") or "").casefold(),
+                    str(item.get("confirmation_status") or ""),
+                )
+                if not identity[0] or identity in seen:
+                    continue
+                seen.add(identity)
+                records.append({
+                    "prompt_id": result.get("prompt_id"),
+                    "candidate": item.get("candidate"),
+                    "confirmation_status": item.get("confirmation_status"),
+                    "confirmation_reason": item.get("confirmation_reason"),
+                    "confirmation_queries": list(item.get("confirmation_queries") or []),
+                    "discovery_repos": sorted({
+                        str(source.get("repo"))
+                        for source in item.get("discovery_evidence") or []
+                        if source.get("repo")
+                    }),
+                    "confirmation_repos": sorted({
+                        str(source.get("repo"))
+                        for source in item.get("confirmation_evidence") or []
+                        if source.get("repo")
+                    }),
+                })
+    return records
+
+
+def _write_confirmation_analysis(verdict_path: Path, dev_raw: Path,
+                                 holdout_raw: Path | None, output: Path) -> None:
+    verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+    suites: dict[str, object] = {}
+    for name, raw in (("development", dev_raw), ("holdout", holdout_raw)):
+        if raw is None or not raw.exists():
+            continue
+        suite = verdict.get(name) if "development" in verdict else verdict
+        aggregate = (suite or {}).get("aggregate") or {}
+        suites[name] = {
+            "metrics": {
+                key: aggregate.get(key) for key in (
+                    "confirmation_planned_count", "confirmation_executed_count",
+                    "confirmation_confirmed_count", "confirmation_rejected_count",
+                    "confirmation_unresolved_count", "confirmation_query_count",
+                    "confirmed_meaningful_count", "confirmed_synonym_count",
+                    "confirmation_precision", "confirmation_recall",
+                    "confirmation_cost_per_confirmed_mechanism",
+                )
+            },
+            "records": _confirmation_records(raw),
+        }
+    output.write_text(json.dumps({
+        "schema_version": 1,
+        "note": (
+            "confirmed_wrong_domain_count and blind precision require human labels; "
+            "automatic precision is Golden-known precision only"
+        ),
+        "suites": suites,
+    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def _run_worker(args: argparse.Namespace, prompts: Path, output: Path, data_dir: Path,
                 label: str, *, agentic: bool) -> None:
     command = [
@@ -46,6 +113,7 @@ def execute(args: argparse.Namespace) -> None:
     holdout_raw = output_dir / "boundary-holdout-agentic.raw.json"
     holdout_single = output_dir / "boundary-holdout-single-pass.raw.json"
     verdict = output_dir / "boundary-verdict.json"
+    confirmation_analysis = output_dir / "confirmation-analysis.json"
 
     with tempfile.TemporaryDirectory(prefix="muse-shroom-boundary-") as data_dir:
         root = Path(data_dir)
@@ -77,6 +145,10 @@ def execute(args: argparse.Namespace) -> None:
     if leakage.returncode:
         evaluator.append("--leakage-detected")
     completed = subprocess.run(evaluator, cwd=ROOT)
+    if verdict.exists():
+        _write_confirmation_analysis(
+            verdict, dev_raw, None if args.ci else holdout_raw, confirmation_analysis,
+        )
     print(json.dumps({
         "ok": completed.returncode == 0,
         "mode": args.action,
@@ -88,6 +160,7 @@ def execute(args: argparse.Namespace) -> None:
             "holdout_raw_results": str(holdout_raw),
         } if not args.ci else {}),
         "verdict": str(verdict),
+        "confirmation_analysis": str(confirmation_analysis),
     }, ensure_ascii=False, indent=2))
     if completed.returncode:
         raise SystemExit(completed.returncode)

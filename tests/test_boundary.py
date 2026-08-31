@@ -324,7 +324,8 @@ class BoundaryTests(unittest.TestCase):
         by_term = {item["term"]: item for item in boundary.discovered_term_evidence}
 
         self.assertIn("decision log", by_term)
-        self.assertEqual(by_term["decision log"]["kind"], "candidate_mechanism")
+        self.assertEqual(by_term["decision log"]["kind"], "project_category")
+        self.assertEqual(by_term["decision log"]["disposition"], "needs_confirmation")
         self.assertNotIn("bilingual decision", by_term)
         self.assertNotIn("each contribution", by_term)
         self.assertNotIn("full description", by_term)

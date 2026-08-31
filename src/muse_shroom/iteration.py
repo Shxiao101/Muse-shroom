@@ -4,6 +4,7 @@ from collections import Counter
 from typing import Any, Iterable
 
 from .boundary import _normalized, mechanism_distribution
+from .confirmation import confirmation_metrics
 from .selection import concept_coverage
 from .models import (
     ContractError,
@@ -24,6 +25,7 @@ def default_session_state() -> dict[str, Any]:
         "negative_directions": [],
         "exploration_additions": [],
         "confirmed_directions": [],
+        "confirmation_records": [],
         "relation_calls_used": 0,
         "consecutive_no_gain": 0,
         "stop_reason": None,
@@ -233,6 +235,8 @@ def build_observation(*, iteration: int, boundary: dict[str, Any],
             "discovered_term_evidence": list(
                 boundary.get("discovered_term_evidence") or []
             ),
+            "confirmation_queue": list(boundary.get("confirmation_queue") or []),
+            "mechanism_confirmations": list(boundary.get("mechanism_confirmations") or []),
             "negative_directions": list(boundary.get("negative_directions") or []),
             "rejected_directions": list(boundary.get("rejected_directions") or []),
             "mechanism_origins": dict(boundary.get("mechanism_origins") or {}),
@@ -256,6 +260,8 @@ def build_observation(*, iteration: int, boundary: dict[str, Any],
         "discovered_term_evidence": list(
             boundary.get("discovered_term_evidence") or []
         ),
+        "confirmation_queue": list(boundary.get("confirmation_queue") or []),
+        "mechanism_confirmations": list(boundary.get("mechanism_confirmations") or []),
         "exploration_additions": list(exploration_additions or []),
         "ambiguity_signals": ambiguity_signals(
             candidate_list, selected_list, request, boundary, coverage
@@ -389,15 +395,19 @@ def session_loop_diagnostics(store: Any, search_id: str) -> dict[str, Any]:
     history = store.query_history(search_id) if hasattr(store, "query_history") else []
     iterations = store.list_iterations(search_id) if hasattr(store, "list_iterations") else []
     iterate_snaps = [item for item in snapshots if item.get("stage") in {"iterate", "expand"}]
-    executed = [item for item in history if not item.get("skipped")]
-    duplicates = [
+    normal_history = [
         item for item in history
+        if not str(item.get("kind") or "").startswith("confirmation_")
+    ]
+    executed = [item for item in normal_history if not item.get("skipped")]
+    duplicates = [
+        item for item in normal_history
         if item.get("skip_reason") == "duplicate" or (
             item.get("skipped") and not item.get("skip_reason")
         )
     ]
     skipped_by_reason: dict[str, int] = {}
-    for item in history:
+    for item in normal_history:
         reason = str(item.get("skip_reason") or "")
         if item.get("skipped") and reason:
             skipped_by_reason[reason] = skipped_by_reason.get(reason, 0) + 1
@@ -445,6 +455,7 @@ def session_loop_diagnostics(store: Any, search_id: str) -> dict[str, Any]:
             retrieval_changes.append(bool(pool - previous_pool))
         if pool:
             previous_pool = pool
+    state = store.get_session_state(search_id) if hasattr(store, "get_session_state") else {}
     return {
         "iterations_used": max(
             (item.get("iteration") or 0) for item in executed_events
@@ -457,7 +468,7 @@ def session_loop_diagnostics(store: Any, search_id: str) -> dict[str, Any]:
             len(item["new_mechanisms"]) for item in per_iteration
         ],
         "boundary_gain_per_iteration": [item["boundary_gain"] for item in per_iteration],
-        "duplicate_query_rate": round(len(duplicates) / max(1, len(history)), 3),
+        "duplicate_query_rate": round(len(duplicates) / max(1, len(normal_history)), 3),
         "skipped_by_reason": skipped_by_reason,
         "candidate_novelty_per_iteration": [novelty.get(index, 0) for index in range(max_seen + 1)],
         "stop_reason": next(
@@ -467,6 +478,7 @@ def session_loop_diagnostics(store: Any, search_id: str) -> dict[str, Any]:
         "unexplored_directions_at_stop": list(latest.get("unexplored_directions") or []),
         "mode": "agentic-loop" if iterate_snaps else "single-pass",
         "boundary_trace": boundary_trace(store, search_id),
+        **confirmation_metrics(state.get("confirmation_records") or []),
     }
 
 
@@ -482,6 +494,7 @@ def boundary_trace(store: Any, search_id: str) -> list[dict[str, Any]]:
         for evidence in candidate.get("evidence") or []
         if str(evidence.get("id") or "").strip()
     }
+    seen_confirmations: set[tuple[str, str]] = set()
     for snapshot in snapshots:
         summary = snapshot.get("query_summary") or {}
         delta = snapshot.get("boundary_delta") or {}
@@ -494,6 +507,23 @@ def boundary_trace(store: Any, search_id: str) -> list[dict[str, Any]]:
         evidence_sources = [
             evidence_by_term[key] for key in promoted if key in evidence_by_term
         ]
+        confirmations = []
+        for record in boundary.get("mechanism_confirmations") or []:
+            identity = (
+                str(record.get("candidate") or "").casefold(),
+                str(record.get("confirmation_status") or ""),
+            )
+            if identity in seen_confirmations:
+                continue
+            seen_confirmations.add(identity)
+            confirmations.append(record)
+            if record.get("confirmation_status") == "confirmed":
+                evidence_sources.append({
+                    "term": record.get("candidate"),
+                    "kind": "confirmation",
+                    "sources": list(record.get("confirmation_evidence") or []),
+                    "discovery_sources": list(record.get("discovery_evidence") or []),
+                })
         for addition in hypothesis.get("add_exploration_directions") or []:
             if not isinstance(addition, dict):
                 continue
@@ -537,6 +567,7 @@ def boundary_trace(store: Any, search_id: str) -> list[dict[str, Any]]:
             ),
             "mechanism_normalizations": list(delta.get("mechanism_normalizations") or []),
             "boundary_gain": len(delta.get("new_mechanisms") or []),
+            "confirmations": confirmations,
         })
     return trace
 

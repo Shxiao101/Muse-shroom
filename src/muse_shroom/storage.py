@@ -383,6 +383,22 @@ class Store:
         row = self.db.execute("SELECT COUNT(*) FROM queries WHERE search_id=?", (search_id,)).fetchone()
         return int(row[0])
 
+    def normal_query_count(self, search_id: str) -> int:
+        row = self.db.execute(
+            """SELECT COUNT(*) FROM query_history
+               WHERE search_id=? AND skipped=0 AND kind NOT LIKE 'confirmation_%'""",
+            (search_id,),
+        ).fetchone()
+        return int(row[0])
+
+    def confirmation_query_count(self, search_id: str) -> int:
+        row = self.db.execute(
+            """SELECT COUNT(*) FROM query_history
+               WHERE search_id=? AND skipped=0 AND kind LIKE 'confirmation_%'""",
+            (search_id,),
+        ).fetchone()
+        return int(row[0])
+
     def get_candidate(self, full_name: str, search_id: str | None = None) -> dict[str, Any] | None:
         if search_id:
             row = self.db.execute(

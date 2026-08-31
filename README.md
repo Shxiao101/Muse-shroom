@@ -1,4 +1,4 @@
-# Muse-shroom 0.4.4
+# Muse-shroom 0.4.5
 
 Muse-shroom 是一个“让当前 Agent 帮你打破 GitHub 信息茧房”的本地搜索内核。它把可复现的 GitHub API 调用、SQLite 缓存、关系扩散和确定性排名放进 Python CLI，把自然语言理解和语义评价留给 Codex、Claude、Cursor 等宿主 Agent。
 
@@ -86,6 +86,7 @@ Cursor（`.cursor/mcp.json`）：
 ## 结果
 
 - 快搜一次 `search` 后 `rank`（`next_action` 为 `rank` 再为 `done`）；深搜在中间按 `observation` 做有限次 `iterate`。
+- 深搜会把中等置信度的新机制放入独立 confirmation stage；只有新的 core-use-case、多仓库一致支持或明确跨域迁移证据才会提升。`confirmation_queue`、`mechanism_confirmations` 及 confirmation 统计与普通 iteration 分开记录。
 - rank 由一个 Boundary-first composer 直接生成 `items` + `display_order`，共同优化 Anchor、Edge、Leap、Wildcard、新机制覆盖与重复控制。`popular` / `gems` / `adjacent` 只是在主列表确定后生成的兼容投影，不参与排序。
 - 评估必须引用候选上的 evidence ID；功能结论必须引用 README 片段。
 - 实现细节见 [`docs/search-internals.md`](docs/search-internals.md)。

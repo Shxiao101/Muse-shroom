@@ -122,7 +122,7 @@ VERB_BOUNDARY_TOKENS = {
 }
 INVALID_MECHANISM_PREFIXES = {
     "any", "around", "before", "both", "description", "each", "every",
-    "feature", "full", "implement", "ready", "sort", "ultimate", "your",
+    "feature", "free", "full", "implement", "ready", "sort", "ultimate", "your",
 }
 COMPOUND_MECHANISM_TAILS = {
     "item", "items", "log", "logs", "record", "records",
@@ -138,7 +138,7 @@ NON_MECHANISM_ENDINGS = {
 
 
 def _normalized(value: str) -> str:
-    return " ".join(TOKEN_RE.findall(value.casefold()))
+    return " ".join(TOKEN_RE.findall(value.casefold().replace("_", " ")))
 
 
 def _contains_normalized(haystack: str, needle: str) -> bool:
@@ -169,7 +169,10 @@ def _canonical_token_key(value: str) -> str:
 def _request_relevance(text: str, concepts: Iterable[Concept]) -> tuple[bool, bool]:
     """Return exact-phrase and informative-token request relevance signals."""
     normalized = _normalized(text)
-    text_tokens = set(normalized.split())
+    def token_key(token: str) -> str:
+        return token[:-1] if len(token) > 4 and token.endswith("s") else token
+
+    text_tokens = {token_key(token) for token in normalized.split()}
     exact = False
     token_match = False
     for concept in concepts:
@@ -180,7 +183,7 @@ def _request_relevance(text: str, concepts: Iterable[Concept]) -> tuple[bool, bo
             if _contains_normalized(normalized, term):
                 exact = True
             informative = {
-                token for token in term.split()
+                token_key(token) for token in term.split()
                 if token not in REQUEST_RELEVANCE_STOPWORDS
             }
             overlap = informative & text_tokens
@@ -226,6 +229,15 @@ def _incidental_source(candidate: dict[str, Any], source_field: str, text: str) 
     }
     if repo_name.startswith("awesome-") or {"awesome", "awesome list"} & topic_keys:
         return True, "list_item"
+    repo_tokens = set(_normalized(repo_name).split())
+    if repo_tokens & {"awesome", "catalog", "papers", "resources"}:
+        return True, "list_item"
+    if re.search(
+        r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+"
+        r"(?:19|20)\d{2}\b",
+        str(text).casefold(),
+    ):
+        return True, "changelog_or_release"
     if source_field == "relationship_detail":
         return True, "relationship_only"
     return False, "core_context"
@@ -725,6 +737,11 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
             for path in candidate.get("discovery_paths") or []
             if _normalized(str(path.get("term") or ""))
         }
+        confirmation_backed = any(
+            path.get("kind") == "query"
+            and str(path.get("query_kind") or "").startswith("confirmation_")
+            for path in candidate.get("discovery_paths") or []
+        )
         mechanism_distance = _term_distance(local_evidence, value, mechanism_known)
         direction_distance = _term_distance(local_evidence, value, direction_known)
         problem_distance = _term_distance(local_evidence, value, problem_known)
@@ -736,6 +753,9 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
         )
         local_direction_exact, local_direction_token = _request_relevance(
             local_evidence, request.exploration_directions
+        )
+        evidence_mechanism_exact, evidence_mechanism_token = _request_relevance(
+            evidence_text, [*request.mechanisms, *request.exploration_directions]
         )
         local_problem_exact = local_problem_exact and problem_distance <= 18
         local_mechanism_exact = local_mechanism_exact and mechanism_distance <= 12
@@ -806,6 +826,10 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
         source["evidence_relevance_reason"] = ",".join(dict.fromkeys(relevance_reasons))
         source["core_use_case"] = not incidental
         source["request_anchored"] = request_anchored and not incidental
+        source["mechanism_anchored"] = bool(
+            evidence_mechanism_exact or evidence_mechanism_token
+        ) and not incidental
+        source["retrieval_stage"] = "confirmation" if confirmation_backed else "discovery"
         if (
             mechanism_distance <= 12
             and any(_contains_normalized(evidence_normalized, term) for term in mechanism_known)
@@ -896,9 +920,16 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
                     evidence_id=str(relation.get("id") or relation_id), evidence_text=detail,
                     confidence=.78, relationship_backed=True,
                 )
+    promotable_specificities = {
+        "mechanism", "behavioral_signal", "intervention", "workflow_pattern",
+    }
+
     def term_kind(key: str) -> str:
-        _, _, _, promotable, _ = term_quality(key)
-        if not promotable:
+        _, _, specificity, _, _ = term_quality(key)
+        if (
+            specificity not in promotable_specificities
+            or term_disposition(key) != "direct_promote"
+        ):
             return "project_category"
         if any(
             source["relationship_backed"] and source["request_anchored"]
@@ -917,16 +948,14 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
         if len({str(source["source_field"]) for source in sources[key]}) >= 2:
             score = min(100, score + 6)
         specificity = _specificity_with_context(key, sources[key])
-        promotable_specificity = specificity in {
-            "mechanism", "behavioral_signal", "intervention", "workflow_pattern",
-        }
+        promotable_specificity = specificity in promotable_specificities
         request_anchored = bool(anchored_sources)
         confidence = (
             "high" if promotable_specificity and request_anchored and score >= 75
             else "medium" if promotable_specificity and request_anchored and score >= 50
             else "low"
         )
-        promotable = confidence in {"high", "medium"}
+        promotable = confidence == "high"
         best = max(
             score_sources, key=lambda source: int(source["evidence_relevance_score"]),
             default={},
@@ -938,10 +967,37 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
             reason = f"{reason},insufficient_specificity"
         return score, reason, specificity, promotable, confidence
 
+    def term_disposition(key: str) -> str:
+        score, _, specificity, promotable, confidence = term_quality(key)
+        if promotable:
+            return "direct_promote"
+        core_sources = [source for source in sources[key] if source["core_use_case"]]
+        if not core_sources:
+            return "reject"
+        if specificity in promotable_specificities:
+            # Medium evidence and concrete low-confidence mechanisms are checked
+            # in a separate stage instead of weakening the direct-promotion gate.
+            if confidence == "medium" or score >= 24:
+                return "needs_confirmation"
+            return "reject"
+        tokens = key.split()
+        uncertain_category = (
+            specificity == "project_category"
+            and len(tokens) >= 2
+            and tokens[-1] not in NON_MECHANISM_ENDINGS
+            and (
+                score >= 70
+                or (len(support_repos[key]) >= 2 and score >= 45)
+            )
+        )
+        return "needs_confirmation" if uncertain_category else "reject"
+
     ranked = sorted(
         support_repos,
         key=lambda key: (
-            0 if term_quality(key)[3] else 1,
+            {"direct_promote": 0, "needs_confirmation": 1, "reject": 2}[
+                term_disposition(key)
+            ],
             {"high": 0, "medium": 1, "low": 2}[term_quality(key)[4]],
             0 if term_kind(key) == "cross_domain_direction"
             else 1 if term_kind(key) == "candidate_mechanism" else 2,
@@ -962,6 +1018,7 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
         relevance_score, relevance_reason, specificity, promotable, promotion_confidence = (
             term_quality(key)
         )
+        disposition = term_disposition(key)
         result.append({
             "term": display[key],
             "kind": kind,
@@ -971,15 +1028,14 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
             "mechanism_specificity": specificity,
             "promotion_confidence": promotion_confidence,
             "promotable": promotable,
+            "disposition": disposition,
             "support_count": len(support_repos[key]),
             "sources": [
                 {
                     name: value for name, value in source.items()
                     if name not in {
                         "relationship_backed", "assessment_backed", "relevance_rank",
-                        "relevance_distance", "full_evidence_text", "core_use_case",
-                        "evidence_relevance_score", "evidence_relevance_reason",
-                        "request_anchored",
+                        "relevance_distance", "full_evidence_text",
                     }
                 }
                 for source in sources[key][:3]
@@ -1016,7 +1072,8 @@ def mechanism_distribution(candidates: Iterable[dict[str, Any]]) -> dict[str, in
 def build_boundary(candidates: Iterable[dict[str, Any]], presented: Iterable[dict[str, Any]],
                    request: SearchRequest, *, rejected_directions: Iterable[str] = (),
                    negative_directions: Iterable[str] = (),
-                   confirmed_directions: Iterable[str] | None = None) -> SearchBoundary:
+                   confirmed_directions: Iterable[str] | None = None,
+                   confirmation_records: Iterable[dict[str, Any]] = ()) -> SearchBoundary:
     candidate_list = list(candidates)
     presented_list = list(presented)
     recalled = mechanism_names(candidate_list)
@@ -1043,6 +1100,22 @@ def build_boundary(candidates: Iterable[dict[str, Any]], presented: Iterable[dic
         and concept.term.casefold() not in blocked_keys
     ]
     term_evidence = discovered_term_evidence(candidate_list, request)
+    queue = [
+        {
+            "candidate": str(item["term"]),
+            "discovery_evidence": list(item.get("sources") or []),
+            "confirmation_queries": [],
+            "confirmation_evidence": [],
+            "confirmation_status": "pending",
+            "confirmation_reason": str(item.get("evidence_relevance_reason") or ""),
+            "evidence_relevance_score": item.get("evidence_relevance_score"),
+            "mechanism_specificity": item.get("mechanism_specificity"),
+            "promotion_confidence": item.get("promotion_confidence"),
+            "support_count": item.get("support_count"),
+        }
+        for item in term_evidence
+        if item.get("disposition") == "needs_confirmation"
+    ]
     return SearchBoundary(
         recalled_mechanisms=recalled,
         presented_mechanisms=presented_names,
@@ -1057,6 +1130,8 @@ def build_boundary(candidates: Iterable[dict[str, Any]], presented: Iterable[dic
         rejected_directions=rejected,
         discovered_terms=[str(item["term"]) for item in term_evidence],
         discovered_term_evidence=term_evidence,
+        confirmation_queue=queue,
+        mechanism_confirmations=[dict(item) for item in confirmation_records],
         negative_directions=negatives,
     )
 

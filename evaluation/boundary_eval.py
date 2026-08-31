@@ -22,6 +22,11 @@ FORMAL_METRICS = (
     "duplicate_query_rate", "unexplored_directions_at_stop",
     "planned_iteration_count", "executed_iteration_count",
     "retrieval_changing_iteration_count",
+    "confirmation_planned_count", "confirmation_executed_count",
+    "confirmation_confirmed_count", "confirmation_rejected_count",
+    "confirmation_precision", "confirmation_recall",
+    "confirmed_meaningful_count", "confirmed_wrong_domain_count",
+    "confirmed_synonym_count", "confirmation_cost_per_confirmed_mechanism",
 )
 
 
@@ -274,6 +279,34 @@ def case_metrics(result: dict[str, Any], case: dict[str, Any] | None = None) -> 
         if loop.get("retrieval_changing_iteration_count") is not None
         else sum(bool(item.get("new_mechanisms")) for item in iteration_steps if item.get("queries"))
     )
+    confirmations: list[dict[str, Any]] = []
+    seen_confirmations: set[tuple[str, str]] = set()
+    for step in trace:
+        for item in step.get("confirmations") or []:
+            identity = (
+                _normalized(item.get("candidate")),
+                str(item.get("confirmation_status") or ""),
+            )
+            if not identity[0] or identity in seen_confirmations:
+                continue
+            seen_confirmations.add(identity)
+            confirmations.append(item)
+    confirmed_terms = [
+        str(item.get("candidate") or "") for item in confirmations
+        if item.get("confirmation_status") == "confirmed"
+    ]
+    acceptable = (case or {}).get("acceptable_new_mechanisms") or []
+    mainstream = (case or {}).get("mainstream_mechanisms") or []
+    confirmed_meaningful_matches = set().union(
+        *(_matches(term, acceptable) for term in confirmed_terms), set()
+    )
+    confirmed_synonyms = sum(bool(_matches(term, mainstream)) for term in confirmed_terms)
+    confirmation_query_count = int(loop.get("confirmation_query_count") or 0)
+    confirmation_confirmed_count = int(
+        loop.get("confirmation_confirmed_count")
+        if loop.get("confirmation_confirmed_count") is not None
+        else len(confirmed_terms)
+    )
     return {
         "prompt_id": result.get("prompt_id"),
         "retrieval_mechanism_redundancy": retrieval_redundancy,
@@ -291,6 +324,24 @@ def case_metrics(result: dict[str, Any], case: dict[str, Any] | None = None) -> 
         "planned_iteration_count": planned_iterations,
         "executed_iteration_count": executed_iterations,
         "retrieval_changing_iteration_count": retrieval_changing_iterations,
+        "confirmation_planned_count": int(loop.get("confirmation_planned_count") or 0),
+        "confirmation_executed_count": int(loop.get("confirmation_executed_count") or 0),
+        "confirmation_confirmed_count": confirmation_confirmed_count,
+        "confirmation_rejected_count": int(loop.get("confirmation_rejected_count") or 0),
+        "confirmation_unresolved_count": int(loop.get("confirmation_unresolved_count") or 0),
+        "confirmation_query_count": confirmation_query_count,
+        "confirmation_precision": round(
+            len(confirmed_meaningful_matches) / max(1, confirmation_confirmed_count), 3
+        ),
+        "confirmation_recall": round(
+            len(confirmed_meaningful_matches) / max(1, len(acceptable)), 3
+        ),
+        "confirmed_meaningful_count": len(confirmed_meaningful_matches),
+        "confirmed_wrong_domain_count": None,
+        "confirmed_synonym_count": confirmed_synonyms,
+        "confirmation_cost_per_confirmed_mechanism": round(
+            confirmation_query_count / max(1, confirmation_confirmed_count), 3
+        ),
         "queries_changed_after_initial": _queries_changed(trace),
         "evidence_backed_promotions": not missing_evidence,
         "missing_promotion_evidence": missing_evidence,
@@ -362,6 +413,39 @@ def summarize(payload: dict[str, Any], golden_cases: dict[str, dict[str, Any]] |
             "duplicate_only_iteration_count": sum(
                 max(0, item["planned_iteration_count"] - item["executed_iteration_count"])
                 for item in cases
+            ),
+            "confirmation_planned_count": sum(
+                item["confirmation_planned_count"] for item in cases
+            ),
+            "confirmation_executed_count": sum(
+                item["confirmation_executed_count"] for item in cases
+            ),
+            "confirmation_confirmed_count": sum(
+                item["confirmation_confirmed_count"] for item in cases
+            ),
+            "confirmation_rejected_count": sum(
+                item["confirmation_rejected_count"] for item in cases
+            ),
+            "confirmation_unresolved_count": sum(
+                item["confirmation_unresolved_count"] for item in cases
+            ),
+            "confirmation_query_count": sum(item["confirmation_query_count"] for item in cases),
+            "confirmed_meaningful_count": sum(
+                item["confirmed_meaningful_count"] for item in cases
+            ),
+            "confirmed_synonym_count": sum(item["confirmed_synonym_count"] for item in cases),
+            "confirmation_precision": round(
+                sum(item["confirmed_meaningful_count"] for item in cases)
+                / max(1, sum(item["confirmation_confirmed_count"] for item in cases)),
+                3,
+            ),
+            "confirmation_recall": round(
+                statistics.mean(item["confirmation_recall"] for item in cases), 3
+            ),
+            "confirmation_cost_per_confirmed_mechanism": round(
+                sum(item["confirmation_query_count"] for item in cases)
+                / max(1, sum(item["confirmation_confirmed_count"] for item in cases)),
+                3,
             ),
         },
         "verdict": verdict, "passed": passed, "cases": cases,

@@ -329,6 +329,8 @@ class SearchBoundary:
     rejected_directions: list[str] = field(default_factory=list)
     discovered_terms: list[str] = field(default_factory=list)
     discovered_term_evidence: list[dict[str, Any]] = field(default_factory=list)
+    confirmation_queue: list[dict[str, Any]] = field(default_factory=list)
+    mechanism_confirmations: list[dict[str, Any]] = field(default_factory=list)
     negative_directions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -404,6 +406,9 @@ DEFAULT_README_ENRICH_PER_ITERATION = 15
 DEFAULT_QUICK_CANDIDATE_LIMIT = 100
 DEFAULT_DEEP_CANDIDATE_LIMIT = 250
 DEFAULT_CONSECUTIVE_NO_GAIN = 2
+DEFAULT_CONFIRMATION_CANDIDATE_LIMIT = 4
+DEFAULT_CONFIRMATION_QUERY_LIMIT = 6
+DEFAULT_CONFIRMATION_ENRICH_LIMIT = 8
 HARD_STOP_REASONS = (
     "agent_stop", "max_iterations", "query_budget_exhausted",
     "duplicate_queries", "consecutive_no_gain",
