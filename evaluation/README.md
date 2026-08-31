@@ -46,7 +46,7 @@ The release gate passes when all eight prompts are rated, the candidate wins at 
 
 This v1 harness evaluates the 12-repository assessment shortlist and its evidence, which is the stage changed most heavily in v0.3.3. Final Agent-authored semantic assessments and ranking prose remain a separate human-in-the-loop evaluation.
 
-Raw v0.4 results also include `boundary`, `boundary_delta`, and diagnostic-only `boundary_diagnostics`: mechanism count, presented mechanism count, mechanism redundancy, boundary gain, and direction coverage. They also include `loop_diagnostics`: iterations used, queries per iteration, new mechanisms per iteration, boundary gain per iteration, duplicate query rate (only `skip_reason=duplicate`), candidate novelty per iteration, stop reason, unexplored directions at stop, and the evidence trace. `version_worker.py` defaults to the historical single-pass A/B behavior; `--agentic` switches it to a deterministic observation-driven policy. The policy can promote only evidence emitted by the current observation and never reads Golden expected directions. Cassette replay must reproduce the same boundary for the same request and recorded responses.
+Raw v0.4 results also include `boundary`, `boundary_delta`, and diagnostic-only `boundary_diagnostics`. Retrieval-pool redundancy and final-presentation redundancy are reported separately, and `redundancy_scope` says whether presentation means `ranking_items`, `selected_for_assessment`, or `candidates`; the compatibility field `mechanism_redundancy` maps to presentation redundancy. Results also include `loop_diagnostics`: iterations used, queries per iteration, new mechanisms per iteration, boundary gain per iteration, duplicate query rate (only `skip_reason=duplicate`), candidate novelty per iteration, stop reason, unexplored directions at stop, and the evidence trace. `version_worker.py` defaults to the historical single-pass A/B behavior; `--agentic` switches it to a deterministic observation-driven policy. The policy can promote only evidence emitted by the current observation and never reads Golden expected directions. Cassette replay must reproduce the same boundary for the same request and recorded responses.
 
 The prompt fixture retains a duplicate `core_concepts` field solely so historical fixture validators can still inspect it. `version_worker.py` detects the checked-out request model: current versions consume the v0.4 fields, while older baseline worktrees receive a generated v0.3 request with problem concepts and mechanisms combined as core concepts.
 
@@ -54,12 +54,19 @@ The probe and shortlist stages cap a single repository owner at two entries. Thi
 
 ## Boundary evaluation
 
-Eight machine-readable mechanism-space Golden Cases live in
+Eight development/regression Golden Cases live in
 `evaluation/boundary-golden-cases.json`; their matching requests are isolated in
-`evaluation/boundary-prompts.json`. They define concept IDs and aliases for
+`evaluation/boundary-prompts.json`. Six separately reported holdout cases live
+under `evaluation/holdout/`. They define concept IDs and aliases for
 mainstream coverage, acceptable new mechanisms, repetition groups, required
 cross-mechanism directions, and release thresholds. They deliberately require
-neither a particular repository nor an exact output phrase.
+neither a particular repository nor an exact output phrase. Holdout expected
+terms and aliases must never be copied into production phrase hints, requests,
+or the deterministic policy. Run the enforced normalized check with:
+
+```console
+python evaluation/check_boundary_leakage.py
+```
 
 Capture the complete flow once in a credential-bearing host context, then replay
 it fully offline:
@@ -69,16 +76,27 @@ python evaluation/run_boundary_eval.py capture
 python evaluation/run_boundary_eval.py replay
 ```
 
-The command writes a quick single-pass pack, then runs deep search, deterministic
-evidence-backed iterations, a fixture-driven Boundary rank, trace collection,
-and `boundary_eval.py`. Fixture assessments exist only to exercise the ranking
-structure; they explicitly do not replace blind semantic review. The evaluator distinguishes raw boundary
-gain from `meaningful_boundary_gain`, checks mainstream coverage, new-mechanism
-matches, cross-mechanism discovery, and repetition violations, then writes a
-release verdict. Golden data is loaded only by the evaluator after retrieval.
-A single-pass pack remains `insufficient_agentic_cases`, never a Boundary
-success. To score an existing pack directly:
+The command writes development and holdout single-pass packs, then runs deep
+search, deterministic evidence-backed iterations, fixture-driven Boundary rank,
+trace collection, and `boundary_eval.py` for both suites. Fixture assessments
+exist only to exercise ranking structure; they do not replace blind semantic
+review. The evaluator distinguishes raw, known meaningful, unknown, and invalid
+gain. Unknown evidence-backed mechanisms enter a `needs_review` queue instead of
+being discarded. Release verdicts are `pass`, `fail`, `needs_review`,
+`insufficient_data`, or `leakage_detected`; holdout and development are reported
+separately. Golden data is loaded only after retrieval.
+
+A committed synthetic cassette provides a fresh-clone, no-network regression:
 
 ```console
-python evaluation/boundary_eval.py evaluation/results/boundary/boundary-agentic.raw.json
+python evaluation/run_boundary_eval.py replay --ci
+```
+
+Rebuild it only from the deterministic synthetic source with
+`python evaluation/build_boundary_ci_fixture.py`. Real GitHub release cassettes
+remain under the ignored `evaluation/cassettes/` directory. To score an existing
+development pack directly:
+
+```console
+python evaluation/boundary_eval.py evaluation/results/boundary/boundary-development-agentic.raw.json
 ```

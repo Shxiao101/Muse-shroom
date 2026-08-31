@@ -9,8 +9,9 @@ from .models import BoundaryDelta, Concept, SearchBoundary, SearchRequest
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9_+#]+|[\u3400-\u9fff]+")
 GENERIC_DISCOVERED_TERMS = {
-    "ai", "app", "application", "apps", "github", "library", "open source",
-    "plugin", "project", "python", "sdk", "software", "tool", "tools",
+    "agent", "ai", "app", "application", "apps", "awesome", "awesome list",
+    "github", "library", "llm", "open source", "plugin", "project", "python",
+    "sdk", "software", "tool", "tools",
 }
 TECHNOLOGY_DISCOVERED_TERMS = {
     "android", "api", "c", "c++", "cli", "css", "docker", "electron",
@@ -21,10 +22,12 @@ MECHANISM_HINTS = {
     "accountability", "automation", "biofeedback", "blocker", "blocking",
     "commitment", "dashboard", "economics", "feedback", "friction", "habit",
     "interface", "intervention", "minimalism", "monitoring", "notification",
-    "pomodoro", "reminder", "sensemaking", "tracking", "visualization",
+    "pacing", "pomodoro", "reminder", "sensemaking", "tracking", "visualization",
     "wellbeing", "timer", "workflow",
 }
-DISCOVERY_MECHANISM_PHRASES = {
+# Optional precision aids only. This is not a complete mechanism vocabulary and
+# must never be extended from holdout benchmark answers.
+DISCOVERY_PHRASE_HINTS = {
     "accountability", "audio reactive", "behavior design", "behavioral economics",
     "behavioral friction", "biofeedback", "change impact", "commitment device",
     "creative coding", "decision hygiene", "decision record", "digital minimalism",
@@ -36,6 +39,11 @@ DISCOVERY_MECHANISM_PHRASES = {
     "risk visualization", "screen time", "sensemaking", "social accountability",
     "spaced repetition", "tangible interface", "usage tracking", "visual feedback",
     "website blocker",
+}
+GENERIC_MECHANISM_SUFFIXES = {
+    "archive", "auditing", "feedback", "friction", "graph", "history",
+    "journal", "mapping", "monitoring", "replay", "review", "timeline",
+    "tracking", "visualization",
 }
 CURATED_README_SNIPPETS = {
     "overview", "features", "use_cases", "motivation", "philosophy",
@@ -60,10 +68,18 @@ def _contains(surface: str, term: str) -> bool:
 
 def _structured_phrases(text: Any) -> list[str]:
     normalized = _normalized(str(text or ""))
-    return sorted(
-        phrase for phrase in DISCOVERY_MECHANISM_PHRASES
+    tokens = normalized.split()
+    generic = {
+        " ".join(tokens[start:end])
+        for end in range(1, len(tokens) + 1)
+        if tokens[end - 1] in GENERIC_MECHANISM_SUFFIXES
+        for start in range(max(0, end - 3), end - 1)
+    }
+    hinted = {
+        phrase for phrase in DISCOVERY_PHRASE_HINTS
         if _contains_normalized(normalized, phrase)
-    )
+    }
+    return sorted(hinted | generic)
 
 
 def _mechanism_concepts(request: SearchRequest) -> list[tuple[str, Concept, str]]:
@@ -209,6 +225,9 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
         )
         for term in concept.terms()
     }
+    exclusions = {
+        _normalized(value) for value in request.exclusions if _normalized(value)
+    }
     support_repos: dict[str, set[str]] = {}
     display: dict[str, str] = {}
     sources: dict[str, list[dict[str, Any]]] = {}
@@ -221,6 +240,7 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
         if (
             not key or key in known or key in GENERIC_DISCOVERED_TERMS
             or key in TECHNOLOGY_DISCOVERED_TERMS or len(key) < 3 or len(key) > 80
+            or any(_contains_normalized(key, exclusion) for exclusion in exclusions)
         ):
             return
         repo = str(candidate.get("full_name") or "").strip()

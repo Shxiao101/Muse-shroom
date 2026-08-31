@@ -9,8 +9,10 @@ from typing import Any
 
 try:
     from cassette import CassetteGitHub
+    from synthetic_fixture import SyntheticFixtureGitHub
 except ModuleNotFoundError:  # Imported as evaluation.version_worker in tests.
     from evaluation.cassette import CassetteGitHub
+    from evaluation.synthetic_fixture import SyntheticFixtureGitHub
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -27,6 +29,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--agentic", action="store_true")
     parser.add_argument("--agentic-iterations", type=int, default=2)
     parser.add_argument("--boundary-rank", action="store_true")
+    parser.add_argument("--synthetic-fixture", action="store_true")
     return parser
 
 
@@ -45,7 +48,18 @@ def _compact(candidate: dict[str, Any]) -> dict[str, Any]:
         "discovery_paths": candidate.get("discovery_paths", []),
         "evidence": candidate.get("evidence", []),
         "mechanisms": candidate.get("mechanisms", []),
+        "selected_for_assessment": bool(candidate.get("selected_for_assessment", False)),
     }
+
+
+def _mechanism_redundancy(candidates: list[dict[str, Any]]) -> float:
+    mechanisms = [
+        str(mechanism.get("name") or "").strip().casefold()
+        for candidate in candidates
+        for mechanism in candidate.get("mechanisms") or []
+        if str(mechanism.get("name") or "").strip()
+    ]
+    return round((len(mechanisms) - len(set(mechanisms))) / max(1, len(mechanisms)), 3)
 
 
 def deterministic_hypothesis(observation: dict[str, Any], used: set[str]) -> dict[str, Any] | None:
@@ -59,11 +73,11 @@ def deterministic_hypothesis(observation: dict[str, Any], used: set[str]) -> dic
             str(item.get("term") or "").casefold(),
         ),
     )
-    for item in evidence:
+    def promote(item: dict[str, Any]) -> dict[str, Any] | None:
         term = str(item.get("term") or "").strip()
         key = term.casefold()
         if not term or key in used:
-            continue
+            return None
         used.add(key)
         return {
             "decision": "continue",
@@ -72,6 +86,13 @@ def deterministic_hypothesis(observation: dict[str, Any], used: set[str]) -> dic
             "strategies": ["keyword"],
             "reason": "deterministic evaluation: promote observed evidence-backed term",
         }
+
+    for item in evidence:
+        if item.get("kind") not in {"candidate_mechanism", "cross_domain_direction"}:
+            continue
+        hypothesis = promote(item)
+        if hypothesis is not None:
+            return hypothesis
     for value in observation.get("unexplored_directions") or []:
         term = str(value).strip()
         key = term.casefold()
@@ -157,7 +178,12 @@ def main(argv: list[str] | None = None) -> int:
 
     args.data_dir.mkdir(parents=True, exist_ok=True)
     store = storage_module.Store(args.data_dir)
-    delegate = github_module.GitHubClient(store) if args.mode == "capture" else None
+    delegate = None
+    if args.mode == "capture":
+        delegate = (
+            SyntheticFixtureGitHub(github_module) if args.synthetic_fixture
+            else github_module.GitHubClient(store)
+        )
     github = CassetteGitHub(
         github_module, args.cassette, delegate=delegate,
         search_interval=args.search_interval,
@@ -224,8 +250,21 @@ def main(argv: list[str] | None = None) -> int:
             elif args.agentic:
                 snapshot = store.latest_boundary_snapshot(output["search_id"]) or {}
                 boundary = dict(snapshot.get("boundary") or boundary)
-            assignments = sum(len(item.get("mechanisms") or []) for item in candidates)
             presented_count = len(boundary.get("presented_mechanisms") or [])
+            recalled_candidates = list(session.get("candidates", []))
+            if ranking:
+                ranked_repos = {
+                    str(item.get("repo") or "").casefold()
+                    for item in ranking.get("items") or []
+                }
+                presentation_candidates = [
+                    item for item in recalled_candidates
+                    if str(item.get("full_name") or "").casefold() in ranked_repos
+                ]
+                redundancy_scope = "ranking_items"
+            else:
+                presentation_candidates = candidates
+                redundancy_scope = "selected_for_assessment" if args.agentic else "candidates"
             try:
                 iteration_module = importlib.import_module("muse_shroom.iteration")
                 loop_diagnostics = iteration_module.session_loop_diagnostics(
@@ -251,9 +290,12 @@ def main(argv: list[str] | None = None) -> int:
                 "boundary_diagnostics": {
                     "mechanism_count": len(boundary.get("recalled_mechanisms") or []),
                     "presented_mechanism_count": presented_count,
-                    "mechanism_redundancy": round(
-                        max(0, assignments - presented_count) / max(1, assignments), 3
+                    "retrieval_mechanism_redundancy": _mechanism_redundancy(recalled_candidates),
+                    "presentation_mechanism_redundancy": _mechanism_redundancy(
+                        presentation_candidates
                     ),
+                    "mechanism_redundancy": _mechanism_redundancy(presentation_candidates),
+                    "redundancy_scope": redundancy_scope,
                     "boundary_gain": len(
                         (output.get("boundary_delta") or {}).get("new_mechanisms") or []
                     ),

@@ -1,0 +1,130 @@
+{
+  "schema_version": 2,
+  "suite": "holdout",
+  "policy": {
+    "forbidden_tuning": [
+      "Do not add holdout terms or aliases to production phrase hints.",
+      "Do not inject expected directions into SearchRequest or deterministic_hypothesis.",
+      "Do not tune aliases to match a holdout run."
+    ],
+    "allowed_changes": [
+      "generic extraction", "ranking", "evidence scoring", "query generation", "mechanism normalization"
+    ]
+  },
+  "cases": [
+    {
+      "id":"photo-organization",
+      "mainstream_mechanisms":[
+        {"id":"folders","term":"folder organization","aliases":["photo folders"]},
+        {"id":"tagging","term":"manual tagging","aliases":["photo tags"]},
+        {"id":"dedupe","term":"duplicate removal","aliases":["photo deduplication"]}
+      ],
+      "acceptable_new_mechanisms":[
+        {"id":"perceptual-hash","term":"perceptual hashing","aliases":["similarity hashing","image fingerprinting"]},
+        {"id":"face-cluster","term":"face clustering","aliases":["people clustering"]},
+        {"id":"event-segment","term":"event segmentation","aliases":["temporal event grouping"]}
+      ],
+      "repetition_groups":[{"id":"gallery-clones","term":"gallery clones","aliases":["photo gallery","image gallery"],"max_results":3}],
+      "cross_mechanism_directions":[
+        {"id":"visual-similarity","term":"visual similarity search","aliases":["near duplicate detection"]},
+        {"id":"event-grouping","term":"event grouping","aliases":["moment clustering"]}
+      ],
+      "thresholds":{"min_mainstream_coverage":0.34,"min_meaningful_new_mechanisms":1,"require_cross_mechanism":true}
+    },
+    {
+      "id":"meeting-efficiency",
+      "mainstream_mechanisms":[
+        {"id":"agenda","term":"agenda template","aliases":["meeting agenda"]},
+        {"id":"notes","term":"meeting notes","aliases":["meeting minutes"]},
+        {"id":"calendar","term":"calendar scheduling","aliases":["meeting scheduler"]}
+      ],
+      "acceptable_new_mechanisms":[
+        {"id":"async-decision","term":"asynchronous decision log","aliases":["async decision log"]},
+        {"id":"speaking-balance","term":"speaking balance analysis","aliases":["participation balance"]},
+        {"id":"agenda-budget","term":"agenda time budget","aliases":["topic time budget"]}
+      ],
+      "repetition_groups":[{"id":"notes-clones","term":"meeting note clones","aliases":["meeting notes","minutes template"],"max_results":3}],
+      "cross_mechanism_directions":[
+        {"id":"async-first","term":"async first decision making","aliases":["asynchronous deliberation"]},
+        {"id":"participation","term":"participation equity","aliases":["conversation balance"]}
+      ],
+      "thresholds":{"min_mainstream_coverage":0.34,"min_meaningful_new_mechanisms":1,"require_cross_mechanism":true}
+    },
+    {
+      "id":"indie-churn",
+      "mainstream_mechanisms":[
+        {"id":"dashboard","term":"analytics dashboard","aliases":["product dashboard"]},
+        {"id":"retention","term":"retention chart","aliases":["retention report"]},
+        {"id":"events","term":"event tracking","aliases":["product events"]}
+      ],
+      "acceptable_new_mechanisms":[
+        {"id":"cohort","term":"behavioral cohort analysis","aliases":["cohort comparison"]},
+        {"id":"session-replay","term":"interaction replay","aliases":["user session playback"]},
+        {"id":"exit-survey","term":"exit intent survey","aliases":["cancellation survey"]}
+      ],
+      "repetition_groups":[{"id":"dashboard-clones","term":"analytics dashboard clones","aliases":["analytics dashboard","metrics dashboard"],"max_results":3}],
+      "cross_mechanism_directions":[
+        {"id":"qualitative-exit","term":"qualitative exit research","aliases":["cancellation feedback"]},
+        {"id":"behavior-path","term":"behavior path analysis","aliases":["journey sequence analysis"]}
+      ],
+      "thresholds":{"min_mainstream_coverage":0.34,"min_meaningful_new_mechanisms":1,"require_cross_mechanism":true}
+    },
+    {
+      "id":"remote-information-loss",
+      "mainstream_mechanisms":[
+        {"id":"wiki","term":"team wiki","aliases":["internal wiki"]},
+        {"id":"chat-search","term":"chat search","aliases":["message search"]},
+        {"id":"notes","term":"shared notes","aliases":["collaborative notes"]}
+      ],
+      "acceptable_new_mechanisms":[
+        {"id":"work-journal","term":"ambient work journal","aliases":["automatic work journal"]},
+        {"id":"provenance","term":"decision provenance","aliases":["decision lineage"]},
+        {"id":"handoff","term":"structured handoff protocol","aliases":["context handoff protocol"]}
+      ],
+      "repetition_groups":[{"id":"wiki-clones","term":"wiki clones","aliases":["team wiki","knowledge wiki"],"max_results":3}],
+      "cross_mechanism_directions":[
+        {"id":"context-provenance","term":"context provenance","aliases":["information lineage"]},
+        {"id":"handoff-capture","term":"handoff capture","aliases":["shift handover"]}
+      ],
+      "thresholds":{"min_mainstream_coverage":0.34,"min_meaningful_new_mechanisms":1,"require_cross_mechanism":true}
+    },
+    {
+      "id":"long-writing-consistency",
+      "mainstream_mechanisms":[
+        {"id":"outline","term":"outline editor","aliases":["story outline"]},
+        {"id":"characters","term":"character database","aliases":["character sheet"]},
+        {"id":"planner","term":"writing planner","aliases":["novel planner"]}
+      ],
+      "acceptable_new_mechanisms":[
+        {"id":"entity-consistency","term":"entity consistency checking","aliases":["character consistency check"]},
+        {"id":"narrative-network","term":"narrative relationship network","aliases":["story relationship map"]},
+        {"id":"continuity","term":"continuity linting","aliases":["story continuity checker"]}
+      ],
+      "repetition_groups":[{"id":"editor-clones","term":"writing editor clones","aliases":["markdown writing editor","novel editor"],"max_results":3}],
+      "cross_mechanism_directions":[
+        {"id":"narrative-constraints","term":"narrative constraint checking","aliases":["story invariant checks"]},
+        {"id":"entity-network","term":"entity relationship mapping","aliases":["character relationship network"]}
+      ],
+      "thresholds":{"min_mainstream_coverage":0.34,"min_meaningful_new_mechanisms":1,"require_cross_mechanism":true}
+    },
+    {
+      "id":"family-digital-preservation",
+      "mainstream_mechanisms":[
+        {"id":"cloud","term":"cloud backup","aliases":["online backup"]},
+        {"id":"sync","term":"file synchronization","aliases":["file sync"]},
+        {"id":"drive","term":"external drive backup","aliases":["hard drive backup"]}
+      ],
+      "acceptable_new_mechanisms":[
+        {"id":"fixity","term":"fixity verification","aliases":["checksum audit"]},
+        {"id":"migration","term":"format migration planning","aliases":["file format migration"]},
+        {"id":"redundancy","term":"geographic copy diversity","aliases":["multi location copies"]}
+      ],
+      "repetition_groups":[{"id":"backup-clones","term":"backup clones","aliases":["cloud backup","file backup"],"max_results":3}],
+      "cross_mechanism_directions":[
+        {"id":"integrity-audit","term":"long term integrity audit","aliases":["periodic checksum validation"]},
+        {"id":"format-longevity","term":"format longevity planning","aliases":["preservation format strategy"]}
+      ],
+      "thresholds":{"min_mainstream_coverage":0.34,"min_meaningful_new_mechanisms":1,"require_cross_mechanism":true}
+    }
+  ]
+}

@@ -2,7 +2,8 @@ import json
 import unittest
 from pathlib import Path
 
-from evaluation.boundary_eval import FORMAL_METRICS, load_golden, summarize
+from evaluation.boundary_eval import FORMAL_METRICS, load_golden, summarize, summarize_suites
+from evaluation.check_boundary_leakage import find_leaks
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,8 +102,110 @@ class BoundaryEvaluationTests(unittest.TestCase):
             "boundary_diagnostics": {},
             "loop_diagnostics": {"iterations_used": 0},
         }]})
-        self.assertEqual(result["verdict"], "insufficient_agentic_cases")
+        self.assertEqual(result["verdict"], "insufficient_data")
         self.assertIsNone(result["passed"])
+
+    def test_retrieval_redundancy_does_not_fail_diverse_presentation(self):
+        recalled = [
+            {"repo": f"timer/{index}", "mechanisms": [{"name": "focus timer"}]}
+            for index in range(6)
+        ] + [{"repo": "well/bio", "mechanisms": [{"name": "biofeedback"}]}]
+        payload = {"results": [{
+            "prompt_id": "focus",
+            "ranking": {"items": [{"repo": "timer/0"}, {"repo": "well/bio"}]},
+            "candidates": recalled,
+            "recalled_candidates": recalled,
+            "loop_diagnostics": {
+                "iterations_used": 1, "boundary_gain_per_iteration": [1],
+                "boundary_trace": [
+                    {"stage": "search", "queries": ["focus"], "mechanisms_found": ["focus timer", "task workflow"]},
+                    {"stage": "iterate", "queries": ["biofeedback"], "new_mechanisms": ["biofeedback"]},
+                ],
+            },
+        }]}
+        result = summarize(payload)
+        case = result["cases"][0]
+        self.assertEqual(result["verdict"], "pass")
+        self.assertGreater(case["retrieval_mechanism_redundancy"], 0.5)
+        self.assertEqual(case["repetition_violations"], [])
+        self.assertEqual(case["redundancy_scope"], "ranking_items")
+
+    def test_repetitive_presentation_fails_even_with_diverse_recall(self):
+        candidates = [
+            {"repo": f"timer/{index}", "mechanisms": [{"name": "focus timer"}]}
+            for index in range(4)
+        ] + [
+            {"repo": "well/bio", "mechanisms": [{"name": "biofeedback"}]},
+            {"repo": "work/tasks", "mechanisms": [{"name": "task workflow"}]},
+        ]
+        payload = {"results": [{
+            "prompt_id": "focus",
+            "ranking": {"items": [{"repo": f"timer/{index}"} for index in range(4)]},
+            "candidates": candidates, "recalled_candidates": candidates,
+            "loop_diagnostics": {
+                "iterations_used": 1, "boundary_gain_per_iteration": [1],
+                "boundary_trace": [
+                    {"stage": "search", "queries": ["focus"], "mechanisms_found": ["focus timer"]},
+                    {"stage": "iterate", "queries": ["biofeedback"], "new_mechanisms": ["biofeedback"]},
+                ],
+            },
+        }]}
+        result = summarize(payload)
+        self.assertEqual(result["verdict"], "fail")
+        self.assertEqual(result["cases"][0]["repetition_violations"][0]["scope"], "ranking_items")
+
+    def test_unknown_mechanism_is_reported_for_review(self):
+        payload = {"results": [{
+            "prompt_id": "focus",
+            "loop_diagnostics": {
+                "iterations_used": 1, "boundary_gain_per_iteration": [1],
+                "boundary_trace": [
+                    {"stage": "search", "queries": ["focus"], "mechanisms_found": ["focus timer"]},
+                    {
+                        "stage": "iterate", "queries": ["neuroadaptive cadence"],
+                        "new_mechanisms": ["neuroadaptive cadence"],
+                        "evidence_sources": [{
+                            "term": "neuroadaptive cadence",
+                            "sources": [{"repo": "lab/cadence", "evidence_id": "repo:lab/cadence:metadata"}],
+                        }],
+                    },
+                ],
+            },
+        }]}
+        result = summarize(payload)
+        case = result["cases"][0]
+        self.assertEqual(result["verdict"], "needs_review")
+        self.assertEqual(case["unknown_boundary_gain"], 1)
+        self.assertEqual(case["unknown_mechanisms"][0]["repos"], ["lab/cadence"])
+
+    def test_holdout_terms_are_not_in_production_phrase_hints(self):
+        self.assertEqual(find_leaks(), [])
+
+    def test_release_verdict_reports_development_and_holdout_and_honors_leakage(self):
+        payload = {"results": [{
+            "prompt_id": "focus",
+            "loop_diagnostics": {
+                "iterations_used": 1, "boundary_gain_per_iteration": [1],
+                "boundary_trace": [
+                    {
+                        "stage": "search", "queries": ["focus"],
+                        "mechanisms_found": ["focus timer", "website blocker"],
+                    },
+                    {
+                        "stage": "iterate", "queries": ["biofeedback"],
+                        "new_mechanisms": ["biofeedback"],
+                    },
+                ],
+            },
+        }]}
+        golden = load_golden()
+        combined = summarize_suites(payload, payload, golden, golden)
+        self.assertEqual(combined["verdict"], "pass")
+        self.assertEqual(combined["development"]["suite"], "development")
+        self.assertEqual(combined["holdout"]["suite"], "holdout")
+        leaked = summarize_suites(payload, payload, golden, golden, leakage=True)
+        self.assertEqual(leaked["verdict"], "leakage_detected")
+        self.assertFalse(leaked["passed"])
 
 
 if __name__ == "__main__":

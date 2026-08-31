@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "suite": "holdout",
+  "policy": "Expected mechanisms in the paired Golden file must not be used by search or deterministic policy.",
+  "prompts": [
+    {"id":"photo-organization","category":"personal-media","request":{"request":"整理多年积累的个人照片","problem_concepts":["personal photo organization"],"mechanisms":["folder organization","manual tagging","duplicate removal"],"exploration_directions":["photo archive workflow"],"artifact_types":["application","cli"],"exclusions":["stock photo","gallery theme"],"exploration_level":0.8}},
+    {"id":"meeting-efficiency","category":"collaboration","request":{"request":"减少团队会议低效","problem_concepts":["ineffective team meetings"],"mechanisms":["agenda template","meeting notes","calendar scheduling"],"exploration_directions":["team coordination workflow"],"artifact_types":["application","plugin"],"exclusions":["video conferencing clone"],"exploration_level":0.8}},
+    {"id":"indie-churn","category":"product-analytics","request":{"request":"帮助独立开发者理解用户流失","problem_concepts":["indie product user churn"],"mechanisms":["analytics dashboard","retention chart","event tracking"],"exploration_directions":["product learning workflow"],"artifact_types":["application","library"],"exclusions":["enterprise only"],"exploration_level":0.8}},
+    {"id":"remote-information-loss","category":"collaboration","request":{"request":"改善远程协作中的信息丢失","problem_concepts":["remote collaboration information loss"],"mechanisms":["team wiki","chat search","shared notes"],"exploration_directions":["distributed team memory"],"artifact_types":["application","plugin"],"exclusions":["chat client clone"],"exploration_level":0.8}},
+    {"id":"long-writing-consistency","category":"writing","request":{"request":"辅助长篇写作保持设定一致","problem_concepts":["long form writing consistency"],"mechanisms":["outline editor","character database","writing planner"],"exploration_directions":["story development workflow"],"artifact_types":["application","plugin"],"exclusions":["text generator"],"exploration_level":0.8}},
+    {"id":"family-digital-preservation","category":"digital-preservation","request":{"request":"帮助家庭数字资料长期保存","problem_concepts":["family digital preservation"],"mechanisms":["cloud backup","file synchronization","external drive backup"],"exploration_directions":["personal archive maintenance"],"artifact_types":["application","cli"],"exclusions":["enterprise only"],"exploration_level":0.8}}
+  ]
+}

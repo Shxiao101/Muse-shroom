@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "suite": "synthetic-ci",
+  "prompts": [
+    {
+      "id": "synthetic-focus-pacing",
+      "category": "synthetic-ci",
+      "request": {
+        "request": "improve sustainable focus",
+        "problem_concepts": ["sustainable focus"],
+        "mechanisms": ["focus timer"],
+        "exploration_directions": ["attention workflow"],
+        "artifact_types": ["application"],
+        "exclusions": ["course"],
+        "exploration_level": 0.8
+      }
+    }
+  ]
+}

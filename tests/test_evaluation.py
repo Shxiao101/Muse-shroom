@@ -40,6 +40,27 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(hypothesis["target_direction"], "requested direction")
         self.assertNotIn("promote_discovered_terms", hypothesis)
 
+    def test_agentic_policy_prefers_requested_direction_to_generic_project_category(self):
+        hypothesis = deterministic_hypothesis({
+            "unexplored_directions": ["requested direction"],
+            "discovered_term_evidence": [{
+                "term": "generic topic", "kind": "project_category",
+                "confidence": 0.95, "support_count": 20,
+            }],
+        }, set())
+        self.assertEqual(hypothesis["target_direction"], "requested direction")
+        self.assertNotIn("promote_discovered_terms", hypothesis)
+
+    def test_agentic_policy_does_not_promote_project_category_as_mechanism(self):
+        hypothesis = deterministic_hypothesis({
+            "unexplored_directions": [],
+            "discovered_term_evidence": [{
+                "term": "generic topic", "kind": "project_category",
+                "confidence": 0.95, "support_count": 20,
+            }],
+        }, set())
+        self.assertIsNone(hypothesis)
+
     def test_deterministic_rank_fixture_cites_readme_without_claiming_judgment(self):
         candidate = {
             "full_name": "owner/tool", "topics": ["focus"],
@@ -336,10 +357,12 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(candidate["muse_shroom_version"], muse_shroom_version)
             self.assertEqual(baseline["results"][0]["candidates"][0]["repo"], "owner/music-tool")
             self.assertEqual(candidate["results"][0]["candidates"][0]["repo"], "owner/music-tool")
-            self.assertEqual(set(candidate["results"][0]["boundary_diagnostics"]), {
-                "mechanism_count", "presented_mechanism_count", "mechanism_redundancy",
-                "boundary_gain", "direction_coverage", "newly_presented_mechanism_count",
-            })
+        self.assertEqual(set(candidate["results"][0]["boundary_diagnostics"]), {
+            "mechanism_count", "presented_mechanism_count", "mechanism_redundancy",
+            "retrieval_mechanism_redundancy", "presentation_mechanism_redundancy",
+            "redundancy_scope", "boundary_gain", "direction_coverage",
+            "newly_presented_mechanism_count",
+        })
 
 
 if __name__ == "__main__":

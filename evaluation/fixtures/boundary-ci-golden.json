@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "suite": "synthetic-ci",
+  "cases": [
+    {
+      "id": "synthetic-focus-pacing",
+      "mainstream_mechanisms": [
+        {"id": "timer", "term": "focus timer", "aliases": ["focus sessions"]}
+      ],
+      "acceptable_new_mechanisms": [
+        {"id": "adaptive-pacing", "term": "adaptive pacing", "aliases": ["adaptive session pacing"]}
+      ],
+      "repetition_groups": [
+        {"id": "timer-clones", "term": "timer clones", "aliases": ["focus timer"], "max_results": 2}
+      ],
+      "cross_mechanism_directions": [
+        {"id": "pacing", "term": "adaptive pacing", "aliases": ["fatigue aware pacing"]}
+      ],
+      "thresholds": {
+        "min_mainstream_coverage": 1.0,
+        "min_meaningful_new_mechanisms": 1,
+        "require_cross_mechanism": true
+      }
+    }
+  ]
+}

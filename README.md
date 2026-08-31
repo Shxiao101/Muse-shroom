@@ -109,7 +109,7 @@ python -m unittest tests.test_mcp -v
 
 设置 `MUSE_SHROOM_LIVE_SMOKE=1` 后可选运行实时 API 认证/契约 smoke test；稳定测试不会执行它。
 
-人工盲测协议和 8 个模糊需求位于 `evaluation/`。运行 `python evaluation/run_ab.py capture` 可在隔离源码树中录制基线与当前版本的共同 GitHub 响应并生成匿名评审包，`replay` 可完全离线复跑。Boundary release gate 使用独立的 8 个机制空间 case：`python evaluation/run_boundary_eval.py capture` 录制完整 agentic 流程，之后用 `replay` 离线重放并自动生成 verdict。Golden Cases 只参与结果评分，不会注入搜索策略；单轮结果也不会被误判为 Boundary 成功。人工 A/B release gate 仍独立运行。
+人工盲测协议和 8 个模糊需求位于 `evaluation/`。运行 `python evaluation/run_ab.py capture` 可在隔离源码树中录制基线与当前版本的共同 GitHub 响应并生成匿名评审包，`replay` 可完全离线复跑。Boundary release gate 分开报告 8 个 development case 与 6 个 holdout case；`python evaluation/run_boundary_eval.py capture` 录制完整 agentic 流程，之后用 `replay` 离线重放并自动生成 verdict。Golden Cases 只参与结果评分，不会注入搜索策略，`python evaluation/check_boundary_leakage.py` 会阻止 holdout 答案进入生产 phrase hints；`replay --ci` 可在 fresh clone 中使用已提交的 synthetic fixture 离线回归。人工 A/B release gate 仍独立运行。
 
 ## 首版边界
 

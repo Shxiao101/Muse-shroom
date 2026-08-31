@@ -174,6 +174,22 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(by_term["digital minimalism"]["kind"], "cross_domain_direction")
         self.assertGreater(by_term["biofeedback"]["confidence"], 0.8)
 
+    def test_discovered_directions_filter_generic_and_explicitly_excluded_topics(self):
+        request = SearchRequest.from_dict({
+            "request": "focus", "problem_concepts": ["focus"],
+            "exclusions": ["awesome list"],
+        })
+        candidate = repo(
+            "one/focus", 4, description="Adaptive pacing for focus",
+            topics=["agent", "llm", "awesome-list", "adaptive-pacing"],
+        )
+        candidate["evidence"] = [{
+            "id": "repo:one/focus:metadata", "kind": "github_metadata", "facts": {},
+        }]
+        boundary = build_boundary([candidate], [], request)
+        terms = {item["term"] for item in boundary.discovered_term_evidence}
+        self.assertEqual(terms, {"adaptive pacing"})
+
     def test_search_and_expand_save_snapshots_and_compute_delta(self):
         pomodoro = repo("focus/timer", 4, description="Focus helper")
         tracker = repo("focus/tracker", 3, description="Focus helper")
