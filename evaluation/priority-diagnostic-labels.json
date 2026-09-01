@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "label_source": "post_hoc_diagnostic_review",
+  "note": "Analysis-only labels. Never loaded by production search or evaluation.",
+  "holdout_named_taxonomy": [
+    {
+      "case_id": "photo-organization",
+      "candidate": "face recognition",
+      "classification": "B",
+      "basis": "Direct person-recognition evidence supports photo grouping, but frozen taxonomy does not express this mechanism and it is not a surface alias."
+    },
+    {
+      "case_id": "long-writing-consistency",
+      "candidate": "question generation",
+      "classification": "C",
+      "basis": "StorySage uses dynamic question generation to surface missing facts; this transfers a distinct elicitation mechanism into long-form consistency checking."
+    },
+    {
+      "case_id": "family-digital-preservation",
+      "candidate": "data deduplication",
+      "classification": "B",
+      "basis": "Direct archive and backup evidence supports eliminating redundant stored content, without a frozen taxonomy equivalent."
+    },
+    {
+      "case_id": "family-digital-preservation",
+      "candidate": "data encryption",
+      "classification": "B",
+      "basis": "Direct archive and backup evidence supports protecting preserved data at rest, without a frozen taxonomy equivalent."
+    }
+  ],
+  "labels": {
+    "development|focus|pomodoro technique": "synonym",
+    "development|focus|pomodoro": "synonym",
+    "development|focus|ai development dashboard": "too_generic",
+    "development|focus|ai progress tracking": "too_generic",
+    "development|focus|desktop automation": "insufficient_evidence",
+    "development|codex-overthinking|asynchronous execution": "meaningful",
+    "development|codex-overthinking|prompt collaboration": "meaningful",
+    "development|codex-overthinking|tool execution": "insufficient_evidence",
+    "development|learning-habit|interview preparation": "too_generic",
+    "development|learning-habit|instant feedback": "meaningful",
+    "development|learning-habit|data synchronization": "meaningful",
+    "development|ai-music|image generation": "wrong_domain",
+    "development|ai-music|image harmonization": "wrong_domain",
+    "development|ai-music|object placement": "wrong_domain",
+    "development|ai-music|beat tracking": "meaningful",
+    "development|ai-music|pitch detection": "meaningful",
+    "development|phone-distraction|opencv visualization": "insufficient_evidence",
+    "development|phone-distraction|landmark detection": "meaningful",
+    "development|phone-distraction|object detection": "meaningful",
+    "development|code-review|requirements generation": "meaningful",
+    "development|code-review|fixed decision": "insufficient_evidence",
+    "development|code-review|performance optimization": "too_generic",
+    "development|long-project-motivation|security review": "wrong_domain",
+    "development|long-project-motivation|workflow evaluation": "meaningful",
+    "development|long-project-motivation|monitoring": "too_generic",
+    "development|long-project-motivation|uptime monitoring": "too_generic",
+    "development|long-project-motivation|agentic workflow": "insufficient_evidence",
+    "development|personal-knowledge|explicit decision": "meaningful",
+    "development|personal-knowledge|contradiction tracking": "meaningful",
+    "development|personal-knowledge|sourced coordination": "meaningful",
+    "development|personal-knowledge|content recommendation": "too_generic",
+    "development|ai-music|score generation": "meaningful",
+    "development|phone-distraction|distraction detection": "meaningful",
+    "development|personal-knowledge|data synchronization": "meaningful",
+    "holdout|photo-organization|face recognition": "meaningful",
+    "holdout|photo-organization|perceptual hashing": "meaningful",
+    "holdout|photo-organization|identity verification": "wrong_domain",
+    "holdout|meeting-efficiency|decision log": "meaningful",
+    "holdout|indie-churn|cohort analysis": "meaningful",
+    "holdout|remote-information-loss|decision log": "meaningful",
+    "holdout|long-writing-consistency|question generation": "meaningful",
+    "holdout|family-digital-preservation|data deduplication": "meaningful",
+    "holdout|family-digital-preservation|data encryption": "meaningful"
+  }
+}
