@@ -270,18 +270,15 @@ def new_mechanisms_for(candidate: dict[str, Any], presented: Iterable[str]) -> l
     return [name for name in candidate_mechanism_names(candidate) if name.casefold() not in presented_keys]
 
 
-def assign_boundary_role(item: dict[str, Any], presented_before: Iterable[str],
-                         *, matched_kinds: Iterable[str] = ()) -> str:
+def assign_boundary_role(item: dict[str, Any], presented_before: Iterable[str]) -> str:
     new = new_mechanisms_for(item, presented_before)
     transfer = item.get("assessment", {}).get("transferability")
     if transfer is None:
         transfer = 50.0
     popularity = float((item.get("scores") or {}).get("components", {}).get("popularity_percentile") or 0)
-    kinds = set(matched_kinds)
-    adjacent = "adjacent" in kinds
-    if new and float(transfer) >= 70 and (adjacent or popularity < 55):
+    if new and float(transfer) >= 70 and popularity < 55:
         return "wildcard"
-    if new and (adjacent or float(transfer) >= 55):
+    if new and float(transfer) >= 55:
         return "leap"
     if popularity >= 60 and not new:
         return "anchor"

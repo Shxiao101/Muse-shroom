@@ -7,7 +7,10 @@ from dataclasses import asdict
 from typing import Any, Iterable
 
 from .analyze import age_days
-from .boundary import annotate_candidate_mechanisms, build_boundary
+from .boundary import (
+    annotate_candidate_mechanisms, build_boundary, is_promotable_specificity,
+    is_promotable_term,
+)
 from .boundary_score import (
     RANK_BOUNDARY_WEIGHTS, RELEVANCE_GATE, TYPE_QUALITY_GATE,
     assign_boundary_role, boundary_summary, candidate_mechanism_names,
@@ -28,13 +31,23 @@ DIFFICULTY = {"easy": 100.0, "medium": 65.0, "hard": 25.0, "unknown": 45.0}
 
 
 def _presentation_candidates(candidates: Iterable[dict[str, Any]],
-                             rejected: Iterable[str]) -> tuple[list[dict[str, Any]], set[str]]:
+                             rejected: Iterable[str],
+                             nonpromotable_exploration: Iterable[str] = (),
+                             ) -> tuple[list[dict[str, Any]], set[str]]:
     views = []
     rejected_labels: set[str] = set()
+    blocked_auto_labels = {
+        str(value).strip().casefold()
+        for value in nonpromotable_exploration if str(value).strip()
+    }
     for candidate in candidates:
         kept = []
         for mechanism in candidate.get("mechanisms") or []:
-            if mechanism_rejected(mechanism, rejected):
+            auto_category = (
+                mechanism.get("role") == "exploration"
+                and str(mechanism.get("name") or "").strip().casefold() in blocked_auto_labels
+            )
+            if mechanism_rejected(mechanism, rejected) or auto_category:
                 labels = [mechanism.get("name") or "", *(mechanism.get("matched_terms") or [])]
                 rejected_labels.update(
                     str(label).strip().casefold()
@@ -192,12 +205,14 @@ def _mmr_select(pool: list[dict[str, Any]], count: int, selected: list[dict[str,
 
 
 def _explain_ranked_items(items: list[dict[str, Any]], presented_before: Iterable[str],
-                          by_name: dict[str, dict[str, Any]]) -> None:
+                          *, anchor_repo: str = "") -> None:
     presented = {str(name).casefold() for name in presented_before if str(name).strip()}
     for item in items:
-        kinds = by_name[item["repo"].lower()].get("matched_kinds", [])
         fresh = new_mechanisms_for(item, presented)
-        role = assign_boundary_role(item, presented, matched_kinds=kinds)
+        role = (
+            "anchor" if item["repo"].casefold() == anchor_repo.casefold()
+            else assign_boundary_role(item, presented)
+        )
         transfer = item["assessment"].get("transferability")
         reason = ""
         reasons = item.get("assessment", {}).get("reasons") or []
@@ -245,6 +260,8 @@ def _compatibility_buckets(
     for item in items:
         kinds = set(by_name[item["repo"].lower()].get("matched_kinds") or [])
         popularity = float(item["scores"]["components"].get("popularity_percentile") or 0)
+        # Confirmation is a retrieval/shortlist lane, not a legacy presentation
+        # bucket. Confirmed mechanisms are represented by the Boundary fields.
         if "adjacent" in kinds:
             buckets["adjacent"].append(item)
         elif popularity >= 60:
@@ -310,6 +327,7 @@ def rank_search(
 
     mode = str(session.get("mode") or "quick")
     previous_boundary = store.latest_boundary_snapshot(search_id)
+    session_state = store.get_session_state(search_id)
     rejected = list((previous_boundary or {}).get("boundary", {}).get("rejected_directions", []))
     negatives = list((previous_boundary or {}).get("boundary", {}).get("negative_directions", []))
     presented_before = list((previous_boundary or {}).get("boundary", {}).get("presented_mechanisms") or [])
@@ -318,8 +336,20 @@ def rank_search(
             ((store.latest_boundary_snapshot(search_id, ("search", "expand", "iterate")) or {}).get("boundary") or {})
             .get("presented_mechanisms") or []
         )
+    nonpromotable_confirmed = []
+    for record in session_state.get("confirmation_records") or []:
+        if record.get("confirmation_status") != "confirmed":
+            continue
+        term = str(record.get("candidate") or "")
+        specificity = str(record.get("mechanism_specificity") or "")
+        promotable = (
+            is_promotable_specificity(specificity)
+            if specificity else is_promotable_term(term)
+        )
+        if not promotable:
+            nonpromotable_confirmed.append(term)
     presentation_candidates, rejected_mechanism_labels = _presentation_candidates(
-        candidates, rejected,
+        candidates, rejected, nonpromotable_confirmed,
     )
     presentation_by_name = {repo_key(item): item for item in presentation_candidates}
     presented_before = [
@@ -422,7 +452,6 @@ def rank_search(
     anchor_pool = [
         item for item in eligible
         if item["scores"]["components"]["popularity_percentile"] >= 60
-        and "adjacent" not in set(by_name[item["repo"].lower()].get("matched_kinds") or [])
     ]
     anchor = _mmr_select(anchor_pool, 1, [], "boundary", boundary_ctx=boundary_ctx)
     used = {item["repo"].lower() for item in anchor}
@@ -435,7 +464,10 @@ def rank_search(
     # novelty, transferability, redundancy, and one mainstream anchor. Legacy
     # lanes are projected only after this order is final.
     display_presented_before: list[str] = []
-    _explain_ranked_items(display_items, display_presented_before, by_name)
+    _explain_ranked_items(
+        display_items, display_presented_before,
+        anchor_repo=str(anchor[0]["repo"]) if anchor else "",
+    )
     ranked_items = display_items
     display_order = [item["repo"] for item in display_items]
     selection_order = list(display_order)
@@ -445,7 +477,7 @@ def rank_search(
         candidates, [presentation_by_name[name] for name in returned_names],
         boundary_request, rejected_directions=rejected,
         negative_directions=negatives,
-        confirmed_directions=(store.get_session_state(search_id).get("confirmed_directions") or []),
+        confirmed_directions=(session_state.get("confirmed_directions") or []),
     ).to_dict()
     delta = store.save_boundary_snapshot(
         search_id, "rank", boundary,

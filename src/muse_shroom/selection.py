@@ -186,6 +186,8 @@ def _concept_query_score(candidate: dict[str, Any], concept_id: str) -> float:
 def nongeneric_query_source(candidate: dict[str, Any]) -> bool:
     for path in _query_paths(candidate):
         term = str(path.get("term") or "").strip()
+        # Confirmation paths qualify through their candidate term; the kind is
+        # intentionally not a blanket bypass for generic confirmation probes.
         if term and not is_generic_term(term):
             return True
         concept_id = str(path.get("concept_id") or "")
@@ -318,7 +320,9 @@ def score_candidates(candidates: Iterable[dict[str, Any]], request: SearchReques
             lanes.append("core")
         if has_query_source and (has_lexical or not enriched) and underexposure >= 20:
             lanes.append("gems")
-        if "adjacent" in kinds or adjacent >= 35:
+        # Confirmation probes remain eligible for the adjacent shortlist quota,
+        # matching their routing before confirmation became a distinct lane kind.
+        if kinds & {"adjacent", "confirmation"} or adjacent >= 35:
             lanes.append("adjacent")
         if recall >= 10 or relation >= 65:
             lanes.append("popular")

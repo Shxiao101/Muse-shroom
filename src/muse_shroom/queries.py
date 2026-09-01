@@ -446,7 +446,7 @@ def confirmation_queries(candidate: str, request: SearchRequest, *,
             "sort": "stars",
             "concept_id": f"confirmation:{term_key}",
             "term": term,
-            "lane_kind": "adjacent",
+            "lane_kind": "confirmation",
             "fingerprint": query_fingerprint(query),
         })
 

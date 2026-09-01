@@ -55,6 +55,16 @@ WORKFLOW_PATTERN_TAILS = {
     "auditing", "checklist", "device", "log", "loop", "record", "replay",
     "schedule", "template", "training", "workflow",
 }
+PACKAGING_HEADS = {
+    "addon", "addons", "app", "application", "applications", "apps", "boilerplate",
+    "boilerplates", "bot", "bots", "client", "clients", "extension", "extensions",
+    "plugin", "plugins", "starter", "starters", "theme", "themes", "wrapper",
+    "wrappers",
+}
+PACKAGING_PHRASES = {
+    "add on", "android app", "browser extension", "cli tool", "desktop app",
+    "ios app", "mobile app", "web app",
+}
 ARTIFACT_TAILS = {
     "document", "documentation", "foundation", "graph", "implement",
     "instrument", "journal", "version",
@@ -141,7 +151,11 @@ CONFIRMATION_SPECIFICITY_SCORES = {
     "workflow_pattern": 90,
     "behavioral_signal": 85,
     "project_category": 35,
+    "packaging": 15,
 }
+PROMOTABLE_SPECIFICITIES = frozenset({
+    "mechanism", "behavioral_signal", "intervention", "workflow_pattern",
+})
 CONFIRMATION_SOURCE_SCORES = {
     "readme_concept_match": 95,
     "readme_features": 90,
@@ -184,7 +198,7 @@ def _canonical_token_key(value: str) -> str:
 
 
 def _confirmation_priority(item: dict[str, Any], known_terms: Iterable[str]) -> dict[str, Any]:
-    """Score novelty and confirmability using only observed request/evidence data."""
+    """Score confirmability and retain novelty as diagnostic telemetry."""
     candidate = str(item.get("term") or item.get("candidate") or "")
     sources = list(item.get("sources") or item.get("discovery_evidence") or [])
     core_sources = [source for source in sources if source.get("core_use_case")]
@@ -220,7 +234,7 @@ def _confirmation_priority(item: dict[str, Any], known_terms: Iterable[str]) -> 
         default=0.0,
     )
     novelty = round(max(0, 100 * (1 - overlap)))
-    priority = round(0.70 * confirmability + 0.30 * novelty)
+    priority = confirmability
     reasons = []
     if request_anchored:
         reasons.append("request_anchored")
@@ -331,6 +345,8 @@ def _specificity_class(term: str) -> str:
         return "project_category"
     if len(tokens) >= 2 and tokens[0] in GENERIC_MECHANISM_MODIFIERS:
         return "project_category"
+    if tokens[-1] in PACKAGING_HEADS or _normalized(term) in PACKAGING_PHRASES:
+        return "packaging"
     if tokens[-1] in UMBRELLA_CATEGORY_TAILS and (
         len(tokens) == 1 or tokens[0] in BROAD_CATEGORY_HEADS
     ):
@@ -355,6 +371,13 @@ def _specificity_class(term: str) -> str:
         or tokens[-1] in TRANSFER_MECHANISM_TAILS
     ):
         return "mechanism"
+    if (
+        len(tokens) >= 2
+        and tokens[-1].endswith("ing")
+        and tokens[-1] not in NON_MECHANISM_ENDINGS
+        and ADJECTIVE_FORM_RE.search(tokens[-2])
+    ):
+        return "mechanism"
     return "project_category"
 
 
@@ -372,6 +395,19 @@ def _specificity_with_context(term: str, sources: Iterable[dict[str, Any]]) -> s
     ):
         return "workflow_pattern"
     return specificity
+
+
+def mechanism_specificity(term: str, sources: Iterable[dict[str, Any]] = ()) -> str:
+    """Return the semantic specificity used by confirmation and presentation gates."""
+    return _specificity_with_context(term, sources)
+
+
+def is_promotable_specificity(specificity: str) -> bool:
+    return str(specificity) in PROMOTABLE_SPECIFICITIES
+
+
+def is_promotable_term(term: str, sources: Iterable[dict[str, Any]] = ()) -> bool:
+    return is_promotable_specificity(mechanism_specificity(term, sources))
 
 
 def _term_distance(text: str, term: str, anchors: Iterable[str]) -> int:
@@ -1002,14 +1038,10 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
                     evidence_id=str(relation.get("id") or relation_id), evidence_text=detail,
                     confidence=.78, relationship_backed=True,
                 )
-    promotable_specificities = {
-        "mechanism", "behavioral_signal", "intervention", "workflow_pattern",
-    }
-
     def term_kind(key: str) -> str:
         _, _, specificity, _, _ = term_quality(key)
         if (
-            specificity not in promotable_specificities
+            specificity not in PROMOTABLE_SPECIFICITIES
             or term_disposition(key) != "direct_promote"
         ):
             return "project_category"
@@ -1030,7 +1062,7 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
         if len({str(source["source_field"]) for source in sources[key]}) >= 2:
             score = min(100, score + 6)
         specificity = _specificity_with_context(key, sources[key])
-        promotable_specificity = specificity in promotable_specificities
+        promotable_specificity = specificity in PROMOTABLE_SPECIFICITIES
         request_anchored = bool(anchored_sources)
         confidence = (
             "high" if promotable_specificity and request_anchored and score >= 75
@@ -1056,7 +1088,7 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
         core_sources = [source for source in sources[key] if source["core_use_case"]]
         if not core_sources:
             return "reject"
-        if specificity in promotable_specificities:
+        if specificity in PROMOTABLE_SPECIFICITIES:
             # Medium evidence and concrete low-confidence mechanisms are checked
             # in a separate stage instead of weakening the direct-promotion gate.
             if confidence == "medium" or score >= 24:
@@ -1205,12 +1237,18 @@ def build_boundary(candidates: Iterable[dict[str, Any]], presented: Iterable[dic
             "confirmation_reason": str(item.get("evidence_relevance_reason") or ""),
             "evidence_relevance_score": item.get("evidence_relevance_score"),
             "mechanism_specificity": item.get("mechanism_specificity"),
+            "specificity_tier": (
+                "mechanism"
+                if is_promotable_specificity(str(item.get("mechanism_specificity") or ""))
+                else "provisional_category"
+            ),
             "promotion_confidence": item.get("promotion_confidence"),
             "support_count": item.get("support_count"),
         }
         queued.update(_confirmation_priority(item, known_confirmation_terms))
         queue.append(queued)
     queue.sort(key=lambda item: (
+        0 if item.get("specificity_tier") == "mechanism" else 1,
         -int(item.get("confirmation_priority_score") or 0),
         str(item.get("candidate") or "").casefold(),
     ))

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from .boundary import _canonical_token_key, _normalized, _token_overlap
+from .boundary import (
+    PROMOTABLE_SPECIFICITIES, _canonical_token_key, _normalized, _token_overlap,
+)
 
 
 COMPLETED_STATUSES = {
@@ -49,6 +51,7 @@ def _skipped_record(item: dict[str, Any], status: str, reason: str) -> dict[str,
         key: item.get(key) for key in (
             "candidate", "discovery_evidence", "novelty_score", "confirmability_score",
             "confirmation_priority_score", "confirmation_priority_reason",
+            "mechanism_specificity", "specificity_tier",
         )
     } | {
         "confirmation_queries": [],
@@ -87,6 +90,10 @@ def plan_confirmation_candidates(boundary: dict[str, Any],
         )
     ]
     queue.sort(key=lambda item: (
+        0 if (
+            item.get("specificity_tier") == "mechanism"
+            or item.get("mechanism_specificity") in PROMOTABLE_SPECIFICITIES
+        ) else 1,
         -int(item.get("confirmation_priority_score") or 0),
         -int(item.get("confirmability_score") or 0),
         -int(item.get("novelty_score") or 0),
@@ -228,6 +235,7 @@ def evaluate_confirmation(queue_item: dict[str, Any], refreshed: dict[str, Any] 
             key: queue_item.get(key) for key in (
                 "novelty_score", "confirmability_score",
                 "confirmation_priority_score", "confirmation_priority_reason",
+                "mechanism_specificity", "specificity_tier",
             )
         },
     }

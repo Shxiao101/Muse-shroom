@@ -6,7 +6,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Iterable
 
 from .analyze import _is_thin_overview, github_links, make_evidence, safe_readme
-from .boundary import annotate_candidate_mechanisms, build_boundary
+from .boundary import (
+    annotate_candidate_mechanisms, build_boundary, is_promotable_specificity,
+)
 from .confirmation import (
     confirmation_query_stage_limit, evaluate_confirmation, plan_confirmation_candidates,
 )
@@ -1309,6 +1311,9 @@ class SearchEngine:
             str(item.get("candidate") or "")
             for item in confirmation_records
             if item.get("confirmation_status") == "confirmed"
+            and is_promotable_specificity(
+                str(item.get("mechanism_specificity") or "")
+            )
         ]
         known_directions = {
             concept.term.casefold() for concept in request.exploration_directions

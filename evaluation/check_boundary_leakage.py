@@ -37,10 +37,15 @@ def find_leaks(path: Path = DEFAULT_HOLDOUT) -> list[dict[str, Any]]:
     src = str(ROOT / "src")
     if src not in sys.path:
         sys.path.insert(0, src)
-    from muse_shroom.boundary import DISCOVERY_PHRASE_HINTS
+    from muse_shroom.boundary import (
+        DISCOVERY_PHRASE_HINTS, PACKAGING_HEADS, PACKAGING_PHRASES,
+    )
 
     expected = holdout_terms(path)
-    hints = {normalized(value): str(value) for value in DISCOVERY_PHRASE_HINTS}
+    hints = {
+        normalized(value): str(value)
+        for value in DISCOVERY_PHRASE_HINTS | PACKAGING_HEADS | PACKAGING_PHRASES
+    }
     return [
         {"term": hints[key], "normalized": key, "holdout_sources": expected[key]}
         for key in sorted(hints.keys() & expected.keys())

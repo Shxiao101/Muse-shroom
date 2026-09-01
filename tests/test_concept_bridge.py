@@ -7,7 +7,8 @@ from muse_shroom.models import Concept, SearchRequest
 from muse_shroom.search import SearchEngine, _compact_search_output, public_candidate
 from muse_shroom.selection import (
     SHORTLIST_LIMIT, balanced_select, concept_coverage, covered_core_ids,
-    lexical_concept_evidence, probe_select, score_candidates, shortlist_select,
+    lexical_concept_evidence, nongeneric_query_source, probe_select,
+    score_candidates, shortlist_select,
 )
 from muse_shroom.storage import Store
 
@@ -178,6 +179,26 @@ class ConceptBridgeTests(unittest.TestCase):
         self.assertNotIn("gems", scored["selection_lanes"])
         self.assertNotIn("concept_bridge", scored["selection_lanes"])
         self.assertFalse(lexical_concept_evidence(scored))
+
+    def test_confirmation_only_candidate_uses_adjacent_shortlist_lane(self):
+        request = SearchRequest.from_dict({"request": "focus", "core_concepts": ["focus"]})
+        candidate = repo("probe/decision-log", 12, description="unrelated utility")
+        candidate.update({
+            "matched_kinds": ["confirmation"],
+            "discovery_paths": [
+                path(
+                    "confirmation", '"decision log" "focus"',
+                    concept_id="confirmation:decision log", term="decision log",
+                ),
+            ],
+        })
+
+        scored = score_candidates([candidate], request, enriched=False)[0]
+
+        self.assertTrue(nongeneric_query_source(candidate))
+        self.assertEqual(scored["matched_kinds"], ["confirmation"])
+        self.assertIn("adjacent", scored["selection_lanes"])
+        self.assertNotIn("core", scored["selection_lanes"])
 
     def test_shortlist_is_at_most_twelve_and_release_is_shortlist_only(self):
         core = [repo(f"core/tool-{index}", index + 1, description="music AI creator tool") for index in range(10)]

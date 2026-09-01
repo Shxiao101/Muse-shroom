@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 
-from muse_shroom.boundary import build_boundary
+from muse_shroom.boundary import build_boundary, mechanism_specificity
 from muse_shroom.confirmation import (
     confirmation_query_stage_limit,
     confirmation_metrics,
@@ -232,7 +232,7 @@ class ConfirmationTests(unittest.TestCase):
         self.assertNotIn("decision log", boundary["discovered_terms"])
         self.assertEqual(boundary["confirmation_queue"], [])
 
-    def test_confirmation_queries_always_combine_candidate_and_context(self):
+    def test_confirmation_queries_use_context_and_a_distinct_lane(self):
         request = SearchRequest.from_dict({
             "request": "improve meeting efficiency",
             "problem_concepts": ["meeting efficiency"],
@@ -247,6 +247,7 @@ class ConfirmationTests(unittest.TestCase):
         self.assertGreaterEqual(len(queries), 2)
         self.assertTrue(all("decision log" in item["query"] for item in queries))
         self.assertTrue(all(item["kind"].startswith("confirmation_") for item in queries))
+        self.assertTrue(all(item["lane_kind"] == "confirmation" for item in queries))
 
     def test_confirmation_metrics_do_not_inflate_iteration_query_metrics(self):
         request = SearchRequest.from_dict({
@@ -404,6 +405,55 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(len(skipped), 1)
         self.assertEqual(skipped[0]["candidate"], "weak category")
         self.assertEqual(skipped[0]["confirmation_status"], "skipped_budget")
+
+    def test_typed_mechanism_preempts_higher_scoring_provisional_category(self):
+        boundary = {"confirmation_queue": [
+            {"candidate": "music notation", "specificity_tier": "provisional_category",
+             "confirmation_priority_score": 99, "confirmability_score": 99},
+            {"candidate": "image recognition", "specificity_tier": "mechanism",
+             "confirmation_priority_score": 60, "confirmability_score": 60},
+        ]}
+
+        selected, skipped = plan_confirmation_candidates(
+            boundary, limit=1, attempt_budget=1,
+        )
+
+        self.assertEqual([item["candidate"] for item in selected], ["image recognition"])
+        self.assertEqual([item["candidate"] for item in skipped], ["music notation"])
+
+    def test_packaging_and_morphological_mechanism_typing(self):
+        for term in ("chrome extension", "brave extension", "browser extension"):
+            self.assertEqual(mechanism_specificity(term), "packaging")
+        self.assertEqual(mechanism_specificity("decision template"), "workflow_pattern")
+        self.assertEqual(mechanism_specificity("estimated remaining"), "mechanism")
+        self.assertEqual(mechanism_specificity("integrated timeboxing"), "mechanism")
+
+    def test_packaging_term_never_enters_confirmation_queue(self):
+        request = SearchRequest.from_dict({
+            "request": "improve focus",
+            "problem_concepts": ["focus"],
+        })
+        candidate = repo("focus/browser", 10, description="Focus helper")
+        candidate["evidence"] = [
+            {"id": "repo:focus/browser:metadata", "kind": "github_metadata", "facts": {}},
+            {"id": "repo:focus/browser:readme:features", "kind": "readme_excerpt", "facts": {
+                "snippet_type": "features",
+                "text": "A Chrome extension supports focus with a distraction overlay.",
+            }},
+        ]
+
+        boundary = build_boundary([candidate], [], request).to_dict()
+
+        evidence = next(
+            item for item in boundary["discovered_term_evidence"]
+            if item["term"] == "chrome extension"
+        )
+        self.assertEqual(evidence["mechanism_specificity"], "packaging")
+        self.assertEqual(evidence["disposition"], "reject")
+        self.assertNotIn(
+            "chrome extension",
+            {item["candidate"] for item in boundary["confirmation_queue"]},
+        )
 
     def test_relationship_stage_is_reserved_for_high_priority_candidate(self):
         self.assertEqual(confirmation_query_stage_limit({

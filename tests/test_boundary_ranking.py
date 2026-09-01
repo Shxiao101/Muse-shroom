@@ -158,6 +158,56 @@ class BoundaryRankingTests(unittest.TestCase):
         self.assertIn("boundary_summary", result)
         self.assertIn("newly_presented_mechanisms", result)
 
+    def test_mixed_origin_candidate_can_fill_and_keep_the_anchor_role(self):
+        mixed = _item(
+            "main/mixed", 20000, "Pomodoro timer", kinds=["adjacent", "core"],
+        )
+        edge = _item("small/edge", 10, "Biofeedback focus sensor", kinds=["core"])
+        for item in (mixed, edge):
+            annotate_candidate_mechanisms(item, FOCUS_REQUEST)
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.create_search("s", FOCUS_REQUEST.to_dict(), "deep")
+            store.save_candidate("s", mixed)
+            store.save_candidate("s", edge)
+            result = rank_search(store, "s", [
+                _assess(mixed, relevance=96, uniqueness=75, transferability=80),
+                _assess(edge, relevance=75, uniqueness=90, transferability=75),
+            ])
+            store.close()
+
+        anchor = result["items"][0]
+        self.assertEqual(anchor["repo"].casefold(), "main/mixed")
+        self.assertEqual(anchor["boundary_role"], "anchor")
+        self.assertEqual(result["boundary_summary"]["anchor_count"], 1)
+
+    def test_nonpromotable_exploration_label_is_not_presented_as_a_mechanism(self):
+        request = SearchRequest.from_dict({
+            "request": "stay focused",
+            "problem_concepts": ["focus"],
+            "exploration_directions": ["chrome extension"],
+        })
+        item = _item("browser/tool", 100, "Chrome extension for focus", kinds=["confirmation"])
+        annotate_candidate_mechanisms(item, request)
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            store.create_search("s", request.to_dict(), "deep")
+            store.save_candidate("s", item)
+            state = store.get_session_state("s")
+            state["confirmation_records"] = [{
+                "candidate": "chrome extension",
+                "mechanism_specificity": "packaging",
+                "confirmation_status": "confirmed",
+            }]
+            store.save_session_state("s", state)
+            result = rank_search(store, "s", [_assess(item, relevance=90)])
+            store.close()
+
+        row = result["items"][0]
+        self.assertEqual(row["mechanisms"], [])
+        self.assertEqual(row["new_mechanisms"], [])
+        self.assertNotIn("chrome extension", row["why_different"].casefold())
+
     def test_rank_is_deterministic(self):
         items = [
             _item("pomo/one", 900, "Pomodoro timer"),
