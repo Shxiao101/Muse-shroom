@@ -373,6 +373,8 @@ def hypothesis_queries(hypothesis: SearchHypothesis, request: SearchRequest,
     for index, term in enumerate(hypothesis.promote_discovered_terms):
         add(term, "adjacent", f"hypothesis:discovered:{index}")
     for index, addition in enumerate(hypothesis.add_exploration_directions):
+        if addition.evidence == "host_hypothesis":
+            continue
         add(addition.term, "adjacent", f"hypothesis:exploration:{index}")
     for left in (hypothesis.concepts[:3] or ([hypothesis.target_mechanism] if hypothesis.target_mechanism else [])):
         for right in hypothesis.anchors[:3]:

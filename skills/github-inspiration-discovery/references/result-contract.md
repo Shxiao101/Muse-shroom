@@ -24,6 +24,8 @@ next_action
 
 `next_action` is `done` after a successful rank and is terminal. Do not call observe, inspect, search, iterate, shell, or other diagnostic tools after that successful rank; present the returned result directly.
 
+`semantic_hypotheses` is additive audit state. Status values are `proposed`, `searched`, `evidence_found`, `validated`, `rejected`, and `inconclusive`. Only validated hypotheses that appear in `items` may be presented as formal new mechanisms. Explorer retains the complete sidecar history.
+
 `boundary_role` meanings:
 
 - `anchor`: mainstream, reliable reference

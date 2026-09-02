@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from evaluation.check_boundary_leakage import find_leaks
+from evaluation.check_boundary_leakage import cross_mechanism_terms, find_leaks, find_skill_leaks
 from evaluation.version_worker import deterministic_hypothesis
 from muse_shroom.boundary import DISCOVERY_PHRASE_HINTS
 
@@ -18,6 +18,16 @@ ROOT = Path(__file__).resolve().parents[1]
 class BoundaryEvaluationIndependenceTests(unittest.TestCase):
     def test_holdout_expected_terms_and_aliases_are_not_phrase_hints(self):
         self.assertEqual(find_leaks(), [])
+
+    def test_skill_text_does_not_contain_cross_mechanism_answers(self):
+        expected = {}
+        for source in (
+            ROOT / "evaluation" / "boundary-golden-cases.json",
+            ROOT / "evaluation" / "holdout" / "boundary-golden-cases.json",
+        ):
+            for key, values in cross_mechanism_terms(source).items():
+                expected.setdefault(key, []).extend(values)
+        self.assertEqual(find_skill_leaks(expected), [])
 
     def test_leakage_checker_rejects_normalized_holdout_alias(self):
         leaked = sorted(DISCOVERY_PHRASE_HINTS)[0]

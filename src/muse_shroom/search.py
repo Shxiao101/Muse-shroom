@@ -31,7 +31,15 @@ from .models import (
     DEFAULT_MAX_ITERATIONS, DEFAULT_QUERIES_PER_ITERATION,
     DEFAULT_QUICK_CANDIDATE_LIMIT, DEFAULT_README_ENRICH_PER_ITERATION,
     DEFAULT_SESSION_QUERY_BUDGET, HARD_STOP_REASONS,
-    Refinement, SearchHypothesis, SearchRequest, repo_key,
+    HOST_HYPOTHESIS_EVIDENCE, Refinement, SearchHypothesis, SearchRequest, repo_key,
+)
+from .sidecar import (
+    SEMANTIC_CANDIDATE_CAP, SEMANTIC_PARTITION, SEMANTIC_QUERY_BUDGET,
+    SEMANTIC_README_PER_HYPOTHESIS, SEMANTIC_RELEASE_LIMIT,
+    apply_semantic_mechanism, base_artifact_snapshot, empty_sidecar_state,
+    hypothesis_record, plan_sidecar_queries, public_hypothesis, refresh_statuses,
+    select_assessment_candidate, select_enrichment_targets, sidecar_used_query_budget,
+    split_additions, validate_host_hypotheses,
 )
 from .queries import (
     build_queries, code_filename_query, confirmation_queries, hypothesis_queries,
@@ -465,7 +473,8 @@ class SearchEngine:
                  session_query_budget: int = DEFAULT_SESSION_QUERY_BUDGET,
                  readme_enrich_per_iteration: int = DEFAULT_README_ENRICH_PER_ITERATION,
                  consecutive_no_gain_limit: int = DEFAULT_CONSECUTIVE_NO_GAIN,
-                 reference_time: str | datetime | None = None) -> None:
+                 reference_time: str | datetime | None = None,
+                 semantic_sidecar: bool = True) -> None:
         self.store = store
         self.github = github
         self.candidate_limit = candidate_limit
@@ -477,6 +486,7 @@ class SearchEngine:
         self.readme_enrich_per_iteration = readme_enrich_per_iteration
         self.consecutive_no_gain_limit = consecutive_no_gain_limit
         self.reference_time = reference_time
+        self.semantic_sidecar = semantic_sidecar
         self._pool_cap = candidate_limit or DEFAULT_QUICK_CANDIDATE_LIMIT
 
     def _limit_for(self, mode: str | None = None, state: dict[str, Any] | None = None) -> int:
@@ -1084,6 +1094,7 @@ class SearchEngine:
         coverage = {
             "queries_executed": self.store.normal_query_count(search_id),
             "confirmation_queries_executed": self.store.confirmation_query_count(search_id),
+            "semantic_queries_executed": self.store.semantic_query_count(search_id),
             "mechanism_count": len(boundary.get("recalled_mechanisms") or []),
             "presented_mechanism_count": len(boundary.get("presented_mechanisms") or []),
             "direction_coverage": round(
@@ -1123,7 +1134,7 @@ class SearchEngine:
             next_action = "rank"
         else:
             next_action = "iterate"
-        return {
+        output = {
             "schema_version": 2,
             "search_id": search_id,
             "mode": mode,
@@ -1136,6 +1147,8 @@ class SearchEngine:
             "stale": bool(session["stale"]),
             "incomplete_phase": session.get("incomplete_phase"),
         }
+        self._attach_sidecar_observation(output, state)
+        return output
 
     def _run_iteration(self, search_id: str, hypothesis: SearchHypothesis, *, stage: str) -> dict[str, Any]:
         session = self.store.load_search(search_id)
@@ -1177,19 +1190,34 @@ class SearchEngine:
             _compact_search_output(output)
             return output
 
-        validate_hypothesis_evidence(
-            hypothesis, request, previous_boundary, candidates.values()
-        )
-
         iteration = int(state["iteration"]) + 1
         negatives = merge_unique(state.get("negative_directions") or [], hypothesis.negative_directions)
         rejected = merge_unique(
             previous_boundary.get("rejected_directions") or [], hypothesis.rejected_directions,
         )
+        sidecar_state = state.setdefault("semantic_sidecar", empty_sidecar_state())
+        host_additions, _ordinary = split_additions(hypothesis)
+        validate_hypothesis_evidence(
+            hypothesis, request, previous_boundary, candidates.values()
+        )
+        if host_additions:
+            validate_host_hypotheses(
+                hypothesis, request, iteration=iteration,
+                existing=list(sidecar_state.get("hypotheses") or []),
+                negatives=negatives,
+            )
         request, additions = apply_hypothesis_to_request(
             request, hypothesis, iteration=iteration,
             existing_additions=list(state.get("exploration_additions") or []),
         )
+        for addition in host_additions:
+            additions.append({
+                "term": addition.term,
+                "reason": addition.reason or hypothesis.reason,
+                "evidence": HOST_HYPOTHESIS_EVIDENCE,
+                "source_iteration": iteration,
+                "request_anchor": addition.request_anchor,
+            })
         self.store.update_search_request(search_id, request.to_dict())
         strategies = hypothesis.resolved_strategies()
         stale = bool(session["stale"])
@@ -1377,6 +1405,11 @@ class SearchEngine:
             confirmation_records=all_confirmation_records,
             negative_terms=negatives, rejected_terms=rejected,
         )
+        output = self._apply_sidecar(
+            search_id, output, request, host_additions, candidates,
+            negatives=negatives, iteration=iteration, state=state,
+            stale=stale, cached_at=cached_at,
+        )
         delta = output.get("boundary_delta") or {}
         skipped_all = bool(skipped) and not executed_any
         gained = meaningful_gain(
@@ -1422,6 +1455,288 @@ class SearchEngine:
         _compact_search_output(output)
         return output
 
+    def _attach_sidecar_observation(self, output: dict[str, Any], state: dict[str, Any]) -> None:
+        sidecar = state.get("semantic_sidecar") or empty_sidecar_state()
+        records = list(sidecar.get("hypotheses") or [])
+        refresh_statuses(records)
+        observation = output.setdefault("observation", {})
+        observation["semantic_hypotheses"] = [public_hypothesis(item) for item in records]
+        observation["sidecar_metrics"] = dict(sidecar.get("metrics") or {})
+        remaining = observation.setdefault("remaining_budget", {})
+        remaining["semantic_queries"] = max(
+            0, SEMANTIC_QUERY_BUDGET - sidecar_used_query_budget(sidecar),
+        )
+        remaining["semantic_hypotheses"] = max(0, 2 - len(records))
+        output["semantic_hypotheses"] = observation["semantic_hypotheses"]
+        output["sidecar_metrics"] = observation["sidecar_metrics"]
+
+    def _apply_sidecar(
+        self, search_id: str, output: dict[str, Any], request: SearchRequest,
+        host_additions: list[Any], base_candidates: dict[str, dict[str, Any]],
+        *, negatives: Iterable[str], iteration: int, state: dict[str, Any],
+        stale: bool, cached_at: str | None,
+    ) -> dict[str, Any]:
+        sidecar = state.setdefault("semantic_sidecar", empty_sidecar_state())
+        metrics = sidecar.setdefault("metrics", {})
+        boundary = output.get("boundary") or {}
+        selected = [
+            item for item in (output.get("candidates") or [])
+            if item.get("selected_for_assessment") or item.get("full_name")
+        ]
+        lane_counts = ((output.get("coverage") or {}).get("lane_counts") or {})
+        query_summary = (output.get("observation") or {}).get("query_summary") or {}
+        executed_queries = list(query_summary.get("executed") or [])
+        sidecar["base_artifacts"] = base_artifact_snapshot(
+            query_fingerprints=[
+                str(item.get("fingerprint") or "") for item in executed_queries
+                if str(item.get("fingerprint") or "")
+            ],
+            candidate_names=list(base_candidates),
+            readme_names=[
+                name for name, item in base_candidates.items() if "readme" in item
+            ],
+            shortlist_names=[
+                str(item.get("full_name") or "") for item in selected
+            ],
+            lane_counts=dict(lane_counts) if isinstance(lane_counts, dict) else {},
+            recalled_mechanisms=list(boundary.get("recalled_mechanisms") or []),
+            presented_mechanisms=list(boundary.get("presented_mechanisms") or []),
+            explored_directions=list(boundary.get("explored_directions") or []),
+        )
+        if not self.semantic_sidecar or not host_additions:
+            self._attach_sidecar_observation(output, state)
+            return output
+
+        records = list(sidecar.get("hypotheses") or [])
+        new_records = [
+            hypothesis_record(addition, iteration=iteration, index=index)
+            for index, addition in enumerate(host_additions, start=len(records) + 1)
+        ]
+        remaining = max(0, SEMANTIC_QUERY_BUDGET - sidecar_used_query_budget(sidecar))
+        known = {
+            str(item.get("fingerprint") or "")
+            for item in sidecar.get("queries") or []
+            if item.get("fingerprint")
+        }
+        planned, blocked = plan_sidecar_queries(
+            new_records, request, negatives=negatives,
+            known_fingerprints=known, remaining_budget=remaining,
+        )
+        metrics["semantic_queries_planned"] = int(metrics.get("semantic_queries_planned") or 0) + len(planned) + len(blocked)
+        metrics["semantic_queries_reused"] = int(metrics.get("semantic_queries_reused") or 0) + sum(
+            1 for item in blocked if item.get("skip_reason") == "duplicate"
+        )
+        for item in blocked:
+            self.store.add_query_history(
+                search_id, item["query"], item["kind"], 0,
+                iteration=iteration, fingerprint=item["fingerprint"], skipped=True,
+                skip_reason=str(item.get("skip_reason") or "duplicate"),
+            )
+            sidecar.setdefault("queries", []).append({**item, "executed": False})
+            for record in new_records:
+                if record["id"] == item.get("hypothesis_id"):
+                    record.setdefault("queries", [])
+                    if not any(query.get("query") == item["query"] for query in record["queries"]):
+                        record["queries"].append({**item, "executed": False})
+                    record["incomplete"] = item.get("skip_reason") == "semantic_budget"
+
+        sink: dict[str, dict[str, Any]] = {
+            repo_key(item): dict(item) for item in sidecar.get("candidates") or []
+        }
+        recall_failed = False
+        executed: list[dict[str, Any]] = []
+        try:
+            _stale, _cache, executed, _skipped = self._sidecar_recall(
+                search_id, planned, sink, iteration=iteration,
+                base_names=set(base_candidates),
+            )
+            stale = stale or _stale
+            cached_at = cached_at or _cache
+        except GitHubAuthenticationError:
+            raise
+        except GitHubError:
+            recall_failed = True
+            metrics["semantic_queries_failed"] = int(metrics.get("semantic_queries_failed") or 0) + 1
+            for record in new_records:
+                record["failed"] = True
+
+        for spec in executed:
+            sidecar.setdefault("queries", []).append({**spec, "executed": True, "skipped": False})
+            for record in new_records:
+                if record["id"] == spec.get("hypothesis_id"):
+                    for query in record.get("queries") or []:
+                        if query.get("query") == spec.get("query"):
+                            query["executed"] = True
+        metrics["semantic_queries_executed"] = int(metrics.get("semantic_queries_executed") or 0) + len(executed)
+        metrics["sidecar_api_calls"] = int(metrics.get("sidecar_api_calls") or 0) + len(executed)
+
+        for record in new_records:
+            recalled = [
+                item for item in sink.values()
+                if any(
+                    path.get("hypothesis_id") == record["id"]
+                    or path.get("concept_id") == f"sidecar:{record['id']}"
+                    for path in item.get("discovery_paths") or []
+                ) or str(item.get("semantic_hypothesis_id") or "") == record["id"]
+            ]
+            if not recalled:
+                recalled = [
+                    item for item in sink.values()
+                    if any(
+                        path.get("term") == record["term"]
+                        for path in item.get("discovery_paths") or []
+                    )
+                ]
+            targets = select_enrichment_targets(recalled, limit=SEMANTIC_README_PER_HYPOTHESIS)
+            for candidate in targets:
+                try:
+                    result = self.github.readme(candidate["full_name"])
+                    self._apply_readme(candidate, result, request)
+                    metrics["semantic_readme_enrichments"] = int(
+                        metrics.get("semantic_readme_enrichments") or 0
+                    ) + 1
+                    metrics["sidecar_api_calls"] = int(metrics.get("sidecar_api_calls") or 0) + 1
+                except GitHubAuthenticationError:
+                    raise
+                except GitHubNotFoundError:
+                    self._apply_readme(candidate, None, request)
+                except GitHubError:
+                    record["incomplete"] = True
+                    continue
+                apply_semantic_mechanism(candidate, record["term"], record["id"])
+            for candidate in recalled:
+                if apply_semantic_mechanism(candidate, record["term"], record["id"]):
+                    repo = str(candidate.get("full_name") or "")
+                    if repo and repo not in record["evidence_repos"]:
+                        record["evidence_repos"].append(repo)
+                    if repo_key(candidate) in base_candidates:
+                        if repo not in record["overlap_repos"]:
+                            record["overlap_repos"].append(repo)
+            regular_names = [
+                str(item.get("full_name") or "") for item in (output.get("candidates") or [])
+            ]
+            chosen = select_assessment_candidate(
+                recalled, term=record["term"], regular_shortlist=regular_names,
+            )
+            if chosen is not None:
+                record["assessment_repo"] = chosen.get("full_name")
+                chosen["semantic_assessment"] = True
+                chosen["selected_for_assessment"] = True
+                metrics["semantic_assessment_count"] = int(
+                    metrics.get("semantic_assessment_count") or 0
+                ) + 1
+                if repo_key(chosen) not in base_candidates:
+                    output.setdefault("candidates", []).append(public_candidate(chosen))
+                    coverage = output.setdefault("coverage", {})
+                    coverage["assessment_candidate_count"] = len(output["candidates"])
+                else:
+                    for item in output.get("candidates") or []:
+                        if repo_key(item) == repo_key(chosen):
+                            existing = {str(m.get("name") or "").casefold() for m in item.get("mechanisms") or []}
+                            for mechanism in chosen.get("mechanisms") or []:
+                                if str(mechanism.get("name") or "").casefold() not in existing:
+                                    item.setdefault("mechanisms", []).append(mechanism)
+                            item.setdefault("evidence", [])
+                            seen_ids = {str(ev.get("id")) for ev in item["evidence"]}
+                            for evidence in chosen.get("evidence") or []:
+                                if str(evidence.get("id")) not in seen_ids:
+                                    item["evidence"].append(evidence)
+                if (
+                    repo_key(chosen) not in base_candidates
+                    and metrics.get("semantic_release_lookups", 0) < SEMANTIC_RELEASE_LIMIT
+                ):
+                    try:
+                        self._enrich_releases([chosen])
+                        metrics["semantic_release_lookups"] = int(
+                            metrics.get("semantic_release_lookups") or 0
+                        ) + 1
+                        metrics["sidecar_api_calls"] = int(metrics.get("sidecar_api_calls") or 0) + 1
+                    except (GitHubError, GitHubAuthenticationError):
+                        pass
+            if recall_failed:
+                record["failed"] = True
+
+        refresh_statuses(new_records)
+        sidecar["hypotheses"] = records + new_records
+        sidecar["candidates"] = list(sink.values())[:SEMANTIC_CANDIDATE_CAP]
+        metrics["semantic_candidate_count"] = len(sidecar["candidates"])
+        metrics["base_semantic_overlap"] = sum(
+            1 for item in sidecar["candidates"] if repo_key(item) in base_candidates
+        )
+        sidecar["metrics"] = metrics
+        state["semantic_sidecar"] = sidecar
+        if stale:
+            output["stale"] = True
+        if cached_at and not output.get("cache_time"):
+            output["cache_time"] = cached_at
+        self._attach_sidecar_observation(output, state)
+        return output
+
+    def _sidecar_recall(
+        self, search_id: str, queries: Iterable[dict[str, Any]],
+        candidates: dict[str, dict[str, Any]], *, iteration: int,
+        base_names: set[str],
+    ) -> tuple[bool, str | None, list[dict[str, Any]], list[dict[str, Any]]]:
+        stale = False
+        cached_at = None
+        executable = list(queries)
+        skipped: list[dict[str, Any]] = []
+        if not executable:
+            return stale, cached_at, [], skipped
+        with ThreadPoolExecutor(max_workers=min(4, max(1, len(executable)))) as pool:
+            futures = {
+                pool.submit(
+                    self.github.search_repositories, spec["query"], 10, spec.get("sort", "stars"),
+                ): index
+                for index, spec in enumerate(executable)
+            }
+            results: list[tuple[dict[str, Any], ApiResult] | None] = [None] * len(executable)
+            for future in as_completed(futures):
+                index = futures[future]
+                results[index] = (executable[index], future.result())
+        executed: list[dict[str, Any]] = []
+        for completed in results:
+            if completed is None:
+                continue
+            query_spec, result = completed
+            stale = stale or result.stale
+            cached_at = cached_at or result.cached_at
+            items = self._items(result)
+            self.store.add_query(search_id, query_spec["query"], query_spec["kind"], len(items))
+            self.store.add_query_history(
+                search_id, query_spec["query"], query_spec["kind"], len(items),
+                iteration=iteration, fingerprint=query_spec["fingerprint"], skipped=False,
+            )
+            executed.append(query_spec)
+            for position, repo in enumerate(items, 1):
+                if repo.get("private") or repo.get("visibility") not in {None, "public"}:
+                    continue
+                key = repo_key(repo)
+                if not key:
+                    continue
+                candidate = candidates.setdefault(key, dict(repo))
+                candidate["retrieval_partition"] = SEMANTIC_PARTITION
+                candidate["semantic_hypothesis_id"] = query_spec.get("hypothesis_id")
+                if key in base_names:
+                    candidate["base_overlap"] = True
+                if "first_seen_iteration" not in candidate:
+                    candidate["first_seen_iteration"] = iteration
+                candidate["last_seen_iteration"] = iteration
+                path = {
+                    "kind": "query", "query": query_spec["query"],
+                    "query_kind": query_spec["kind"], "position": position,
+                    "hypothesis_id": query_spec.get("hypothesis_id"),
+                    "concept_id": query_spec.get("concept_id"),
+                    "term": query_spec.get("term"),
+                    "retrieval_partition": SEMANTIC_PARTITION,
+                }
+                paths = candidate.setdefault("discovery_paths", [])
+                if not any(item.get("query") == path["query"] for item in paths):
+                    paths.append(path)
+                if len(candidates) >= SEMANTIC_CANDIDATE_CAP:
+                    return stale, cached_at, executed, skipped
+        return stale, cached_at, executed, skipped
+
     def _decision_event_output(self, search_id: str, session: dict[str, Any],
                                request: SearchRequest, candidates: dict[str, dict[str, Any]],
                                hypothesis: SearchHypothesis, remaining: dict[str, int],
@@ -1464,6 +1779,7 @@ class SearchEngine:
         )
         output["next_action"] = "rank"
         output["stop_reason"] = reason
+        self._attach_sidecar_observation(output, state)
         return output
 
     def _coverage(self, search_id: str, candidates: Iterable[dict[str, Any]],
@@ -1476,6 +1792,7 @@ class SearchEngine:
         return {
             "queries_executed": self.store.normal_query_count(search_id),
             "confirmation_queries_executed": self.store.confirmation_query_count(search_id),
+            "semantic_queries_executed": self.store.semantic_query_count(search_id),
             "enriched": sum("readme" in item for item in items),
             "enriched_this_phase": enriched_count,
             "omitted": max(0, len(items) - len(selected)),
@@ -1665,6 +1982,7 @@ class SearchEngine:
         )
         output["reused"] = True
         output["next_action"] = "iterate" if mode == "deep" else "rank"
+        self._attach_sidecar_observation(output, state)
         _compact_search_output(output)
         return output
 

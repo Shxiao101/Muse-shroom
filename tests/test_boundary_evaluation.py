@@ -248,7 +248,7 @@ class BoundaryEvaluationTests(unittest.TestCase):
 
     def test_committed_blind_labels_are_development_only(self):
         labels = load_labels(ROOT / "evaluation" / "blind-review-labels.json")
-        self.assertEqual(len(labels), 35)
+        self.assertEqual(len(labels), 40)
         self.assertTrue(all(key.startswith("development|") for key in labels))
         self.assertEqual(
             labels["development|learning-habit|spatial computing"], "wrong_domain",

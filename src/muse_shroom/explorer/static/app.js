@@ -527,8 +527,17 @@ async function renderResults(searchId, role) {
   const lede = role
     ? `<p class="role-lede">${esc(roleGloss(role))}</p>`
     : `<p class="sub">${esc(t("resultsSub"))}</p>`;
+  const hypotheses = result.semantic_hypotheses || [];
+  const hypothesisBlock = hypotheses.length
+    ? `<section class="semantic-hypotheses"><h2>Semantic sidecar</h2><ul>${
+        hypotheses.map((item) => `<li><code>${esc(item.term || "")}</code> · ${esc(item.status || "")}${
+          item.presented ? " · presented" : ""
+        }</li>`).join("")
+      }</ul></section>`
+    : "";
   main.innerHTML = `${header}
     ${lede}
+    ${hypothesisBlock}
     ${roleBar(searchId, all, role)}
     <section id="ranked-results" ${current.at === "final" ? "" : "hidden"}>
       ${shown.length

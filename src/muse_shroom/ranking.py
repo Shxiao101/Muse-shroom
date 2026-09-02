@@ -9,8 +9,8 @@ from typing import Any, Iterable
 
 from .analyze import age_days
 from .boundary import (
-    annotate_candidate_mechanisms, build_boundary, is_promotable_specificity,
-    is_promotable_term,
+    _normalized, annotate_candidate_mechanisms, build_boundary,
+    is_promotable_specificity, is_promotable_term,
 )
 from .boundary_score import (
     RANK_BOUNDARY_WEIGHTS, RELEVANCE_GATE, TYPE_QUALITY_GATE,
@@ -25,6 +25,11 @@ from .models import (
     reject_unknown_fields, repo_key,
 )
 from .selection import mechanism_rejected
+from .sidecar import (
+    SEMANTIC_PARTITION, mark_presented, mark_validated, merge_candidate_view,
+    public_hypothesis, refresh_statuses, strip_unvalidated_semantic_terms,
+    unvalidated_terms,
+)
 from .storage import Store
 
 
@@ -281,7 +286,10 @@ def rank_search(
     reference_time: str | datetime | None = None,
 ) -> dict[str, Any]:
     session = store.load_search(search_id)
-    candidates = session["candidates"]
+    candidates = [
+        item for item in session["candidates"]
+        if item.get("retrieval_partition") != SEMANTIC_PARTITION
+    ]
     try:
         boundary_request = SearchRequest.from_dict(session["request"])
     except ContractError:
@@ -293,7 +301,19 @@ def rank_search(
         })
     for candidate in candidates:
         annotate_candidate_mechanisms(candidate, boundary_request)
+    session_state = store.get_session_state(search_id)
+    sidecar_state = session_state.get("semantic_sidecar") or {}
+    sidecar_candidates = list(sidecar_state.get("candidates") or [])
+    sidecar_records = list(sidecar_state.get("hypotheses") or [])
     by_name = {repo_key(item): item for item in candidates}
+    for item in sidecar_candidates:
+        key = repo_key(item)
+        if not key:
+            continue
+        if key in by_name:
+            by_name[key] = merge_candidate_view(by_name[key], item)
+        elif item.get("semantic_assessment") or item.get("selected_for_assessment"):
+            by_name[key] = item
     if isinstance(assessment_payload, dict):
         if strict:
             reject_unknown_fields(
@@ -329,7 +349,6 @@ def rank_search(
 
     mode = str(session.get("mode") or "quick")
     previous_boundary = store.latest_boundary_snapshot(search_id)
-    session_state = store.get_session_state(search_id)
     rejected = list((previous_boundary or {}).get("boundary", {}).get("rejected_directions", []))
     negatives = list((previous_boundary or {}).get("boundary", {}).get("negative_directions", []))
     presented_before = list((previous_boundary or {}).get("boundary", {}).get("presented_mechanisms") or [])
@@ -351,7 +370,7 @@ def rank_search(
         if not promotable:
             nonpromotable_confirmed.append(term)
     presentation_candidates, rejected_mechanism_labels = _presentation_candidates(
-        candidates, rejected, nonpromotable_confirmed,
+        list(by_name.values()), rejected, nonpromotable_confirmed,
     )
     presentation_by_name = {repo_key(item): item for item in presentation_candidates}
     presented_before = [
@@ -360,7 +379,7 @@ def rank_search(
     ]
     exploration = exploration_terms(boundary_request)
     pool_counts = recalled_mechanism_counts(presentation_candidates)
-    percentiles = _percentiles(candidates)
+    percentiles = _percentiles(list(by_name.values()))
     scored = []
     for name, assessment in assessments.items():
         candidate = presentation_by_name[name]
@@ -471,21 +490,92 @@ def rank_search(
     # novelty, transferability, redundancy, and one mainstream anchor. Legacy
     # lanes are projected only after this order is final.
     display_presented_before: list[str] = []
+    eligible_names = {item["repo"].lower() for item in eligible}
+    assessment_payloads = {name: asdict(item) for name, item in assessments.items()}
+    mark_validated(
+        sidecar_records,
+        assessments=assessment_payloads,
+        candidates_by_name=presentation_by_name,
+        eligible_names=eligible_names,
+    )
+    blocked = unvalidated_terms(sidecar_records)
+    for item in display_items:
+        item["mechanisms"] = [
+            mechanism for mechanism in item.get("mechanisms") or []
+            if _normalized(mechanism.get("name")) not in blocked
+        ]
     _explain_ranked_items(
         display_items, display_presented_before,
         anchor_repo=str(anchor[0]["repo"]) if anchor else "",
     )
+    for item in display_items:
+        item["new_mechanisms"] = strip_unvalidated_semantic_terms(
+            item.get("new_mechanisms") or [], blocked,
+        )
+        if item.get("boundary_role") in {"leap", "wildcard"} and not item.get("new_mechanisms"):
+            item["boundary_role"] = "edge"
     ranked_items = display_items
     display_order = [item["repo"] for item in display_items]
+    mark_presented(sidecar_records, display_order)
+    refresh_statuses(sidecar_records)
+    base_keys = {repo_key(item) for item in candidates}
+    regular_eligible = [item for item in eligible if item["repo"].lower() in base_keys]
+    regular_anchor_pool = [
+        item for item in regular_eligible
+        if item["scores"]["components"]["popularity_percentile"] >= 60
+    ]
+    regular_ctx = {
+        "presented": {name.casefold() for name in presented_before},
+        "presented_counts": Counter(name.casefold() for name in presented_before),
+        "exploration": exploration,
+        "pool_counts": pool_counts,
+        "mode": mode,
+    }
+    regular_anchor = _mmr_select(regular_anchor_pool, 1, [], "boundary", boundary_ctx=regular_ctx)
+    regular_used = {item["repo"].lower() for item in regular_anchor}
+    regular_remaining = [item for item in regular_eligible if item["repo"].lower() not in regular_used]
+    regular_display = regular_anchor + _mmr_select(
+        regular_remaining, max(0, 10 - len(regular_anchor)), regular_anchor, "boundary",
+        boundary_ctx=regular_ctx,
+    )
+    regular_order = [item["repo"].lower() for item in regular_display]
+    union_order = {item["repo"].lower() for item in display_items}
+    displaced = [name for name in regular_order if name not in union_order]
+    sidecar_state["hypotheses"] = sidecar_records
+    metrics = sidecar_state.setdefault("metrics", {})
+    metrics["validated_presented"] = sum(1 for item in sidecar_records if item.get("presented"))
+    metrics["regular_top10_displaced"] = len(displaced)
+    session_state["semantic_sidecar"] = sidecar_state
+    store.save_session_state(search_id, session_state)
     selection_order = list(display_order)
     buckets = _compatibility_buckets(display_items, by_name)
     returned_names = {item["repo"].lower() for item in ranked_items}
+    presented_views = []
+    for name in returned_names:
+        view = presentation_by_name.get(name)
+        if view is None:
+            continue
+        if view.get("retrieval_partition") == SEMANTIC_PARTITION:
+            record = next(
+                (
+                    item for item in sidecar_records
+                    if str(item.get("assessment_repo") or "").casefold() == name
+                    and item.get("presented")
+                ),
+                None,
+            )
+            if record is None:
+                continue
+        presented_views.append(view)
     boundary = build_boundary(
-        candidates, [presentation_by_name[name] for name in returned_names],
+        candidates, presented_views,
         boundary_request, rejected_directions=rejected,
         negative_directions=negatives,
         confirmed_directions=(session_state.get("confirmed_directions") or []),
     ).to_dict()
+    if blocked:
+        for field in ("recalled_mechanisms", "presented_mechanisms", "explored_directions"):
+            boundary[field] = strip_unvalidated_semantic_terms(boundary.get(field) or [], blocked)
     delta = store.save_boundary_snapshot(
         search_id, "rank", boundary,
         visible_repos={
@@ -512,6 +602,8 @@ def rank_search(
         "boundary": boundary, "boundary_delta": delta,
         "boundary_summary": summary,
         "newly_presented_mechanisms": introduced,
+        "semantic_hypotheses": [public_hypothesis(item) for item in sidecar_records],
+        "sidecar_metrics": dict(sidecar_state.get("metrics") or {}),
         "coverage": {
             "recalled": len(candidates), "assessed": len(assessments), "eligible": len(eligible),
             "returned": len(ranked_items),
@@ -529,6 +621,11 @@ def rank_search(
             "edge_count": summary["edge_count"],
             "leap_count": summary["leap_count"],
             "wildcard_count": summary["wildcard_count"],
+            "semantic_assessed": sum(
+                1 for item in sidecar_records if item.get("assessment_repo")
+            ),
+            "semantic_presented": sum(1 for item in sidecar_records if item.get("presented")),
+            "regular_top10_displaced": len(displaced),
         },
     }
     store.save_ranking(search_id, result)

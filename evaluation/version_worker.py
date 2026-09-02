@@ -26,6 +26,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--label", required=True)
     parser.add_argument("--mode", choices=("capture", "replay"), required=True)
     parser.add_argument("--search-interval", type=float, default=0.0)
+    parser.add_argument("--semantic-disabled", action="store_true")
     parser.add_argument("--candidate-limit", type=int, default=24)
     parser.add_argument("--agentic", action="store_true")
     parser.add_argument("--agentic-iterations", type=int, default=2)
@@ -252,6 +253,9 @@ def main(argv: list[str] | None = None) -> int:
     engine_options = {}
     if "reference_time" in inspect.signature(search_module.SearchEngine).parameters:
         engine_options["reference_time"] = github.payload.get("captured_at")
+    engine_params = inspect.signature(search_module.SearchEngine).parameters
+    if "semantic_sidecar" in engine_params:
+        engine_options["semantic_sidecar"] = not args.semantic_disabled
     engine = search_module.SearchEngine(store, github, **engine_options)
     results = []
     try:

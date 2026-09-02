@@ -19,7 +19,9 @@ SEARCH_REQUEST_CONSTRAINT_FIELDS = frozenset({
     "language", "pushed_after", "include_archived", "min_stars", "max_stars",
 })
 CONCEPT_OBJECT_FIELDS = frozenset({"term", "weight", "aliases"})
-EXPLORATION_ADDITION_FIELDS = frozenset({"term", "reason", "evidence", "source_iteration"})
+EXPLORATION_ADDITION_FIELDS = frozenset({
+    "term", "reason", "evidence", "source_iteration", "request_anchor",
+})
 HYPOTHESIS_FIELDS = frozenset({
     "decision", "target_direction", "target_mechanism", "concepts", "adjacent_concepts",
     "aliases", "negative_directions", "anchors", "seeds", "filenames", "exclude",
@@ -410,6 +412,10 @@ DEFAULT_CONFIRMATION_CANDIDATE_LIMIT = 2
 DEFAULT_CONFIRMATION_CASE_LIMIT = 3
 DEFAULT_CONFIRMATION_QUERY_LIMIT = 6
 DEFAULT_CONFIRMATION_ENRICH_LIMIT = 8
+DEFAULT_SEMANTIC_QUERY_BUDGET = 4
+DEFAULT_SEMANTIC_HYPOTHESIS_LIMIT = 2
+DEFAULT_SEMANTIC_CANDIDATE_CAP = 40
+HOST_HYPOTHESIS_EVIDENCE = "host_hypothesis"
 HARD_STOP_REASONS = (
     "agent_stop", "max_iterations", "query_budget_exhausted",
     "duplicate_queries", "consecutive_no_gain",
@@ -422,6 +428,7 @@ class ExplorationAddition:
     reason: str = ""
     evidence: str = ""
     source_iteration: int | None = None
+    request_anchor: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload = {"term": self.term}
@@ -431,6 +438,8 @@ class ExplorationAddition:
             payload["evidence"] = self.evidence
         if self.source_iteration is not None:
             payload["source_iteration"] = self.source_iteration
+        if self.request_anchor:
+            payload["request_anchor"] = self.request_anchor
         return payload
 
     @classmethod
@@ -454,13 +463,16 @@ class ExplorationAddition:
         if len(term) > 160 or "\n" in term or "\r" in term:
             raise ContractError("add_exploration_directions terms must be single-line strings up to 160 characters")
         if strict:
-            for name in ("reason", "evidence"):
+            for name in ("reason", "evidence", "request_anchor"):
                 if name in value and not isinstance(value[name], str):
                     raise ContractError(f"add_exploration_directions {name} must be a string")
         reason = str(value.get("reason") or "").strip()
         evidence = str(value.get("evidence") or "").strip()
+        request_anchor = str(value.get("request_anchor") or "").strip()
         if len(reason) > 400 or len(evidence) > 160:
             raise ContractError("add_exploration_directions reason/evidence is too long")
+        if len(request_anchor) > 160 or "\n" in request_anchor or "\r" in request_anchor:
+            raise ContractError("add_exploration_directions request_anchor must be a single-line string up to 160 characters")
         source = value.get("source_iteration")
         if source is not None:
             if strict:
@@ -473,7 +485,7 @@ class ExplorationAddition:
                     raise ContractError("add_exploration_directions source_iteration must be an integer") from exc
         elif strict and "source_iteration" in value:
             raise ContractError("add_exploration_directions source_iteration must be an integer")
-        return cls(term, reason, evidence, source)
+        return cls(term, reason, evidence, source, request_anchor)
 
 
 @dataclass(slots=True)

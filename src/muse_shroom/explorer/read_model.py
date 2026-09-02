@@ -420,6 +420,9 @@ class ExplorerReadModel:
                 "result_count": len((ranking or {}).get("display_order") or []),
                 "next_action": next_action,
                 "can_iterate": can_iterate,
+                "semantic_hypotheses": list(
+                    (state.get("semantic_sidecar") or {}).get("hypotheses") or []
+                ),
             }
             if debug:
                 payload["candidate_count"] = len(session.get("candidates") or [])
@@ -869,6 +872,7 @@ class ExplorerReadModel:
                 },
                 "items": items,
                 "boundary_summary": ranking.get("boundary_summary"),
+                "semantic_hypotheses": list(ranking.get("semantic_hypotheses") or []),
                 "newly_presented_mechanisms": list(ranking.get("newly_presented_mechanisms") or []),
                 "next_action": ranking.get("next_action") or "done",
             }

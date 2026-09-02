@@ -6,6 +6,8 @@ Each round, fill only the fields that this decision needs. Do not mechanically p
 
 ## Continue
 
+Evidence-derived refinement:
+
 ```json
 {
   "decision": "continue",
@@ -14,13 +16,33 @@ Each round, fill only the fields that this decision needs. Do not mechanically p
   "target_mechanism": "mechanism to verify",
   "concepts": ["reformulated search term"],
   "negative_directions": ["confirmed wrong sense, such as DOM focus"],
-  "promote_discovered_terms": ["digital wellbeing"],
+  "promote_discovered_terms": ["observed-term-from-evidence"],
   "add_exploration_directions": [
-    {"term": "commitment device", "reason": "related blocking strategy", "evidence": "discovered_term"}
+    {"term": "observed-term-from-evidence", "reason": "related mechanism", "evidence": "discovered_term"}
   ],
   "strategies": ["keyword"]
 }
 ```
+
+Host world-knowledge hypothesis (semantic sidecar, iterations 1-2 only):
+
+```json
+{
+  "decision": "continue",
+  "reason": "Test a mechanism from a neighboring domain.",
+  "add_exploration_directions": [
+    {
+      "term": "<hypothesized mechanism>",
+      "request_anchor": "<existing problem concept or alias>",
+      "reason": "This may transfer because <concise causal connection>.",
+      "evidence": "host_hypothesis"
+    }
+  ],
+  "strategies": ["keyword"]
+}
+```
+
+Do not repeat the host term in `target_direction`, `target_mechanism`, `concepts`, or `adjacent_concepts`. Ordinary fields remain available for simultaneous evidence-driven refinement. The core routes `host_hypothesis` to a separate sidecar with its own query and README budgets.
 
 ## Stop
 
@@ -28,7 +50,7 @@ Each round, fill only the fields that this decision needs. Do not mechanically p
 {
   "decision": "stop",
   "stop_reason": "low expected boundary gain",
-  "remaining_unexplored_directions": ["biofeedback"]
+  "remaining_unexplored_directions": ["still-open direction"]
 }
 ```
 
@@ -48,9 +70,13 @@ Do not write a new positive preference into `negative_directions` or `rejected_d
 
 `promote_discovered_terms` must match a term in
 `observation.discovered_term_evidence`. A new
-`add_exploration_directions` item must cite `discovered_term`, a candidate
-evidence ID, or `user_request` when the user explicitly introduced the
-direction. Unsupported high-priority directions are rejected.
+`add_exploration_directions` item must cite `discovered_term`, that term's
+own candidate evidence ID, `user_request` when the user explicitly introduced the
+direction, or `host_hypothesis` for a world-knowledge leap. `host_hypothesis`
+requires `request_anchor` matching an original problem concept or alias. It is
+provenance, not repository evidence. Unsupported high-priority directions are rejected.
+
+At most two `host_hypothesis` additions are allowed in the whole session, and only during post-search iterations one and two. Zero hypotheses is valid. After iteration two, or after two host hypotheses have been submitted, all further refinements must be evidence-derived. Failed hypotheses do not create extra allowance.
 
 The initial deep search response contains the observation used to decide the first iteration. After every successful iteration whose `next_action` remains `iterate`, restore the session with MCP `muse_observe` or `muse-shroom observe --search-id SEARCH_ID` before preparing another hypothesis. Never chain two `muse_iterate` calls without an intervening `muse_observe`. Observe is read-only: no GitHub requests, no new iteration, no boundary writes. `next_action=done` means the default flow has finished and you must not continue automatically. `can_iterate=true` means a user request for more (还有吗 / 再找一些 / 换点不同的) may still `iterate` this `search_id`. `can_iterate` is true only for deep mode with remaining iterations, remaining queries, and no hard stop.
 
@@ -58,13 +84,13 @@ The initial deep search response contains the observation used to decide the fir
 
 ## Observation
 
-Decide from `observation` first, in this order: `stop`, `unexplored_directions`, `boundary_delta`, `mechanism_distribution`, `ambiguity_signals`, `discovered_terms`, `remaining_budget`, `anchors`. Do not re-read the full candidate pool unless observation is insufficient.
+Decide from `observation` first, in this order: `stop`, `unexplored_directions`, `boundary_delta`, `mechanism_distribution`, `ambiguity_signals`, `discovered_terms`, `semantic_hypotheses`, `remaining_budget`, `anchors`. Do not re-read the full candidate pool unless observation is insufficient.
 
 If `stop.should_stop` is true, stop iterating. `stop.signals` (`no_new_mechanism`, `no_boundary_gain`, `directions_covered`) are advisory only. You may continue when remaining budget, discovered terms, or unexplored directions still look valuable.
 
 Hard stops recorded in `stop.reasons`: `agent_stop`, `max_iterations`, `query_budget_exhausted`, `duplicate_queries`, `consecutive_no_gain`.
 
-Default deep-mode budget: 3 iterations after the initial search, 6 keyword queries per iteration, 30 session search queries, 15 README enrichments per iteration, a 250-candidate pool. Quick mode stays at 100 candidates and does not iterate.
+Default deep-mode budget: 3 iterations after the initial search, 6 keyword queries per iteration, 30 session search queries, 15 README enrichments per iteration, a 250-candidate pool. The semantic sidecar is extra: up to 2 host hypotheses, 2 queries each, 4 README enrichments, and up to 2 extra assessment candidates. Quick mode stays at 100 candidates and does not iterate or invoke the sidecar.
 
 Follow `next_action` from the CLI: after deep `search` it is `iterate`; after iterate it is `iterate` or `rank`.
 

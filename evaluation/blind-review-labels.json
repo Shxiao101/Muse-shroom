@@ -40,6 +40,11 @@
     "development|personal-knowledge|content recommendation": "too_generic",
     "development|ai-music|score generation": "meaningful",
     "development|phone-distraction|distraction detection": "meaningful",
-    "development|personal-knowledge|data synchronization": "meaningful"
+    "development|personal-knowledge|data synchronization": "meaningful",
+    "development|focus|gui automation": "wrong_domain",
+    "development|learning-habit|local first": "too_generic",
+    "development|phone-distraction|attention monitoring": "meaningful",
+    "development|code-review|devops automation": "wrong_domain",
+    "development|personal-knowledge|rank tracking": "wrong_domain"
   }
 }

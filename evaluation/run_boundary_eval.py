@@ -205,7 +205,7 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--cassette", type=Path, default=ROOT / "evaluation" / "cassettes" / "boundary-v2.json.gz")
         command.add_argument("--output-dir", type=Path, default=ROOT / "evaluation" / "results" / "boundary")
         command.add_argument("--iterations", type=int, default=2)
-        command.add_argument("--search-interval", type=float, default=2.1 if action == "capture" else 0.0)
+        command.add_argument("--search-interval", type=float, default=3.5 if action == "capture" else 0.0)
         label_options = command.add_mutually_exclusive_group()
         label_options.add_argument(
             "--labels", type=Path,
