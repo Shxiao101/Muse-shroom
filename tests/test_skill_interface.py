@@ -54,6 +54,11 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn("observe --search-id", hypothesis)
         self.assertIn("muse_observe", hypothesis)
         self.assertIn("can_iterate", hypothesis)
+        self.assertIn("host_hypothesis", hypothesis)
+        self.assertIn("request_anchor", hypothesis)
+        self.assertNotIn("biofeedback", hypothesis)
+        self.assertNotIn("commitment device", hypothesis)
+        self.assertNotIn("digital wellbeing", hypothesis)
 
     def test_hypothesis_contract_keeps_expand_as_compatibility_only(self):
         hypothesis = (REFERENCES / "hypothesis-contract.md").read_text(encoding="utf-8")

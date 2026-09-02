@@ -2,12 +2,16 @@
   "decision": "continue",
   "reason": "first round matched UI focus; search productivity mechanisms instead",
   "target_mechanism": "distraction blocking",
-  "target_direction": "commitment device",
   "concepts": ["website blocker", "self-control"],
   "negative_directions": ["DOM focus", "keyboard focus", "accessibility focus"],
   "promote_discovered_terms": [],
   "add_exploration_directions": [
-    {"term": "commitment device", "reason": "self-control mechanism adjacent to blocking"}
+    {
+      "term": "neighboring-domain mechanism",
+      "request_anchor": "focus",
+      "reason": "A different discipline may solve the same causal problem.",
+      "evidence": "host_hypothesis"
+    }
   ],
   "strategies": ["keyword"]
 }

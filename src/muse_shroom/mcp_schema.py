@@ -120,7 +120,7 @@ SEARCH_REQUEST_SCHEMA: dict[str, Any] = {
                 {"term": "distraction blocking", "aliases": ["website blocker"], "weight": 0.8},
             ],
             "exploration_directions": [
-                {"term": "commitment device", "weight": 0.6}
+                {"term": "stated adjacent direction", "weight": 0.6}
             ],
             "artifact_types": ["application"],
             "exclusions": ["awesome list", "course"],
@@ -140,6 +140,13 @@ EXPLORATION_ADDITION_SCHEMA: dict[str, Any] = {
                 "term": {"type": "string"},
                 "reason": {"type": "string"},
                 "evidence": {"type": "string"},
+                "request_anchor": {
+                    "type": "string",
+                    "description": (
+                        "Required when evidence is host_hypothesis. Must match an "
+                        "original problem_concepts term or alias."
+                    ),
+                },
                 "source_iteration": {"type": "integer"},
             },
         },
@@ -215,9 +222,9 @@ SEARCH_HYPOTHESIS_SCHEMA: dict[str, Any] = {
             "type": "array",
             "items": EXPLORATION_ADDITION_SCHEMA,
             "description": (
-                "New positive directions supported by this round's evidence. "
-                "Use an object whose evidence is discovered_term, a candidate "
-                "evidence ID, or user_request."
+                "New positive directions. Evidence is discovered_term, a term's "
+                "own evidence ID, user_request, or host_hypothesis. host_hypothesis "
+                "requires request_anchor and is routed to the semantic sidecar."
             ),
         },
         "strategies": {
@@ -248,7 +255,7 @@ SEARCH_HYPOTHESIS_SCHEMA: dict[str, Any] = {
         {
             "decision": "stop",
             "stop_reason": "low expected boundary gain",
-            "remaining_unexplored_directions": ["biofeedback"],
+            "remaining_unexplored_directions": ["unexplored direction"],
         },
     ],
 }

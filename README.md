@@ -1,4 +1,4 @@
-# Muse-shroom 0.5.0
+# Muse-shroom 0.6.0
 
 Muse-shroom 是一个“让当前 Agent 帮你打破 GitHub 信息茧房”的本地搜索内核。它把可复现的 GitHub API 调用、SQLite 缓存、关系扩散和确定性排名放进 Python CLI，把自然语言理解和语义评价留给 Codex、Claude、Cursor 等宿主 Agent。
 
@@ -36,6 +36,8 @@ MCP 是可选 extra。安装 `[mcp]` 后可用 `muse-shroom-mcp` 或 `python -m 
 宿主 Agent 使用 [`skills/github-inspiration-discovery`](skills/github-inspiration-discovery/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → `rank`。快搜是 `search` 然后 `rank`。MCP 可用时优先调用 `muse_search` / `muse_observe` / `muse_iterate` / `muse_rank`；否则走 CLI。策略相同。
 
 v0.4 请求把语义拆成 `problem_concepts`、`mechanisms`、`exploration_directions`。契约在 Skill 的 `references/` 下。
+
+v0.6.0 把宿主世界知识做成独立 sidecar：最多 2 条 `host_hypothesis`，每条 2 个查询，不占用原有 6/30 查询、15 README 和 12 人评估短名单。最终排名仍最多 10 条。Quick 模式不启用 sidecar。
 
 ```console
 muse-shroom search --request examples/music-ai.request.json --mode quick --output search.json

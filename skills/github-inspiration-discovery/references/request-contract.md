@@ -13,7 +13,7 @@ Iterate hypotheses use [hypothesis-contract.md](hypothesis-contract.md). Assessm
   "mechanisms": [
     {"term": "concrete solution mechanism", "aliases": ["mechanism alias"], "weight": 0.8}
   ],
-  "exploration_directions": [{"term": "not-yet-covered direction", "weight": 0.6}],
+  "exploration_directions": [{"term": "direction the user explicitly asked to explore", "weight": 0.6}],
   "artifact_types": ["application", "mcp", "skill", "mod", "plugin", "library"],
   "constraints": {
     "language": "Python",

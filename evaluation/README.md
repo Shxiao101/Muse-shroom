@@ -68,7 +68,22 @@ or the deterministic policy. Run the enforced normalized check with:
 python evaluation/check_boundary_leakage.py
 ```
 
-Capture the complete flow once in a credential-bearing host context, then replay
+Host-in-the-loop discovery uses an isolated `prepare / collect / score` workflow
+that must not see Golden files. Capture records host actions and GitHub responses
+into a per-run cassette (serial queue, 3.5s search interval, Retry-After /
+X-RateLimit-Reset, 60s secondary-limit backoff). Replay reapplies those actions
+without calling the model. Deterministic and host cassettes stay separate.
+
+```console
+python evaluation/host_eval.py prepare --bundle evaluation/host-bundle
+python evaluation/host_eval.py collect --mode capture --transcript TRANSCRIPT.json --cassette evaluation/cassettes/host.json.gz --output evaluation/results/host-collect.json --data-dir evaluation/results/host-data
+python evaluation/host_eval.py collect --mode replay --transcript TRANSCRIPT.json --cassette evaluation/cassettes/host.json.gz --output evaluation/results/host-replay.json --data-dir evaluation/results/host-replay-data
+python evaluation/host_eval.py score --collect evaluation/results/host-collect.json --mapping evaluation/host-bundle.case-map.json --output evaluation/results/host-score.json
+```
+
+The v0.6.0 capability gate requires a valid transcript, leakage pass, no-cannibalization pass, and at least one development case that both queried a Golden cross-domain direction and retrieved matching repository mechanism evidence. Agent numeric scores do not affect this gate. Holdout discovery quality stays observational.
+
+Capture the complete deterministic flow once in a credential-bearing host context, then replay
 it fully offline:
 
 ```console

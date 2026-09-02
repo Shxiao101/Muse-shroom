@@ -386,7 +386,17 @@ class Store:
     def normal_query_count(self, search_id: str) -> int:
         row = self.db.execute(
             """SELECT COUNT(*) FROM query_history
-               WHERE search_id=? AND skipped=0 AND kind NOT LIKE 'confirmation_%'""",
+               WHERE search_id=? AND skipped=0
+                 AND kind NOT LIKE 'confirmation_%'
+                 AND kind NOT LIKE 'semantic_%'""",
+            (search_id,),
+        ).fetchone()
+        return int(row[0])
+
+    def semantic_query_count(self, search_id: str) -> int:
+        row = self.db.execute(
+            """SELECT COUNT(*) FROM query_history
+               WHERE search_id=? AND skipped=0 AND kind LIKE 'semantic_%'""",
             (search_id,),
         ).fetchone()
         return int(row[0])

@@ -13,10 +13,12 @@ from .models import (
     DEFAULT_QUERIES_PER_ITERATION,
     DEFAULT_README_ENRICH_PER_ITERATION,
     DEFAULT_SESSION_QUERY_BUDGET,
+    HOST_HYPOTHESIS_EVIDENCE,
     Concept,
     SearchHypothesis,
     SearchRequest,
 )
+from .sidecar import empty_sidecar_state, public_hypothesis
 
 
 def default_session_state() -> dict[str, Any]:
@@ -29,6 +31,7 @@ def default_session_state() -> dict[str, Any]:
         "relation_calls_used": 0,
         "consecutive_no_gain": 0,
         "stop_reason": None,
+        "semantic_sidecar": empty_sidecar_state(),
     }
 
 
@@ -218,7 +221,9 @@ def build_observation(*, iteration: int, boundary: dict[str, Any],
                       remaining: dict[str, int], stop_reasons: list[str],
                       hard_stop: bool, exploration_additions: list[dict[str, Any]] | None = None,
                       stop_signals: list[str] | None = None,
-                      consecutive_no_gain: int = 0) -> dict[str, Any]:
+                      consecutive_no_gain: int = 0,
+                      semantic_hypotheses: list[dict[str, Any]] | None = None,
+                      sidecar_metrics: dict[str, Any] | None = None) -> dict[str, Any]:
     candidate_list = list(candidates)
     selected_list = list(selected)
     distribution = mechanism_distribution(candidate_list)
@@ -268,6 +273,11 @@ def build_observation(*, iteration: int, boundary: dict[str, Any],
         ),
         "anchors": evidence_anchors(selected_list),
         "remaining_budget": remaining,
+        "semantic_hypotheses": [
+            public_hypothesis(item) if "status" in item or "id" in item else item
+            for item in (semantic_hypotheses or [])
+        ],
+        "sidecar_metrics": dict(sidecar_metrics or {}),
         "stop": {
             "should_stop": hard_stop or bool(stop_reasons),
             "hard": hard_stop or bool(stop_reasons),
@@ -311,12 +321,15 @@ def validate_hypothesis_evidence(hypothesis: SearchHypothesis, request: SearchRe
         for item in boundary.get("discovered_term_evidence") or []
         if str(item.get("term") or "").strip() and item.get("promotable") is not False
     }
-    evidence_ids = {
-        str(item.get("id"))
-        for candidate in candidates
-        for item in candidate.get("evidence") or []
-        if str(item.get("id") or "").strip()
-    }
+    term_evidence_ids: dict[str, set[str]] = {}
+    for item in boundary.get("discovered_term_evidence") or []:
+        term_key = str(item.get("term") or "").casefold()
+        if not term_key:
+            continue
+        for source in item.get("sources") or []:
+            evidence_id = str(source.get("evidence_id") or "").strip()
+            if evidence_id:
+                term_evidence_ids.setdefault(term_key, set()).add(evidence_id)
     requested_directions = {
         concept.term.casefold() for concept in request.exploration_directions
     }
@@ -324,17 +337,24 @@ def validate_hypothesis_evidence(hypothesis: SearchHypothesis, request: SearchRe
     for addition in hypothesis.add_exploration_directions:
         key = addition.term.casefold()
         addition_terms.add(key)
+        if addition.evidence == HOST_HYPOTHESIS_EVIDENCE:
+            continue
         if key in requested_directions:
             continue
         if addition.evidence == "user_request":
             continue
         if addition.evidence == "discovered_term" and key in promotable_names:
             continue
-        if addition.evidence in evidence_ids:
+        if (
+            addition.evidence
+            and key in term_evidence_ids
+            and addition.evidence in term_evidence_ids[key]
+        ):
             continue
         raise ContractError(
             f"new exploration direction {addition.term!r} requires evidence: "
-            "use discovered_term for an observed term, an evidence ID, or user_request"
+            "use discovered_term for an observed term, that term's own evidence ID, "
+            "user_request, or host_hypothesis"
         )
     for term in hypothesis.promote_discovered_terms:
         key = term.casefold()
@@ -379,6 +399,8 @@ def apply_hypothesis_to_request(request: SearchRequest, hypothesis: SearchHypoth
     for term in hypothesis.promote_discovered_terms:
         add_direction(term, hypothesis.reason, "discovered_term")
     for addition in hypothesis.add_exploration_directions:
+        if addition.evidence == HOST_HYPOTHESIS_EVIDENCE:
+            continue
         add_direction(
             addition.term,
             addition.reason or hypothesis.reason,
@@ -398,6 +420,7 @@ def session_loop_diagnostics(store: Any, search_id: str) -> dict[str, Any]:
     normal_history = [
         item for item in history
         if not str(item.get("kind") or "").startswith("confirmation_")
+        and not str(item.get("kind") or "").startswith("semantic_")
     ]
     executed = [item for item in normal_history if not item.get("skipped")]
     duplicates = [
