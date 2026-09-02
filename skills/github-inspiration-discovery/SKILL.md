@@ -73,13 +73,15 @@ On a contract error, fix the JSON and retry this step. Do not search again.
 
 ## 8. Rank
 
-Call `muse_rank` with `search_id` and assessments, or `muse-shroom rank --search-id ID --assessments ASSESSMENTS --output RANK.json`. Use [result-contract.md](references/result-contract.md). Follow `items` / `display_order`; compatibility buckets are not an ordering instruction. A successful rank with `next_action=done` is terminal: stop retrieval and diagnostics immediately. Do not call `muse_observe`, `muse_inspect`, shell commands, or other tools after successful rank. Do not issue no-op shell commands merely to signal progress, delay, or narrate internal state.
+Call `muse_rank` with `search_id` and assessments, or `muse-shroom rank --search-id ID --assessments ASSESSMENTS --output RANK.json`. Use [result-contract.md](references/result-contract.md). Follow `items` / `display_order`; compatibility buckets are not an ordering instruction. A successful rank with `next_action=done` is terminal: stop retrieval and diagnostics immediately. Do not call `muse_observe`, `muse_inspect`, shell commands, or other tools after successful rank. Do not issue no-op shell commands merely to signal progress, delay, or narrate internal state. The rank response already carries `explorer_url`; surfacing it needs no further tool call and does not make the turn non-terminal.
 
 ## 9. Present
 
 Follow `display_order`. For each item: name, one-line use, boundary role, why it is worth looking at, and an explicit new-mechanism field. Render `New mechanism: <comma-separated new_mechanisms>` when the array is non-empty and `New mechanism: none` when it is empty, translated to the user's language when appropriate. Use only that item's `new_mechanisms`; do not infer one from its description or category. Use the role meanings in the result contract. Do not dump internal scores. Do not append a second priority, recommendation, or best-first order after the ranked list. Scenario guidance may map a need to an item, but must not create or imply another ranking.
 
 Quick: show the list only. Deep: one sentence on how the search moved (from `boundary`, `negative_directions`, `newly_presented_mechanisms`), then the list. When `boundary.unexplored_directions` is non-empty, disclose the remaining directions. Also disclose requested mechanisms absent from `boundary.presented_mechanisms`; do not imply that every requested mechanism was covered. Do not describe the number of returned projects as the number of distinct mechanisms. If summarizing diversity, use `newly_presented_mechanisms` or `coverage.presented_mechanism_count`; distinguish projects with an empty `new_mechanisms` array from projects that introduce a labeled mechanism. If `stale` or `incomplete_phase` is set, disclose it briefly and still show reliable rows.
+
+End with the Explorer link from `explorer_url`, on its own final line, so the user can browse the results, each repository's evidence, and the unexplored directions in a browser. Present it as a plain clickable URL in the user's language (for example `在浏览器中查看：<url>` or `Browse the results: <url>`). Never open a browser yourself and never start the Explorer with a shell command — `rank` has already started it. Omit the line when `explorer_url` is absent or `explorer_running` is false.
 
 ## 10. Safety
 

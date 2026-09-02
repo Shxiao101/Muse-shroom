@@ -40,3 +40,15 @@ Use `display_order` as the only ranked order. Do not append a second priority, r
 For deep results, disclose non-empty `boundary.unexplored_directions` and requested mechanisms absent from `boundary.presented_mechanisms`. Do not claim complete coverage when those gaps remain.
 
 Project count and mechanism count are different quantities. Do not describe the number of returned projects as the number of distinct mechanisms. Use `newly_presented_mechanisms` or `coverage.presented_mechanism_count` for mechanism-diversity summaries, and keep items with empty `new_mechanisms` explicit.
+
+## explorer_url
+
+`explorer_url` deep-links to the finished session in the local read-only Explorer
+(`http://127.0.0.1:8765/#/s/<search_id>/results`). `rank` starts that server in the
+background when nothing is already answering on the port, and the server stops itself
+after an idle period, so the link is live without leaving a process running forever.
+
+`explorer_running` says whether an Explorer actually answered. Show the link when it is
+true. Both fields are absent when the caller opted out with `--no-explore` or
+`MUSE_SHROOM_NO_EXPLORER=1`. Surfacing the link requires no tool call and does not make a
+terminal rank non-terminal; do not launch a browser or a shell command for it.

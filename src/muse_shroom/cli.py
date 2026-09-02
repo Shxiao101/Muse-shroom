@@ -109,6 +109,10 @@ def build_parser() -> argparse.ArgumentParser:
     rank.add_argument("--search-id", required=True)
     rank.add_argument("--assessments", required=True, help="assessment JSON path or - for stdin")
     rank.add_argument("--output", help="write full JSON to this UTF-8 file and print a short receipt")
+    rank.add_argument(
+        "--no-explore", action="store_true",
+        help="do not start a background Explorer for the finished session",
+    )
     inspect = sub.add_parser("inspect")
     inspect.add_argument("repo")
     inspect.add_argument("--search-id")
@@ -125,6 +129,10 @@ def build_parser() -> argparse.ArgumentParser:
     explorer.add_argument("--host", default="127.0.0.1", help="bind address")
     explorer.add_argument("--port", type=int, default=8765, help="bind port")
     explorer.add_argument("--no-browser", action="store_true", help="do not open a browser")
+    explorer.add_argument(
+        "--idle-timeout", type=float, default=0.0,
+        help="stop the server after this many idle seconds (0 keeps it running)",
+    )
     explorer.add_argument(
         "--allow-remote",
         action="store_true",
@@ -205,7 +213,14 @@ def run(args: argparse.Namespace) -> Any:
                 return engine.iterate(args.search_id, _json_input(args.refinement))
             return engine.expand(args.search_id, _json_input(args.refinement))
         if args.command == "rank":
-            return rank_search(store, args.search_id, _json_input(args.assessments))
+            result = rank_search(store, args.search_id, _json_input(args.assessments))
+            from .explorer.launcher import ensure_explorer
+            explorer = ensure_explorer(
+                args.search_id, data_dir=args.data_dir, enabled=not args.no_explore,
+            )
+            result["explorer_url"] = explorer["url"]
+            result["explorer_running"] = explorer["running"]
+            return result
         if args.command == "candidates":
             session = store.load_search(args.search_id)
             items = session["candidates"]
@@ -284,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
             return run_explorer(
                 data_dir=args.data_dir, host=args.host, port=args.port,
                 open_browser=not args.no_browser, allow_remote=args.allow_remote,
+                idle_timeout=args.idle_timeout,
             )
         except (OSError, ValueError) as exc:
             print(json.dumps({"ok": False, "error": "OSError", "message": str(exc)}, ensure_ascii=False), file=sys.stderr)
