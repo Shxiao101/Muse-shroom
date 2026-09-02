@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "evaluation" / "fixtures"
+DEFAULT_LABELS = ROOT / "evaluation" / "blind-review-labels.json"
 
 
 def _confirmation_records(raw_path: Path) -> list[dict[str, object]]:
@@ -36,6 +37,8 @@ def _confirmation_records(raw_path: Path) -> list[dict[str, object]]:
                     "confirmability_score": item.get("confirmability_score"),
                     "confirmation_priority_score": item.get("confirmation_priority_score"),
                     "confirmation_priority_reason": item.get("confirmation_priority_reason"),
+                    "mechanism_specificity": item.get("mechanism_specificity"),
+                    "specificity_tier": item.get("specificity_tier"),
                     "confirmation_queries": list(item.get("confirmation_queries") or []),
                     "discovery_repos": sorted({
                         str(source.get("repo"))
@@ -71,6 +74,8 @@ def _write_confirmation_analysis(verdict_path: Path, dev_raw: Path,
                     "confirmation_unresolved_count", "confirmation_query_count",
                     "confirmed_meaningful_count", "confirmed_synonym_count",
                     "confirmation_precision", "confirmation_recall",
+                    "blind_meaningful_count", "blind_precision", "blind_labels_applied",
+                    "labelled_unknown_count", "unlabelled_unknown_count",
                     "confirmed_per_attempted_candidate", "meaningful_per_attempted_candidate",
                     "queries_per_confirmed_mechanism",
                     "queries_per_meaningful_confirmation",
@@ -84,8 +89,9 @@ def _write_confirmation_analysis(verdict_path: Path, dev_raw: Path,
     output.write_text(json.dumps({
         "schema_version": 1,
         "note": (
-            "confirmed_wrong_domain_count and blind precision require human labels; "
-            "automatic precision is Golden-known precision only"
+            "confirmation_precision is Golden-known precision; blind_precision uses "
+            "complete development-only blind review labels. "
+            "confirmed_wrong_domain_count remains unmeasured"
         ),
         "development_confirmation_yield": development.get(
             "confirmed_per_attempted_candidate"
@@ -160,6 +166,8 @@ def execute(args: argparse.Namespace) -> None:
         ])
     if leakage.returncode:
         evaluator.append("--leakage-detected")
+    if args.labels is not None:
+        evaluator.extend(["--labels", str(args.labels.resolve())])
     completed = subprocess.run(evaluator, cwd=ROOT)
     if verdict.exists():
         _write_confirmation_analysis(
@@ -198,6 +206,16 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--output-dir", type=Path, default=ROOT / "evaluation" / "results" / "boundary")
         command.add_argument("--iterations", type=int, default=2)
         command.add_argument("--search-interval", type=float, default=2.1 if action == "capture" else 0.0)
+        label_options = command.add_mutually_exclusive_group()
+        label_options.add_argument(
+            "--labels", type=Path,
+            default=DEFAULT_LABELS if DEFAULT_LABELS.exists() else None,
+            help="Development blind-review labels (defaults to the committed file when present)",
+        )
+        label_options.add_argument(
+            "--no-labels", action="store_const", const=None, dest="labels",
+            help="Disable blind-review labels for an unlabeled baseline replay",
+        )
         command.add_argument(
             "--ci", action="store_true",
             help="Replay the committed one-case synthetic fixture without network",

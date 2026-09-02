@@ -6,3 +6,6 @@ dist/
 .pytest_cache/
 evaluation/cassettes/
 evaluation/results/
+blackbox-*/
+chat*.md
+muse-shroom-v0.4.7-three-run-raw-data.json

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -211,7 +212,10 @@ def main(argv: list[str] | None = None) -> int:
         github_module, args.cassette, delegate=delegate,
         search_interval=args.search_interval,
     )
-    engine = search_module.SearchEngine(store, github)
+    engine_options = {}
+    if "reference_time" in inspect.signature(search_module.SearchEngine).parameters:
+        engine_options["reference_time"] = github.payload.get("captured_at")
+    engine = search_module.SearchEngine(store, github, **engine_options)
     results = []
     try:
         for index, prompt in enumerate(prompts, 1):
@@ -277,8 +281,13 @@ def main(argv: list[str] | None = None) -> int:
                     for candidate in candidates
                 ]
                 if assessments:
+                    rank_options = {}
+                    if "reference_time" in inspect.signature(
+                        ranking_module.rank_search
+                    ).parameters:
+                        rank_options["reference_time"] = github.payload.get("captured_at")
                     ranking = ranking_module.rank_search(
-                        store, output["search_id"], assessments,
+                        store, output["search_id"], assessments, **rank_options,
                     )
             boundary = dict(output.get("boundary") or {})
             if ranking:
@@ -362,6 +371,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "schema_version": 1, "label": args.label,
         "muse_shroom_version": getattr(version_module, "__version__", "unknown"),
+        "policy": "deterministic",
         "stage": (
             "agentic_boundary_rank" if args.boundary_rank
             else "agentic_assessment_shortlist" if args.agentic

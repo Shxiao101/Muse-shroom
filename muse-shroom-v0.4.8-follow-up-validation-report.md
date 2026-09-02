@@ -164,3 +164,15 @@ The accurate release statement is:
 - Requested quality and confirmation metrics unchanged.
 - Overall replay verdict remains `needs_review`.
 - Included with the validated v0.4.8 changes for commit and push.
+
+## Correction — 2026-09-01
+
+The `confirmation_precision` value of 0.0 above is Golden-known precision by
+design: it measures confirmations against the frozen
+`acceptable_new_mechanisms` recall key, not against post-hoc judgements of the
+actual confirmed output. Cross-referencing the six confirmations with the
+existing human diagnostic labels identifies at least four as meaningful, so
+the corresponding blind precision is at least 4/6 (0.67). The earlier report
+therefore does not establish confirmation yield, including
+`same_repo_repetition`, as the leading open problem. Yield should be revisited
+only after blind confirmation quality is measurable.

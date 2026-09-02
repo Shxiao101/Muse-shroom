@@ -7,7 +7,7 @@ from muse_shroom.boundary_score import (
 )
 from muse_shroom.models import ContractError, SearchRequest
 from muse_shroom.ranking import rank_search
-from muse_shroom.selection import shortlist_select
+from muse_shroom.selection import score_candidates, shortlist_select
 from muse_shroom.storage import Store
 
 from tests.helpers import repo
@@ -63,6 +63,23 @@ def _assess(item, *, relevance=85, uniqueness=70, usability=80, transferability=
 
 
 class BoundaryRankingTests(unittest.TestCase):
+    def test_shortlist_activity_uses_replay_reference_time(self):
+        item = _item("focus/stable", 10, "Focus timer")
+
+        first = score_candidates(
+            [dict(item)], FOCUS_REQUEST, enriched=True,
+            reference_time="2026-09-01T00:00:00+00:00",
+        )[0]
+        second = score_candidates(
+            [dict(item)], FOCUS_REQUEST, enriched=True,
+            reference_time="2026-09-01T23:59:59+00:00",
+        )[0]
+
+        self.assertEqual(
+            first["selection_score_components"]["activity"],
+            second["selection_score_components"]["activity"],
+        )
+
     def test_shortlist_is_not_filled_by_one_mechanism(self):
         items = [
             _item(f"pomo/timer{index}", 20 + index, "Pomodoro timer")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from typing import Any, Iterable
 
 from .analyze import _is_thin_overview, github_links, make_evidence, safe_readme
@@ -463,7 +464,8 @@ class SearchEngine:
                  queries_per_iteration: int = DEFAULT_QUERIES_PER_ITERATION,
                  session_query_budget: int = DEFAULT_SESSION_QUERY_BUDGET,
                  readme_enrich_per_iteration: int = DEFAULT_README_ENRICH_PER_ITERATION,
-                 consecutive_no_gain_limit: int = DEFAULT_CONSECUTIVE_NO_GAIN) -> None:
+                 consecutive_no_gain_limit: int = DEFAULT_CONSECUTIVE_NO_GAIN,
+                 reference_time: str | datetime | None = None) -> None:
         self.store = store
         self.github = github
         self.candidate_limit = candidate_limit
@@ -474,6 +476,7 @@ class SearchEngine:
         self.session_query_budget = session_query_budget
         self.readme_enrich_per_iteration = readme_enrich_per_iteration
         self.consecutive_no_gain_limit = consecutive_no_gain_limit
+        self.reference_time = reference_time
         self._pool_cap = candidate_limit or DEFAULT_QUICK_CANDIDATE_LIMIT
 
     def _limit_for(self, mode: str | None = None, state: dict[str, Any] | None = None) -> int:
@@ -618,7 +621,10 @@ class SearchEngine:
         missing = [item for item in candidates.values() if "readme" not in item]
         if not missing:
             return False, None, False, 0
-        selected, _ = probe_select(missing, request, limit=limit or self.enrich_limit)
+        selected, _ = probe_select(
+            missing, request, limit=limit or self.enrich_limit,
+            reference_time=self.reference_time,
+        )
         pending = selected
 
         def fetch(candidate: dict[str, Any]) -> tuple[dict[str, Any], ApiResult | None | str]:
@@ -965,7 +971,7 @@ class SearchEngine:
                     item, refreshed_by_term.get(term.casefold()), item_queries,
                     failed=stage_failed or enrich_failed, final=final_stage,
                 )
-                if record.get("confirmation_status") == "confirmed" or final_stage:
+                if record.get("confirmation_status") in {"confirmed", "rejected"} or final_stage:
                     break
             if record is None:
                 record = evaluate_confirmation(item, None, [], final=False)
@@ -1520,7 +1526,9 @@ class SearchEngine:
             mode = str(self.store.load_search(search_id).get("mode") or "quick")
         except KeyError:
             pass
-        selected, lane_counts = shortlist_select(assessable, request, mode=mode)
+        selected, lane_counts = shortlist_select(
+            assessable, request, mode=mode, reference_time=self.reference_time,
+        )
         selected = selected[:SHORTLIST_LIMIT]
         try:
             release_stale, release_cache, release_failed = self._enrich_releases(selected)

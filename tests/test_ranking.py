@@ -1,6 +1,8 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
+from unittest.mock import patch
 
 from muse_shroom.models import ContractError, SearchRequest
 from muse_shroom.ranking import rank_search
@@ -90,6 +92,33 @@ class RankingTests(unittest.TestCase):
         assessment["reasons"][0]["evidence_ids"] = [f"repo:{item['full_name'].lower()}:metadata"]
         result = rank_search(self.store, self.search_id, [assessment])
         self.assertEqual(result["coverage"]["returned"], 0)
+
+    def test_activity_uses_explicit_replay_reference_time(self):
+        item = candidate("owner/stable", 10, "focus")
+        self.store.save_candidate(self.search_id, item)
+        assessment = self._assessment(item)
+        reference_time = "2026-09-01T00:00:00+00:00"
+
+        with patch(
+            "muse_shroom.analyze._utc_now",
+            return_value=datetime(2030, 1, 1, tzinfo=timezone.utc),
+        ):
+            first = rank_search(
+                self.store, self.search_id, [assessment],
+                reference_time=reference_time,
+            )
+        with patch(
+            "muse_shroom.analyze._utc_now",
+            return_value=datetime(2040, 1, 1, tzinfo=timezone.utc),
+        ):
+            second = rank_search(
+                self.store, self.search_id, [assessment],
+                reference_time=reference_time,
+            )
+
+        first_activity = first["items"][0]["scores"]["components"]["activity"]
+        second_activity = second["items"][0]["scores"]["components"]["activity"]
+        self.assertEqual(first_activity, second_activity)
 
 
 if __name__ == "__main__":

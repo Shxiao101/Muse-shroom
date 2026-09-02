@@ -43,13 +43,26 @@ def readme_signals(text: str) -> dict[str, Any]:
     }
 
 
-def age_days(timestamp: str | None) -> int:
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _timestamp(value: str | datetime) -> datetime:
+    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(
+        value.replace("Z", "+00:00")
+    )
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
+def age_days(timestamp: str | None, *,
+             reference_time: str | datetime | None = None) -> int:
     if not timestamp:
         return 10_000
     try:
-        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-        return max(0, (datetime.now(timezone.utc) - dt).days)
-    except ValueError:
+        dt = _timestamp(timestamp)
+        reference = _timestamp(reference_time) if reference_time is not None else _utc_now()
+        return max(0, (reference - dt).days)
+    except (TypeError, ValueError):
         return 10_000
 
 

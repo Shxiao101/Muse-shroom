@@ -61,6 +61,8 @@ class CassetteGitHub:
         self.delegate = delegate
         self.search_interval = max(0.0, search_interval)
         self.payload = load_cassette(cassette_path)
+        if delegate is not None and not self.payload.get("captured_at"):
+            self.payload["captured_at"] = _utc_now()
         self.request_counts = {"core": 0, "search": 0, "code_search": 0}
         self.rate_limits: dict[str, Any] = {}
         self._lock = threading.RLock()

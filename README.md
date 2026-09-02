@@ -1,4 +1,4 @@
-# Muse-shroom 0.4.8
+# Muse-shroom 0.4.10
 
 Muse-shroom 是一个“让当前 Agent 帮你打破 GitHub 信息茧房”的本地搜索内核。它把可复现的 GitHub API 调用、SQLite 缓存、关系扩散和确定性排名放进 Python CLI，把自然语言理解和语义评价留给 Codex、Claude、Cursor 等宿主 Agent。
 
@@ -111,6 +111,19 @@ python -m unittest tests.test_mcp -v
 设置 `MUSE_SHROOM_LIVE_SMOKE=1` 后可选运行实时 API 认证/契约 smoke test；稳定测试不会执行它。
 
 人工盲测协议和 8 个模糊需求位于 `evaluation/`。运行 `python evaluation/run_ab.py capture` 可在隔离源码树中录制基线与当前版本的共同 GitHub 响应并生成匿名评审包，`replay` 可完全离线复跑。Boundary release gate 分开报告 8 个 development case 与 6 个 holdout case；`python evaluation/run_boundary_eval.py capture` 录制完整 agentic 流程，之后用 `replay` 离线重放并自动生成 verdict。Golden Cases 只参与结果评分，不会注入搜索策略，`python evaluation/check_boundary_leakage.py` 会阻止 holdout 答案进入生产 phrase hints；`replay --ci` 可在 fresh clone 中使用已提交的 synthetic fixture 离线回归。人工 A/B release gate 仍独立运行。
+
+### 如何读 release verdict
+
+Boundary release gate 把两类证据分开报告，不再合成一个数字：
+
+- **mechanics**（`mechanics_verdict`）—— evidence-backed promotion、duplicate query rate、query 演化、repetition、invalid gain。确定性 harness 能完整决定，必须 `pass`。
+- **discovery**（`discovery_verdict`）—— mainstream coverage、meaningful new mechanism、cross-domain transfer。需要真实宿主 Agent 参与判断。
+
+评测 harness 使用确定性 hypothesis 策略（`evaluation/version_worker.py`），该策略只能提升当前 observation 已给出的证据，**按构造无法产生跨域跳跃**。因此在这个 harness 下 `discovery_verdict` 恒为 `not_measured`，`cross_mechanism_status` 恒为 `not_measured`。
+
+**这是设计结果，不是缺陷。** 整体 verdict 因此长期停在 `needs_review`：两个 mechanics gate 都 `pass` 已经是当前 harness 能给出的最强状态。要拿到整体 `pass`，必须先有 host-in-the-loop 的 discovery 评测，那部分尚未实现。不要把 `not_measured` 或 `needs_review` 当成质量回归来排查。
+
+同理，confirmation 精度有多个分母不同的指标：`confirmation_precision` 只统计命中 Golden 答案的确认，`blind_precision` 只统计人工盲标为 meaningful 的确认。单看任何一个都会低估实际质量。
 
 ## 首版边界
 

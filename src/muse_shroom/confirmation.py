@@ -33,6 +33,51 @@ def _evidence_repos(item: dict[str, Any]) -> set[str]:
     }
 
 
+def _support_text(source: dict[str, Any]) -> str:
+    return _normalized(str(
+        source.get("full_evidence_text") or source.get("evidence_text") or ""
+    ))
+
+
+def _near_duplicate_support(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if not (left.get("mechanism_anchored") or right.get("mechanism_anchored")):
+        return False
+    left_text = _support_text(left)
+    right_text = _support_text(right)
+    return bool(
+        left_text and right_text
+        and (left_text == right_text or _token_overlap(left_text, right_text) >= (2 / 3))
+    )
+
+
+def _independent_repo_count(sources: Iterable[dict[str, Any]]) -> int:
+    by_repo: dict[str, list[dict[str, Any]]] = {}
+    for source in sources:
+        repo = str(source.get("repo") or "").strip().casefold()
+        if repo:
+            by_repo.setdefault(repo, []).append(source)
+    groups: list[list[dict[str, Any]]] = []
+    for repo_sources in by_repo.values():
+        group = next(
+            (
+                existing for existing in groups
+                if all(
+                    any(_near_duplicate_support(left, right) for right in existing)
+                    for left in repo_sources
+                ) and all(
+                    any(_near_duplicate_support(left, right) for left in repo_sources)
+                    for right in existing
+                )
+            ),
+            None,
+        )
+        if group is None:
+            groups.append(list(repo_sources))
+        else:
+            group.extend(repo_sources)
+    return len(groups)
+
+
 def _same_repo_variant(left: dict[str, Any], right: dict[str, Any],
                        left_key: str, right_key: str) -> bool:
     """Merge adjectival surface variants only when evidence and core phrase match."""
@@ -175,17 +220,25 @@ def evaluate_confirmation(queue_item: dict[str, Any], refreshed: dict[str, Any] 
         if item.get("core_use_case")
         and item.get("request_anchored")
         and int(item.get("evidence_relevance_score") or 0) >= 50
+        and not any(
+            _near_duplicate_support(item, discovery)
+            for discovery in discovery_evidence
+        )
     ]
     core_sources = [
         item for item in [*discovery_evidence, *confirmation_evidence]
         if item.get("core_use_case")
     ]
-    core_repos = {
-        str(item.get("repo") or "").casefold()
+    core_repo_count = len({
+        str(item.get("repo") or "").strip().casefold()
         for item in core_sources if str(item.get("repo") or "").strip()
-    }
+    })
+    independent_core_repo_count = _independent_repo_count(core_sources)
+    near_duplicate_repository_support = (
+        core_repo_count >= 2 and independent_core_repo_count < core_repo_count
+    )
     multi_repo = (
-        len(core_repos) >= 2
+        independent_core_repo_count >= 2
         and int((refreshed or {}).get("evidence_relevance_score") or 0) >= 50
         and (
             any(item.get("request_anchored") for item in confirmation_evidence)
@@ -195,7 +248,7 @@ def evaluate_confirmation(queue_item: dict[str, Any], refreshed: dict[str, Any] 
     )
     transfer_backed = (
         bool(confirmation_evidence)
-        and len(core_repos) >= 2
+        and independent_core_repo_count >= 2
         and any(item.get("core_use_case") for item in confirmation_evidence)
         and any(item.get("mechanism_anchored") for item in discovery_evidence)
     )
@@ -208,6 +261,9 @@ def evaluate_confirmation(queue_item: dict[str, Any], refreshed: dict[str, Any] 
     elif transfer_backed:
         status = "confirmed"
         reason = "cross_domain_mechanism_transfer"
+    elif near_duplicate_repository_support:
+        status = "rejected"
+        reason = "near_duplicate_repository_support"
     elif failed:
         status = "unresolved"
         reason = "confirmation_search_failed"
@@ -229,6 +285,7 @@ def evaluate_confirmation(queue_item: dict[str, Any], refreshed: dict[str, Any] 
         "discovery_evidence": discovery_evidence,
         "confirmation_queries": executed_queries,
         "confirmation_evidence": confirmation_evidence,
+        "independent_core_repo_count": independent_core_repo_count,
         "confirmation_status": status,
         "confirmation_reason": reason,
         **{

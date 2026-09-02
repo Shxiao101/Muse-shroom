@@ -3,9 +3,10 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Iterable
 
+from .analyze import age_days
 from .boundary_score import (
     annotate_boundary_signals, candidate_mechanism_names, contribution_score,
     exploration_terms, gated_boundary_value, novelty_score, recalled_mechanism_counts,
@@ -137,15 +138,14 @@ def _percentiles(candidates: list[dict[str, Any]]) -> dict[str, float]:
     return {repo_key(item): rank[int(item.get("stargazers_count", 0))] for item in candidates}
 
 
-def _activity(candidate: dict[str, Any]) -> float:
+def _activity(candidate: dict[str, Any],
+              reference_time: str | datetime | None = None) -> float:
     raw = candidate.get("pushed_at")
     if not raw:
         return 0.0
-    try:
-        pushed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except ValueError:
+    days = age_days(str(raw), reference_time=reference_time)
+    if days == 10_000:
         return 0.0
-    days = max(0, (datetime.now(timezone.utc) - pushed).days)
     return max(0.0, 100.0 - days / 7)
 
 
@@ -291,7 +291,8 @@ def concept_probe_score(candidate: dict[str, Any], concept: Concept, concept_id:
 
 
 def score_candidates(candidates: Iterable[dict[str, Any]], request: SearchRequest,
-                     *, enriched: bool, mode: str = "deep") -> list[dict[str, Any]]:
+                     *, enriched: bool, mode: str = "deep",
+                     reference_time: str | datetime | None = None) -> list[dict[str, Any]]:
     items = list(candidates)
     rrf = _normalized({repo_key(item): _rrf_raw(item) for item in items})
     popularity = _percentiles(items)
@@ -303,7 +304,7 @@ def score_candidates(candidates: Iterable[dict[str, Any]], request: SearchReques
         relation = relationship_score(item)
         recall = rrf.get(key, 0.0) * .55 + core * .30 + relation * .15
         evidence = _evidence_completeness(item) if enriched else 0.0
-        activity = _activity(item)
+        activity = _activity(item, reference_time)
         underexposure = _underexposure(item)
         item["selection_score_components"] = {
             "recall": round(recall, 2), "rrf": round(rrf.get(key, 0.0), 2),
@@ -368,10 +369,14 @@ def _unseen_mechanisms(item: dict[str, Any], presented: set[str]) -> list[str]:
 def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest,
                     quotas: dict[str, int], *, enriched: bool,
                     max_per_owner: int | None = None, mode: str = "deep",
-                    mechanism_aware: bool = True, rescore: bool = True
+                    mechanism_aware: bool = True, rescore: bool = True,
+                    reference_time: str | datetime | None = None,
                     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     items = (
-        score_candidates(candidates, request, enriched=enriched, mode=mode)
+        score_candidates(
+            candidates, request, enriched=enriched, mode=mode,
+            reference_time=reference_time,
+        )
         if rescore else list(candidates)
     )
     selected: list[dict[str, Any]] = []
@@ -456,8 +461,12 @@ def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest
 
 
 def probe_select(candidates: Iterable[dict[str, Any]], request: SearchRequest,
-                 limit: int = PROBE_LIMIT) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    items = score_candidates(candidates, request, enriched=False)
+                 limit: int = PROBE_LIMIT, *,
+                 reference_time: str | datetime | None = None,
+                 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    items = score_candidates(
+        candidates, request, enriched=False, reference_time=reference_time,
+    )
     selected: list[dict[str, Any]] = []
     selected_names: set[str] = set()
     owner_counts: dict[str, int] = {}
@@ -546,13 +555,17 @@ def probe_select(candidates: Iterable[dict[str, Any]], request: SearchRequest,
 
 
 def shortlist_select(candidates: Iterable[dict[str, Any]], request: SearchRequest,
-                     *, mode: str = "deep") -> tuple[list[dict[str, Any]], dict[str, int]]:
+                     *, mode: str = "deep",
+                     reference_time: str | datetime | None = None,
+                     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     items = list(candidates)
-    scored = score_candidates(items, request, enriched=True, mode=mode)
+    scored = score_candidates(
+        items, request, enriched=True, mode=mode, reference_time=reference_time,
+    )
     quotas = shortlist_quotas(scored, mode=mode)
     selected, counts = balanced_select(
         scored, request, quotas, enriched=True, max_per_owner=SHORTLIST_MAX_OWNER, mode=mode,
-        rescore=False,
+        rescore=False, reference_time=reference_time,
     )
     return selected[:SHORTLIST_LIMIT], counts
 

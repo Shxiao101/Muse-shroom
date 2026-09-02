@@ -19,12 +19,13 @@ from tests.helpers import FrozenGitHub, repo
 
 
 def source(repo_name: str, *, stage: str = "discovery", anchored: bool = True,
-           mechanism_anchored: bool = True, score: int = 70) -> dict:
+           mechanism_anchored: bool = True, score: int = 70,
+           evidence_text: str = "Decision log supports meeting efficiency.") -> dict:
     return {
         "repo": repo_name,
         "source_field": "readme_features",
         "evidence_id": f"repo:{repo_name}:readme:features",
-        "evidence_text": "Decision log supports meeting efficiency.",
+        "evidence_text": evidence_text,
         "core_use_case": True,
         "request_anchored": anchored,
         "mechanism_anchored": mechanism_anchored,
@@ -108,7 +109,10 @@ class ConfirmationTests(unittest.TestCase):
             "evidence_relevance_score": 82,
             "sources": [
                 source("one/meeting"),
-                source("two/meeting", stage="confirmation", score=82),
+                source(
+                    "two/meeting", stage="confirmation", score=82,
+                    evidence_text="Outcome journals preserve decisions after team meetings.",
+                ),
             ],
         }
 
@@ -141,7 +145,10 @@ class ConfirmationTests(unittest.TestCase):
     def test_two_independent_discovery_repos_can_confirm_after_recheck(self):
         discovery = [
             source("one/meeting", anchored=False),
-            source("two/meeting", anchored=False, mechanism_anchored=False),
+            source(
+                "two/meeting", anchored=False, mechanism_anchored=False,
+                evidence_text="A durable outcome journal records team choices.",
+            ),
         ]
         queue = {
             "candidate": "decision log",
@@ -160,6 +167,61 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(record["confirmation_reason"], "multi_repo_independent_support")
         self.assertEqual(record["confirmation_evidence"], [])
 
+    def test_near_duplicate_repository_support_is_not_independent(self):
+        clone_text = (
+            "Lifestyle Habit Tracker Recipe Cooking Meditation Weather Diary Mood Tracker "
+            "Emerging Tech Web3 NFT Spatial Computing Quantum Computing Autonomous Drone Fleet"
+        )
+        discovery = source(
+            "original/ui-skill", anchored=False, evidence_text=clone_text,
+        )
+        clone = source(
+            "clone/ui-skill", stage="confirmation", anchored=False,
+            evidence_text=clone_text.replace(" ", ", "),
+        )
+        queue = {
+            "candidate": "spatial computing",
+            "discovery_evidence": [discovery],
+        }
+        refreshed = {
+            "evidence_relevance_score": 76,
+            "sources": [discovery, clone],
+        }
+
+        record = evaluate_confirmation(
+            queue, refreshed, [{"query": '"spatial computing" "learning habit"'}]
+        )
+
+        self.assertEqual(record["independent_core_repo_count"], 1)
+        self.assertEqual(record["confirmation_status"], "rejected")
+        self.assertEqual(
+            record["confirmation_reason"], "near_duplicate_repository_support",
+        )
+
+    def test_shared_topic_does_not_hide_distinct_repository_support(self):
+        shared_topic = source(
+            "one/audio", anchored=False, evidence_text="beat tracking",
+        )
+        second_topic = source(
+            "two/audio", anchored=False, evidence_text="beat tracking",
+        )
+        second_description = source(
+            "two/audio", anchored=False,
+            evidence_text="Audio onset analysis aligns beats with chord changes.",
+        )
+        discovery = [shared_topic, second_topic, second_description]
+        record = evaluate_confirmation(
+            {"candidate": "beat tracking", "discovery_evidence": discovery},
+            {"evidence_relevance_score": 76, "sources": discovery},
+            [{"query": '"beat tracking" "music analysis"'}],
+        )
+
+        self.assertEqual(record["independent_core_repo_count"], 2)
+        self.assertEqual(record["confirmation_status"], "confirmed")
+        self.assertEqual(
+            record["confirmation_reason"], "multi_repo_independent_support",
+        )
+
     def test_cross_domain_confirmation_cannot_borrow_request_relevance(self):
         queue = {
             "candidate": "identity verification",
@@ -176,6 +238,7 @@ class ConfirmationTests(unittest.TestCase):
                 source(
                     "two/attendance", stage="confirmation", anchored=False,
                     mechanism_anchored=True,
+                    evidence_text="Identity checks verify attendance at scheduled sessions.",
                 ),
             ],
         }

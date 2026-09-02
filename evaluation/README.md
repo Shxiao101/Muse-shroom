@@ -86,11 +86,54 @@ being discarded. Release verdicts are `pass`, `fail`, `needs_review`,
 `insufficient_data`, or `leakage_detected`; holdout and development are reported
 separately. Golden data is loaded only after retrieval.
 
+Agentic raw payloads declare their evaluation `policy`. The current replay
+worker uses `deterministic`: it can promote only terms already present in the
+observation, so it cannot measure cross-domain discovery capability. Under this
+policy, `cross_mechanism_status` and `discovery_verdict` are `not_measured`;
+`cross_mechanism_discovery` and case-level `discovery_quality_passed` are
+`null`. Golden and blind gain counts remain numeric diagnostic classifications
+for comparison with earlier releases, but they do not make the discovery gate
+pass.
+
+`boundary_quality_passed` and `mechanics_verdict` cover only reproducible
+mechanics: evidence-backed promotions, query evolution, duplicate-query rate,
+presentation repetition, and invalid gain. A `host_in_loop` payload additionally
+evaluates `discovery_quality_passed` from meaningful gain, cross-mechanism
+transfer, and mainstream coverage. The overall verdict is `fail` when either
+measured gate fails, `needs_review` when mechanics pass but discovery is not
+measured, and `pass` only when both measured gates pass. An unmeasured discovery
+gate can never produce `pass`.
+
 Development summaries also include `blind_unknown_review`. Each item contains
 only the request, proposed mechanism, supporting evidence and repositories, its
-iteration source, and an empty reviewer label. Reviewers may assign
+iteration source, and a reviewer label slot. Reviewers may assign
 `meaningful`, `noise`, `synonym`, `too_generic`, `wrong_domain`, or
 `insufficient_evidence`. Golden expectations are excluded from this queue.
+
+Development-only post-hoc labels live in `evaluation/blind-review-labels.json`
+under casefolded `suite|case_id|mechanism` keys. The evaluator applies them only
+when every unknown mechanism in the entire development run has a label. Partial
+files are still shown in `blind_unknown_review` so reviewers can see completed
+and missing work, but they do not change scoring, gain classification, or the
+verdict. The three confirmation precision metrics share the confirmed count as
+their denominator but keep their sources explicit:
+
+- `confirmation_precision`: Golden-known meaningful confirmations / confirmed
+- `blind_precision`: blind-labelled meaningful confirmations / confirmed
+- `confirmation_precision_total`: both sources / confirmed
+
+The first two remain separately auditable and can each understate quality when
+read alone. Read `confirmation_precision_total` for "how good were the
+confirmations". It is `null` when there are no confirmations; unlike
+`blind_precision`, it remains computable from the Golden-known term when blind
+labels were not applied. `blind_precision` is `null` until
+`blind_labels_applied` is true. Labels never feed `acceptable_new_mechanisms`,
+Golden aliases, or `DISCOVERY_PHRASE_HINTS`.
+
+`run_boundary_eval.py` loads that committed file by default when it exists. Use
+`--labels PATH` to select another validated development label file, or
+`--no-labels` to produce an unlabeled baseline replay.
+
 Holdout summaries never expose or generate this review queue and must not feed
 production phrase hints, aliases, or Golden updates.
 

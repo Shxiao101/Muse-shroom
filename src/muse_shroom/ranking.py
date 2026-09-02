@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 import re
 from collections import Counter
 from dataclasses import asdict
@@ -277,6 +278,7 @@ def rank_search(
     assessment_payload: Any,
     *,
     strict: bool = False,
+    reference_time: str | datetime | None = None,
 ) -> dict[str, Any]:
     session = store.load_search(search_id)
     candidates = session["candidates"]
@@ -364,7 +366,12 @@ def rank_search(
         candidate = presentation_by_name[name]
         stars = int(candidate.get("stargazers_count", 0))
         popularity = percentiles[name]
-        activity = max(0.0, 100.0 - age_days(candidate.get("pushed_at")) / 7)
+        activity = max(
+            0.0,
+            100.0 - age_days(
+                candidate.get("pushed_at"), reference_time=reference_time,
+            ) / 7,
+        )
         type_quality = _type_quality(assessment.artifact_type, candidate)
         relation = _relationship(candidate)
         evidence_completeness = float(
