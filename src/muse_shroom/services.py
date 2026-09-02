@@ -82,9 +82,14 @@ class MuseCore:
     def rank(self, search_id: str, assessments: Any) -> dict[str, Any]:
         store = self._store()
         try:
-            return rank_search(store, search_id, assessments, strict=True)
+            result = rank_search(store, search_id, assessments, strict=True)
         finally:
             store.close()
+        from .explorer.launcher import ensure_explorer
+        explorer = ensure_explorer(search_id, data_dir=self.data_dir)
+        result["explorer_url"] = explorer["url"]
+        result["explorer_running"] = explorer["running"]
+        return result
 
     def inspect(self, repo: str, search_id: str | None = None) -> dict[str, Any]:
         store = self._store()

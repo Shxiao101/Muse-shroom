@@ -29,7 +29,13 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn("muse_rank", self.skill)
         self.assertIn("Prefer Muse-shroom MCP over the CLI", self.skill)
         self.assertIn("Do not change the search strategy", self.skill)
-        self.assertNotIn("explorer", self.skill.lower())
+        # The Skill may surface the Explorer link that rank returns, but must never
+        # depend on the Explorer being there: it must not launch it, and it must
+        # degrade when the field is missing.
+        self.assertNotIn("muse-shroom explorer", self.skill)
+        self.assertNotIn("run_explorer", self.skill)
+        self.assertIn("explorer_url", self.skill)
+        self.assertIn("Omit the line when `explorer_url` is absent", self.skill)
         self.assertIn("stop.signals", self.skill)
         self.assertIn("should_stop", self.skill)
         self.assertIn("还有吗", self.skill)

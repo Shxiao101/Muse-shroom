@@ -1,4 +1,4 @@
-# Muse-shroom 0.4.10
+# Muse-shroom 0.5.0
 
 Muse-shroom 是一个“让当前 Agent 帮你打破 GitHub 信息茧房”的本地搜索内核。它把可复现的 GitHub API 调用、SQLite 缓存、关系扩散和确定性排名放进 Python CLI，把自然语言理解和语义评价留给 Codex、Claude、Cursor 等宿主 Agent。
 
@@ -52,7 +52,7 @@ muse-shroom rank --search-id SEARCH_ID --assessments assessments.json --output r
 muse-shroom explorer
 ```
 
-默认打开 `http://127.0.0.1:8765/`，只绑定 loopback。Explorer 子命令支持 `--host`、`--port`、`--no-browser`；数据目录仍用全局 `--data-dir`（`muse-shroom --data-dir DIR explorer`）。绑定 `0.0.0.0` 等非本机地址必须显式加 `--allow-remote`（无认证，会暴露本地搜索数据）。Skill / MCP / CLI 不依赖 Explorer。`?debug=1` 才显示 selection_order、score components 和 query history。
+默认打开 `http://127.0.0.1:8765/`，只绑定 loopback。Explorer 子命令支持 `--host`、`--port`、`--no-browser`；数据目录仍用全局 `--data-dir`（`muse-shroom --data-dir DIR explorer`）。绑定 `0.0.0.0` 等非本机地址必须显式加 `--allow-remote`（无认证，会暴露本地搜索数据）。`rank` 完成后会在后台启动一次 Explorer 并在结果里返回 `explorer_url`，由宿主 Agent 把链接交给你；它不会自动打开浏览器，服务器在闲置一段时间后自行退出。加 `--no-explore` 或设 `MUSE_SHROOM_NO_EXPLORER=1` 可关闭。Skill / MCP / CLI 在没有 Explorer 时功能不变，只是少这条链接。`?debug=1` 才显示 selection_order、score components 和 query history。
 
 ## MCP 宿主配置
 

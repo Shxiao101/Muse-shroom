@@ -1,11 +1,14 @@
 import io
 import json
+import os
+import unittest.mock
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
 from contextlib import redirect_stderr
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from muse_shroom.cli import main
@@ -411,3 +414,99 @@ class ExplorerHttpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExplorerLauncherTests(unittest.TestCase):
+    """`rank` hands back a working link without ever opening a browser."""
+
+    def test_session_url_deep_links_to_the_finished_session(self):
+        from muse_shroom.explorer.launcher import session_url
+
+        self.assertEqual(
+            session_url("abc123", host="127.0.0.1", port=8765),
+            "http://127.0.0.1:8765/#/s/abc123/results",
+        )
+        self.assertEqual(session_url(None, port=9000), "http://127.0.0.1:9000/")
+
+    def test_ensure_explorer_never_spawns_when_opted_out(self):
+        from muse_shroom.explorer.launcher import DISABLE_ENV, ensure_explorer
+
+        # The caller's own opt-out, with the suite-wide env guard cleared so this
+        # exercises the parameter rather than the environment.
+        with unittest.mock.patch.dict(os.environ, {DISABLE_ENV: ""}):
+            with unittest.mock.patch("subprocess.Popen") as popen:
+                result = ensure_explorer("abc123", enabled=False)
+        popen.assert_not_called()
+        self.assertFalse(result["started"])
+        self.assertEqual(result["reason"], "disabled")
+        self.assertIn("abc123", result["url"])
+
+    def test_ensure_explorer_honours_the_environment_opt_out(self):
+        from muse_shroom.explorer.launcher import DISABLE_ENV, ensure_explorer
+
+        with unittest.mock.patch.dict(os.environ, {DISABLE_ENV: "1"}):
+            with unittest.mock.patch("subprocess.Popen") as popen:
+                result = ensure_explorer("abc123", enabled=True)
+        popen.assert_not_called()
+        self.assertEqual(result["reason"], "disabled")
+
+    def test_ensure_explorer_reuses_a_running_server_instead_of_spawning(self):
+        from muse_shroom.explorer.launcher import DISABLE_ENV, ensure_explorer, is_running
+
+        with tempfile.TemporaryDirectory() as directory:
+            server = build_server(data_dir=directory, port=0)
+            port = server.server_address[1]
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                self.assertTrue(is_running(port=port))
+                with unittest.mock.patch.dict(os.environ, {DISABLE_ENV: ""}):
+                    with unittest.mock.patch("subprocess.Popen") as popen:
+                        result = ensure_explorer("abc123", port=port, enabled=True)
+                popen.assert_not_called()
+            finally:
+                server.shutdown()
+                server.server_close()
+        self.assertTrue(result["running"])
+        self.assertFalse(result["started"])
+        self.assertEqual(result["reason"], "already_running")
+
+    def test_is_running_rejects_a_port_owned_by_something_else(self):
+        from muse_shroom.explorer.launcher import is_running
+
+        class Other(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                return
+
+            def do_GET(self):
+                body = b'{"hello":"not muse-shroom"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Other)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            self.assertFalse(is_running(port=port))
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_idle_watchdog_stops_a_server_nobody_is_using(self):
+        from muse_shroom.explorer.server import ExplorerHandler, _idle_watchdog
+
+        stopped = threading.Event()
+
+        class FakeServer:
+            def shutdown(self):
+                stopped.set()
+
+        ExplorerHandler.last_request = 0.0
+        thread = threading.Thread(
+            target=_idle_watchdog, args=(FakeServer(), 1.0), daemon=True,
+        )
+        thread.start()
+        self.assertTrue(stopped.wait(timeout=6), "idle server was never shut down")
