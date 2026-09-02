@@ -29,6 +29,9 @@ FORMAL_METRICS = (
     "duplicate_query_rate", "unexplored_directions_at_stop",
     "planned_iteration_count", "executed_iteration_count",
     "retrieval_changing_iteration_count",
+    "discovered_term_count", "typed_term_count", "request_anchored_count",
+    "mechanism_anchored_count", "promotable_term_count", "gate_blocked_by",
+    "stop_reason", "later_stage_query_count",
     "confirmation_planned_count", "confirmation_executed_count",
     "confirmation_candidates_total", "confirmation_candidates_attempted",
     "confirmation_candidates_skipped", "confirmation_skipped_count",
@@ -87,6 +90,70 @@ def _queries_changed(trace: list[dict[str, Any]]) -> bool | None:
     if len(rounds) < 2:
         return None
     return any(rounds[index] != rounds[0] for index in range(1, len(rounds)))
+
+
+def _promotion_funnel(result: dict[str, Any], trace: list[dict[str, Any]]) -> dict[str, Any]:
+    """Report how discovered terms fare against the direct-promotion gate.
+
+    Deep mode stalls when nothing is promotable, so the funnel and the unspent
+    budget belong in the artifact rather than in an ad-hoc script. The anchoring
+    flags come from the term level, which is computed over every source; the
+    per-term `sources` list is truncated and must not be counted instead.
+    """
+    terms = list((result.get("boundary") or {}).get("discovered_term_evidence") or [])
+    initial = next((step for step in trace if step.get("stage") == "search"), None)
+    later = [step for step in trace if step is not initial]
+    base = {
+        "discovered_term_count": len(terms),
+        "promotable_term_count": sum(bool(item.get("promotable")) for item in terms),
+        "later_stage_query_count": sum(len(step.get("queries") or []) for step in later),
+    }
+    if not any("gate_blocked_by" in item for item in terms):
+        # Raw results captured before the gate telemetry existed carry no anchoring
+        # flags. Report the funnel as unavailable rather than inferring counts from
+        # their absence, which would read as "nothing was anchored".
+        return {
+            **base, "typed_term_count": None, "request_anchored_count": None,
+            "mechanism_anchored_count": None, "gate_blocked_by": {},
+        }
+    blocked: dict[str, int] = {}
+    for item in terms:
+        key = str(item.get("gate_blocked_by") or "promoted")
+        blocked[key] = blocked.get(key, 0) + 1
+    return {
+        **base,
+        # Derived from the gate's own verdict rather than re-deriving typing here,
+        # so the eval cannot drift from the core's definition of a typed mechanism.
+        "typed_term_count": len(terms) - blocked.get("specificity", 0),
+        "request_anchored_count": sum(bool(item.get("request_anchored")) for item in terms),
+        "mechanism_anchored_count": sum(bool(item.get("mechanism_anchored")) for item in terms),
+        "gate_blocked_by": dict(sorted(blocked.items())),
+    }
+
+
+def _sum_optional(cases: list[dict[str, Any]], field: str) -> int | None:
+    """Sum a funnel field, or None when any case predates the gate telemetry."""
+    values = [item.get(field) for item in cases]
+    if any(value is None for value in values):
+        return None
+    return sum(int(value) for value in values)
+
+
+def _merge_counts(cases: list[dict[str, Any]], field: str) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for item in cases:
+        for key, value in (item.get(field) or {}).items():
+            merged[key] = merged.get(key, 0) + int(value)
+    return dict(sorted(merged.items()))
+
+
+def _merge_labels(cases: list[dict[str, Any]], field: str) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for item in cases:
+        key = str(item.get(field) or "")
+        if key:
+            merged[key] = merged.get(key, 0) + 1
+    return dict(sorted(merged.items()))
 
 
 def load_golden(path: Path = DEFAULT_GOLDEN) -> dict[str, dict[str, Any]]:
@@ -444,6 +511,8 @@ def case_metrics(result: dict[str, Any], case: dict[str, Any] | None = None,
         "duplicate_query_rate": duplicate_query_rate,
         "unexplored_directions_at_stop": list(loop.get("unexplored_directions_at_stop") or []),
         "iterations_used": int(loop.get("iterations_used") or 0),
+        "stop_reason": str(loop.get("stop_reason") or ""),
+        **_promotion_funnel(result, trace),
         "planned_iteration_count": planned_iterations,
         "executed_iteration_count": executed_iterations,
         "retrieval_changing_iteration_count": retrieval_changing_iterations,
@@ -591,6 +660,17 @@ def summarize(payload: dict[str, Any], golden_cases: dict[str, dict[str, Any]] |
             ),
             "median_direction_coverage": statistics.median(item["direction_coverage"] for item in cases),
             "median_presented_mechanism_count": statistics.median(item["presented_mechanism_count"] for item in cases),
+            # Promotion funnel: where discovered terms die before reaching the
+            # iteration loop, and how much of the loop's budget went unused.
+            "discovered_term_count": sum(item["discovered_term_count"] for item in cases),
+            "typed_term_count": _sum_optional(cases, "typed_term_count"),
+            "request_anchored_count": _sum_optional(cases, "request_anchored_count"),
+            "mechanism_anchored_count": _sum_optional(cases, "mechanism_anchored_count"),
+            "promotable_term_count": sum(item["promotable_term_count"] for item in cases),
+            "gate_blocked_by": _merge_counts(cases, "gate_blocked_by"),
+            "later_stage_query_count": sum(item["later_stage_query_count"] for item in cases),
+            "median_iterations_used": statistics.median(item["iterations_used"] for item in cases),
+            "stop_reason": _merge_labels(cases, "stop_reason"),
             "agentic_boundary_expansion_share": round(expanded_share, 3),
             "meaningful_boundary_expansion_share": round(meaningful_share, 3),
             "total_meaningful_boundary_expansion_share": round(total_meaningful_share, 3),

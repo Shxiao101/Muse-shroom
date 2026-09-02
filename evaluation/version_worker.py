@@ -129,6 +129,43 @@ def deterministic_hypothesis(observation: dict[str, Any], used: set[str]) -> dic
             "strategies": ["keyword", *(["relationship"] if seed else [])],
             "reason": "deterministic evaluation: cover observed unexplored direction",
         }
+
+    # Third fallback: a real host Agent may add an exploration direction that cites
+    # an evidence ID, with no `promotable` requirement (see _validate_hypothesis in
+    # src/muse_shroom/iteration.py). Without this the policy halts whenever nothing
+    # is promotable, which made the benchmark under-report what a host can do.
+    # `gate_blocked_by` names terms the core typed as mechanisms but gated on
+    # anchoring or score; when the field is absent the set membership fails and the
+    # policy behaves exactly as before.
+    for item in evidence:
+        if item.get("gate_blocked_by") not in {"request_anchored", "score"}:
+            continue
+        term = str(item.get("term") or "").strip()
+        key = term.casefold()
+        if not term or key in used:
+            continue
+        evidence_id = next(
+            (
+                str(source.get("evidence_id") or "").strip()
+                for source in item.get("sources") or []
+                if source.get("core_use_case") and str(source.get("evidence_id") or "").strip()
+            ),
+            "",
+        )
+        if not evidence_id:
+            continue
+        used.add(key)
+        return {
+            "decision": "continue",
+            "target_direction": term,
+            "add_exploration_directions": [{
+                "term": term,
+                "evidence": evidence_id,
+                "reason": "deterministic evaluation: evidence-backed observed mechanism",
+            }],
+            "strategies": ["keyword"],
+            "reason": "deterministic evaluation: explore an evidence-backed observed term",
+        }
     return None
 
 

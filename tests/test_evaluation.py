@@ -78,6 +78,62 @@ class EvaluationTests(unittest.TestCase):
 
         self.assertEqual(hypothesis["target_direction"], "fresh mechanism")
 
+    def _gated_observation(self, **overrides):
+        """A term the core typed as a mechanism but gated on request anchoring."""
+        source = {
+            "repo": "owner/repo", "core_use_case": True,
+            "evidence_id": "repo:owner/repo:readme:concept_match",
+        }
+        source.update(overrides.pop("source", {}))
+        term = {
+            # term_kind reports project_category for anything not directly
+            # promotable, so the policy must key off gate_blocked_by instead.
+            "term": "pomodoro", "kind": "project_category",
+            "mechanism_specificity": "mechanism", "promotable": False,
+            "gate_blocked_by": "request_anchored", "confidence": 0.9,
+            "support_count": 2, "sources": [source],
+        }
+        term.update(overrides.pop("term", {}))
+        return {"unexplored_directions": [], "discovered_term_evidence": [term], **overrides}
+
+    def test_agentic_policy_explores_an_evidence_backed_term_the_gate_blocked(self):
+        hypothesis = deterministic_hypothesis(self._gated_observation(), set())
+
+        self.assertIsNotNone(hypothesis)
+        self.assertEqual(hypothesis["target_direction"], "pomodoro")
+        # The evidence-ID path is what _validate_hypothesis accepts without
+        # requiring promotable, so it must not claim a direct promotion.
+        self.assertNotIn("promote_discovered_terms", hypothesis)
+        self.assertEqual(
+            hypothesis["add_exploration_directions"],
+            [{
+                "term": "pomodoro",
+                "evidence": "repo:owner/repo:readme:concept_match",
+                "reason": "deterministic evaluation: evidence-backed observed mechanism",
+            }],
+        )
+
+    def test_agentic_policy_evidence_fallback_ignores_mistyped_terms(self):
+        hypothesis = deterministic_hypothesis(
+            self._gated_observation(term={"gate_blocked_by": "specificity"}), set(),
+        )
+        self.assertIsNone(hypothesis)
+
+    def test_agentic_policy_evidence_fallback_requires_a_core_use_case_evidence_id(self):
+        self.assertIsNone(deterministic_hypothesis(
+            self._gated_observation(source={"evidence_id": ""}), set(),
+        ))
+        self.assertIsNone(deterministic_hypothesis(
+            self._gated_observation(source={"core_use_case": False}), set(),
+        ))
+
+    def test_agentic_policy_evidence_fallback_is_inert_without_gate_telemetry(self):
+        # Raw payloads captured before the gate telemetry must behave as before.
+        hypothesis = deterministic_hypothesis(
+            self._gated_observation(term={"gate_blocked_by": None}), set(),
+        )
+        self.assertIsNone(hypothesis)
+
     def test_deterministic_rank_fixture_cites_readme_without_claiming_judgment(self):
         candidate = {
             "full_name": "owner/tool", "topics": ["focus"],

@@ -395,6 +395,19 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(by_term["decision monitoring"]["mechanism_specificity"], "behavioral_signal")
         self.assertIn("local_problem", by_term["decision monitoring"]["evidence_relevance_reason"])
 
+        # Gate telemetry names which condition each term failed, so the promotion
+        # funnel is readable from the artifact instead of an ad-hoc script. It is
+        # diagnostic only and must not change what promotes.
+        self.assertIsNone(by_term["decision monitoring"]["gate_blocked_by"])
+        self.assertTrue(by_term["decision monitoring"]["request_anchored"])
+        self.assertEqual(
+            by_term["browser automation"]["gate_blocked_by"], "request_anchored",
+        )
+        self.assertFalse(by_term["browser automation"]["request_anchored"])
+        for item in boundary.discovered_term_evidence:
+            self.assertEqual(item["promotable"], item["gate_blocked_by"] is None)
+            self.assertIn("mechanism_anchored", item)
+
     def test_umbrella_category_is_not_promotable_even_when_request_relevant(self):
         request = SearchRequest.from_dict({
             "request": "keep long projects motivating",
