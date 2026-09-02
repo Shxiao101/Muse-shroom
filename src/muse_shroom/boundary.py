@@ -1081,6 +1081,33 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
             reason = f"{reason},insufficient_specificity"
         return score, reason, specificity, promotable, confidence
 
+    def gate_signals(key: str) -> dict[str, Any]:
+        """Report why a term did or did not reach direct promotion.
+
+        Diagnostic only: this reads the same signals `term_quality` already uses
+        and never changes which terms promote. Anchoring is computed over every
+        source, while the emitted `sources` list below is truncated to three, so
+        these term-level flags are the complete picture and the truncated list
+        is not.
+        """
+        entries = sources[key]
+        request_anchored = any(source["request_anchored"] for source in entries)
+        mechanism_anchored = any(source["mechanism_anchored"] for source in entries)
+        _, _, specificity, promotable, _ = term_quality(key)
+        if promotable:
+            blocked_by = None
+        elif specificity not in PROMOTABLE_SPECIFICITIES:
+            blocked_by = "specificity"
+        elif not request_anchored:
+            blocked_by = "request_anchored"
+        else:
+            blocked_by = "score"
+        return {
+            "request_anchored": request_anchored,
+            "mechanism_anchored": mechanism_anchored,
+            "gate_blocked_by": blocked_by,
+        }
+
     def term_disposition(key: str) -> str:
         score, _, specificity, promotable, confidence = term_quality(key)
         if promotable:
@@ -1143,6 +1170,7 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
             "promotion_confidence": promotion_confidence,
             "promotable": promotable,
             "disposition": disposition,
+            **gate_signals(key),
             "support_count": len(support_repos[key]),
             "sources": [
                 {
