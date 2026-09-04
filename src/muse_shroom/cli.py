@@ -107,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     observe.add_argument("--output", help="write full JSON to this UTF-8 file and print a short receipt")
     rank = sub.add_parser("rank")
     rank.add_argument("--search-id", required=True)
-    rank.add_argument("--assessments", required=True, help="assessment JSON path or - for stdin")
+    rank.add_argument("--selection", required=True, help="ordered selection JSON path or - for stdin")
     rank.add_argument("--output", help="write full JSON to this UTF-8 file and print a short receipt")
     rank.add_argument(
         "--no-explore", action="store_true",
@@ -213,7 +213,7 @@ def run(args: argparse.Namespace) -> Any:
                 return engine.iterate(args.search_id, _json_input(args.refinement))
             return engine.expand(args.search_id, _json_input(args.refinement))
         if args.command == "rank":
-            result = rank_search(store, args.search_id, _json_input(args.assessments))
+            result = rank_search(store, args.search_id, _json_input(args.selection))
             from .explorer.launcher import ensure_explorer
             explorer = ensure_explorer(
                 args.search_id, data_dir=args.data_dir, enabled=not args.no_explore,
@@ -245,11 +245,7 @@ def run(args: argparse.Namespace) -> Any:
             if args.search_id:
                 ranking = store.get_ranking(args.search_id)
                 if ranking:
-                    ranked_items = ranking.get("items")
-                    if not isinstance(ranked_items, list):
-                        ranked_items = [
-                            item for bucket in ranking.get("buckets", {}).values() for item in bucket
-                        ]
+                    ranked_items = list(ranking.get("items") or [])
                     ranking_item = next((
                         item for item in ranked_items
                         if item.get("repo", "").lower() == args.repo.lower()

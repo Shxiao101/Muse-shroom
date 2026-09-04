@@ -7,9 +7,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from .analyze import _is_thin_overview, github_links, make_evidence, safe_readme
-from .boundary import (
-    annotate_candidate_mechanisms, build_boundary, is_promotable_specificity,
-)
+from .boundary import annotate_candidate_mechanisms, build_boundary
 from .confirmation import (
     confirmation_query_stage_limit, evaluate_confirmation, plan_confirmation_candidates,
 )
@@ -36,7 +34,7 @@ from .models import (
 from .sidecar import (
     SEMANTIC_CANDIDATE_CAP, SEMANTIC_PARTITION, SEMANTIC_QUERY_BUDGET,
     SEMANTIC_README_PER_HYPOTHESIS, SEMANTIC_RELEASE_LIMIT,
-    apply_semantic_mechanism, base_artifact_snapshot, empty_sidecar_state,
+    apply_semantic_mechanism, base_ledger_entry, empty_sidecar_state,
     hypothesis_record, plan_sidecar_queries, public_hypothesis, refresh_statuses,
     select_assessment_candidate, select_enrichment_targets, sidecar_used_query_budget,
     split_additions, validate_host_hypotheses,
@@ -54,7 +52,8 @@ from .storage import Store
 
 PUBLIC_CANDIDATE_FIELDS = {
     "full_name", "html_url", "description", "homepage", "topics", "language",
-    "stargazers_count", "archived", "pushed_at", "license", "latest_release",
+    "stargazers_count", "forks_count", "open_issues_count", "archived", "pushed_at",
+    "license", "latest_release",
     "readme_truncated",
     "discovery_paths", "matched_kinds", "evidence", "selection_lanes",
     "selection_score_components",
@@ -372,7 +371,8 @@ def _compact_search_output(output: dict[str, Any], limit: int = SEARCH_OUTPUT_MA
             key: item[key]
             for key in (
                 "full_name", "html_url", "description", "topics", "language",
-                "stargazers_count", "archived", "pushed_at", "license",
+                "stargazers_count", "forks_count", "open_issues_count", "archived",
+                "pushed_at", "license",
                 "selection_lanes",
             )
             if key in item
@@ -1345,9 +1345,6 @@ class SearchEngine:
             str(item.get("candidate") or "")
             for item in confirmation_records
             if item.get("confirmation_status") == "confirmed"
-            and is_promotable_specificity(
-                str(item.get("mechanism_specificity") or "")
-            )
         ]
         known_directions = {
             concept.term.casefold() for concept in request.exploration_directions
@@ -1419,7 +1416,7 @@ class SearchEngine:
             state["consecutive_no_gain"] = int(state.get("consecutive_no_gain") or 0) + 1
         elif executed_any:
             state["consecutive_no_gain"] = 0
-        pre_hard = "duplicate_queries" if skipped_all else None
+        pre_hard = None
         if after_remaining["iterations"] <= 0:
             pre_hard = pre_hard or "max_iterations"
         hard_reasons, signals = iteration_stop_reasons(
@@ -1461,6 +1458,9 @@ class SearchEngine:
         refresh_statuses(records)
         observation = output.setdefault("observation", {})
         observation["semantic_hypotheses"] = [public_hypothesis(item) for item in records]
+        # The ledger is internal audit state for the no-cannibalization comparison. It
+        # stays in session state and the rank result; exporting it every round put ~5KB
+        # of trace into an output already capped at SEARCH_OUTPUT_MAX_BYTES.
         observation["sidecar_metrics"] = dict(sidecar.get("metrics") or {})
         remaining = observation.setdefault("remaining_budget", {})
         remaining["semantic_queries"] = max(
@@ -1478,31 +1478,33 @@ class SearchEngine:
     ) -> dict[str, Any]:
         sidecar = state.setdefault("semantic_sidecar", empty_sidecar_state())
         metrics = sidecar.setdefault("metrics", {})
-        boundary = output.get("boundary") or {}
-        selected = [
-            item for item in (output.get("candidates") or [])
-            if item.get("selected_for_assessment") or item.get("full_name")
+        stage = str((output.get("observation") or {}).get("stage") or "")
+        if not stage:
+            stage = str(
+                (self.store.latest_boundary_snapshot(search_id) or {}).get("stage") or "iterate"
+            )
+        base_history = [
+            item for item in self.store.query_history(search_id)
+            if int(item.get("iteration") or 0) == iteration
+            and not item.get("skipped")
+            and not str(item.get("kind") or "").startswith("semantic_")
         ]
-        lane_counts = ((output.get("coverage") or {}).get("lane_counts") or {})
-        query_summary = (output.get("observation") or {}).get("query_summary") or {}
-        executed_queries = list(query_summary.get("executed") or [])
-        sidecar["base_artifacts"] = base_artifact_snapshot(
-            query_fingerprints=[
-                str(item.get("fingerprint") or "") for item in executed_queries
-                if str(item.get("fingerprint") or "")
-            ],
+        entry = base_ledger_entry(
+            stage=stage,
+            iteration=iteration,
+            queries=base_history,
+            readme_fetch_count=int(
+                (output.get("coverage") or {}).get("enriched_this_phase") or 0
+            ),
             candidate_names=list(base_candidates),
-            readme_names=[
-                name for name, item in base_candidates.items() if "readme" in item
-            ],
-            shortlist_names=[
-                str(item.get("full_name") or "") for item in selected
-            ],
-            lane_counts=dict(lane_counts) if isinstance(lane_counts, dict) else {},
-            recalled_mechanisms=list(boundary.get("recalled_mechanisms") or []),
-            presented_mechanisms=list(boundary.get("presented_mechanisms") or []),
-            explored_directions=list(boundary.get("explored_directions") or []),
         )
+        ledger = list(sidecar.get("base_ledger") or [])
+        ledger = [
+            item for item in ledger
+            if (item.get("stage"), item.get("iteration")) != (stage, iteration)
+        ]
+        ledger.append(entry)
+        sidecar["base_ledger"] = ledger
         if not self.semantic_sidecar or not host_additions:
             self._attach_sidecar_observation(output, state)
             return output

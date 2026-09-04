@@ -5,10 +5,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from evaluation.cassette import CassetteGitHub, load_cassette
-from evaluation.run_ab import build_blind_pack, main as run_ab_main
+from evaluation.run_ab import (
+    adapt_direct_arm, build_blind_pack, check_claim_traceability, main as run_ab_main,
+)
 from evaluation.score_ab import main as score_ab_main, reveal, summarize
 from evaluation.version_worker import (
-    deterministic_assessment, deterministic_hypothesis, main as version_worker_main,
+    deterministic_hypothesis, deterministic_selection, main as version_worker_main,
 )
 from muse_shroom import __version__ as muse_shroom_version
 from muse_shroom.models import SearchRequest
@@ -44,26 +46,16 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(hypothesis["strategies"], ["keyword", "relationship"])
         self.assertNotIn("promote_discovered_terms", hypothesis)
 
-    def test_agentic_policy_prefers_requested_direction_to_generic_project_category(self):
+    def test_agentic_policy_does_not_gate_observed_source_terms_by_code_category(self):
         hypothesis = deterministic_hypothesis({
             "unexplored_directions": ["requested direction"],
             "discovered_term_evidence": [{
-                "term": "generic topic", "kind": "project_category",
-                "confidence": 0.95, "support_count": 20,
+                "term": "generic topic", "kind": "source_term",
+                "request_anchored": False, "support_count": 20,
             }],
         }, set())
-        self.assertEqual(hypothesis["target_direction"], "requested direction")
-        self.assertNotIn("promote_discovered_terms", hypothesis)
-
-    def test_agentic_policy_does_not_promote_project_category_as_mechanism(self):
-        hypothesis = deterministic_hypothesis({
-            "unexplored_directions": [],
-            "discovered_term_evidence": [{
-                "term": "generic topic", "kind": "project_category",
-                "confidence": 0.95, "support_count": 20,
-            }],
-        }, set())
-        self.assertIsNone(hypothesis)
+        self.assertEqual(hypothesis["target_direction"], "generic topic")
+        self.assertEqual(hypothesis["promote_discovered_terms"], ["generic topic"])
 
     def test_agentic_policy_skips_used_evidence_and_tries_the_next_direction(self):
         hypothesis = deterministic_hypothesis({
@@ -78,75 +70,21 @@ class EvaluationTests(unittest.TestCase):
 
         self.assertEqual(hypothesis["target_direction"], "fresh mechanism")
 
-    def _gated_observation(self, **overrides):
-        """A term the core typed as a mechanism but gated on request anchoring."""
-        source = {
-            "repo": "owner/repo", "core_use_case": True,
-            "evidence_id": "repo:owner/repo:readme:concept_match",
-        }
-        source.update(overrides.pop("source", {}))
-        term = {
-            # term_kind reports project_category for anything not directly
-            # promotable, so the policy must key off gate_blocked_by instead.
-            "term": "pomodoro", "kind": "project_category",
-            "mechanism_specificity": "mechanism", "promotable": False,
-            "gate_blocked_by": "request_anchored", "confidence": 0.9,
-            "support_count": 2, "sources": [source],
-        }
-        term.update(overrides.pop("term", {}))
-        return {"unexplored_directions": [], "discovered_term_evidence": [term], **overrides}
-
-    def test_agentic_policy_explores_an_evidence_backed_term_the_gate_blocked(self):
-        hypothesis = deterministic_hypothesis(self._gated_observation(), set())
-
-        self.assertIsNotNone(hypothesis)
-        self.assertEqual(hypothesis["target_direction"], "pomodoro")
-        # The evidence-ID path is what _validate_hypothesis accepts without
-        # requiring promotable, so it must not claim a direct promotion.
-        self.assertNotIn("promote_discovered_terms", hypothesis)
-        self.assertEqual(
-            hypothesis["add_exploration_directions"],
-            [{
-                "term": "pomodoro",
-                "evidence": "repo:owner/repo:readme:concept_match",
-                "reason": "deterministic evaluation: evidence-backed observed mechanism",
-            }],
-        )
-
-    def test_agentic_policy_evidence_fallback_ignores_mistyped_terms(self):
-        hypothesis = deterministic_hypothesis(
-            self._gated_observation(term={"gate_blocked_by": "specificity"}), set(),
-        )
-        self.assertIsNone(hypothesis)
-
-    def test_agentic_policy_evidence_fallback_requires_a_core_use_case_evidence_id(self):
-        self.assertIsNone(deterministic_hypothesis(
-            self._gated_observation(source={"evidence_id": ""}), set(),
-        ))
-        self.assertIsNone(deterministic_hypothesis(
-            self._gated_observation(source={"core_use_case": False}), set(),
-        ))
-
-    def test_agentic_policy_evidence_fallback_is_inert_without_gate_telemetry(self):
-        # Raw payloads captured before the gate telemetry must behave as before.
-        hypothesis = deterministic_hypothesis(
-            self._gated_observation(term={"gate_blocked_by": None}), set(),
-        )
-        self.assertIsNone(hypothesis)
-
     def test_deterministic_rank_fixture_cites_readme_without_claiming_judgment(self):
         candidate = {
             "full_name": "owner/tool", "topics": ["focus"],
             "mechanisms": [{"name": "biofeedback"}],
             "evidence": [
                 {"id": "metadata", "kind": "github_metadata", "facts": {}},
-                {"id": "excerpt", "kind": "readme_excerpt", "facts": {"text": "Measured feedback."}},
+                {"id": "excerpt", "kind": "readme_excerpt", "facts": {
+                    "text": "Measured feedback.", "sha": "abc123",
+                }},
             ],
         }
-        assessment = deterministic_assessment(candidate, {"artifact_types": ["application"]})
-        self.assertEqual(assessment["reasons"][0]["evidence_ids"], ["excerpt"])
-        self.assertEqual(assessment["risks"][0]["evidence_ids"], ["metadata"])
-        self.assertIn("human review", assessment["risks"][0]["text"])
+        selection = deterministic_selection(candidate)
+        self.assertEqual(selection["evidence_ids"], ["excerpt"])
+        self.assertEqual(selection["quote"], "Measured feedback.")
+        self.assertNotIn("relevance", selection)
     def test_ab_prompt_set_has_two_prompts_per_category(self):
         payload = json.loads((ROOT / "evaluation" / "ab-prompts.json").read_text(encoding="utf-8"))
         prompts = payload["prompts"]
@@ -423,7 +361,10 @@ class EvaluationTests(unittest.TestCase):
             ]), 0)
             agentic = json.loads(agentic_output.read_text(encoding="utf-8"))
             self.assertEqual(agentic["stage"], "agentic_boundary_rank")
-            self.assertTrue(agentic["results"][0]["ranking"]["display_order"])
+            # The cross-version cassette predates recorded README SHAs. Retrieval
+            # replays, but the current rank contract correctly refuses to invent
+            # a SHA for quote verification.
+            self.assertIsNone(agentic["results"][0]["ranking"])
             baseline = json.loads((root / "results" / "baseline.raw.json").read_text(encoding="utf-8"))
             candidate = json.loads((root / "results" / "candidate.raw.json").read_text(encoding="utf-8"))
             self.assertEqual(baseline["muse_shroom_version"], "0.2.0")
@@ -436,6 +377,62 @@ class EvaluationTests(unittest.TestCase):
             "redundancy_scope", "boundary_gain", "direction_coverage",
             "newly_presented_mechanism_count",
         })
+
+
+class MatchedABContractTests(unittest.TestCase):
+    def test_direct_adapter_requires_matching_requests_and_run_metadata(self):
+        requests = {"requests": [{
+            "prompt_id": "need-1", "category": "dev", "request": "Find a small tool",
+        }]}
+        direct = {
+            "metadata": {
+                "model_id": "model", "muse_shroom_revision": "none",
+                "skill_component_digest": "none", "timestamp": "2026-09-03T00:00:00Z",
+                "configuration": {},
+            },
+            "results": [{"prompt_id": "need-1", "candidates": []}],
+        }
+
+        adapted = adapt_direct_arm(requests, direct)
+
+        self.assertEqual(adapted["results"][0]["request"], "Find a small tool")
+        self.assertEqual(adapted["arm"], "direct")
+
+    def test_claim_checker_separates_nonexistent_archived_and_text_mismatch(self):
+        arm = {
+            "arm": "muse-shroom",
+            "results": [{
+                "prompt_id": "need-1",
+                "candidates": [
+                    {"repo": "missing/repo"},
+                    {"repo": "old/repo"},
+                    {"repo": "wrong/quote", "source_term": "device", "quote": "exact quote"},
+                    {"repo": "good/repo", "source_term": "device", "quote": "exact quote"},
+                ],
+            }],
+        }
+        facts = {
+            "missing/repo": {"exists": False},
+            "old/repo": {"exists": True, "archived": True},
+            "wrong/quote": {
+                "exists": True, "archived": False,
+                "sources": [{"sha": "abc", "text": "different text"}],
+            },
+            "good/repo": {
+                "exists": True, "archived": False,
+                "sources": [{"sha": "def", "text": "a device with exact quote"}],
+            },
+        }
+
+        checked = check_claim_traceability(arm, facts)
+
+        failures = {item["repo"]: item["failures"] for item in checked["repositories"]}
+        self.assertEqual(failures["missing/repo"], ["repository_not_found"])
+        self.assertEqual(failures["old/repo"], ["repository_archived"])
+        self.assertEqual(
+            failures["wrong/quote"], ["quote_not_verbatim_at_recorded_sha"],
+        )
+        self.assertEqual(failures["good/repo"], [])
 
 
 if __name__ == "__main__":

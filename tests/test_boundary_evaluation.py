@@ -78,9 +78,38 @@ class BoundaryEvaluationTests(unittest.TestCase):
         self.assertEqual(set(result["formal_metrics"]), set(FORMAL_METRICS))
         self.assertEqual(result["verdict"], "pass")
         self.assertTrue(result["cases"][0]["queries_changed_after_initial"])
-        self.assertTrue(result["cases"][0]["evidence_backed_promotions"])
+        self.assertTrue(result["cases"][0]["evidence_backed_additions"])
         self.assertGreater(result["cases"][0]["meaningful_boundary_gain"], 0)
         self.assertTrue(result["cases"][0]["cross_mechanism_discovery"])
+
+    def test_source_term_telemetry_reports_signals_without_a_promotion_gate(self):
+        payload = {"results": [{
+            "prompt_id": "focus",
+            "boundary": {"discovered_term_evidence": [
+                {
+                    "term": "decision monitoring", "kind": "source_term",
+                    "request_anchored": True, "mechanism_anchored": False,
+                },
+                {
+                    "term": "browser automation", "kind": "source_term",
+                    "request_anchored": False, "mechanism_anchored": True,
+                },
+            ]},
+            "loop_diagnostics": {"iterations_used": 0},
+        }]}
+
+        result = summarize(payload)
+        case = result["cases"][0]
+
+        self.assertEqual(result["schema_version"], 5)
+        self.assertEqual(case["discovered_term_count"], 2)
+        self.assertEqual(case["source_term_count"], 2)
+        self.assertEqual(case["request_anchored_count"], 1)
+        self.assertEqual(case["mechanism_anchored_count"], 1)
+        for removed in ("typed_term_count", "promotable_term_count", "gate_blocked_by"):
+            self.assertNotIn(removed, case)
+            self.assertNotIn(removed, result["aggregate"])
+            self.assertNotIn(removed, result["formal_metrics"])
 
     def test_same_mechanism_rewording_is_not_meaningful_gain(self):
         payload = {"results": [{

@@ -1,30 +1,53 @@
-import json
 import tempfile
 import unittest
-from datetime import datetime, timezone
-from unittest.mock import patch
 
-from muse_shroom.models import ContractError, SearchRequest
+from muse_shroom.models import ContractError
 from muse_shroom.ranking import rank_search
-from muse_shroom.search import SearchEngine
 from muse_shroom.storage import Store
 
-from tests.helpers import FrozenGitHub, repo
+from tests.helpers import repo
 
 
-def candidate(full_name, stars, category, *, adjacent=False, quality=True):
-    item = repo(full_name, stars, description=f"{category} tool", topics=[category])
-    item["matched_kinds"] = ["adjacent"] if adjacent else ["core"]
-    item["discovery_paths"] = [{"kind": "query", "query": category}]
+def candidate(full_name, stars, text):
+    item = repo(full_name, stars, description=text, topics=["focus"])
+    item["readme"] = f"# Tool\n{text}\n"
+    item["readme_sha"] = f"sha-{full_name}"
     item["evidence"] = [
-        {"id": f"repo:{full_name.lower()}:metadata", "kind": "github_metadata", "source": item["html_url"],
-         "facts": {"stars": stars, "license": "MIT", "topics": [category]}},
-        {"id": f"repo:{full_name.lower()}:readme", "kind": "readme", "source": item["html_url"] + "#readme",
-         "facts": {"has_install": quality, "has_usage": quality}},
-        {"id": f"repo:{full_name.lower()}:readme:overview", "kind": "readme_excerpt",
-         "source": item["html_url"] + "#readme", "facts": {"snippet_type": "overview", "text": "Documented workflow"}},
+        {
+            "id": f"repo:{full_name.lower()}:metadata",
+            "kind": "github_metadata",
+            "facts": {
+                "stars": stars,
+                "forks": stars // 10,
+                "open_issues": 2,
+                "archived": False,
+                "license": "MIT",
+                "topics": ["focus"],
+            },
+        },
+        {
+            "id": f"repo:{full_name.lower()}:readme:overview",
+            "kind": "readme_excerpt",
+            "facts": {"text": text, "sha": f"sha-{full_name}"},
+        },
     ]
+    item["discovery_paths"] = [{"kind": "query", "query": "focus"}]
     return item
+
+
+def selected(item, *, label, role="edge", evidence_id=None, quote=None):
+    text = quote or item["evidence"][1]["facts"]["text"]
+    return {
+        "repo": item["full_name"],
+        "rationale": "The mechanism transfers to the stated need.",
+        "mechanism_label": label,
+        "source_term": text.split()[0],
+        "quote": text,
+        "evidence_ids": [
+            evidence_id or f"repo:{item['full_name'].lower()}:readme:overview"
+        ],
+        "boundary_role": role,
+    }
 
 
 class RankingTests(unittest.TestCase):
@@ -32,93 +55,137 @@ class RankingTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.store = Store(self.temp.name)
         self.search_id = "search-1"
-        self.store.create_search(self.search_id, {"request": "Codex过度设计和审查"}, "deep")
+        self.store.create_search(
+            self.search_id,
+            {"request": "focus tools", "problem_concepts": ["focus"]},
+            "deep",
+        )
+        self.first = candidate("owner/first", 10, "Blocks distracting apps on a schedule.")
+        self.second = candidate("owner/second", 100, "Shows attention changes as live color.")
+        self.store.save_candidate(self.search_id, self.first)
+        self.store.save_candidate(self.search_id, self.second)
 
     def tearDown(self):
         self.store.close()
         self.temp.cleanup()
 
-    def _assessment(self, item, relevance=85, uniqueness=80, usability=80, difficulty="easy"):
-        name = item["full_name"]
-        return {
-            "repo": name, "relevance": relevance, "uniqueness": uniqueness, "usability": usability,
-            "difficulty": difficulty, "use_case": "Reduce unnecessary implementation complexity",
-            "category": item["topics"][0], "artifact_type": "skill",
-            "reasons": [{"text": "Documented workflow", "evidence_ids": [f"repo:{name.lower()}:readme:overview"]}],
-            "risks": [{"text": "Check scope before use", "evidence_ids": [f"repo:{name.lower()}:metadata"]}],
-        }
+    def test_agent_order_is_preserved_and_raw_facts_replace_scores(self):
+        result = rank_search(self.store, self.search_id, [
+            selected(self.first, label="commitment device", role="wildcard"),
+            selected(self.second, label="ambient biofeedback", role="anchor"),
+        ])
 
-    def test_occam_review_is_found_without_name_and_classified_as_gem(self):
-        items = [
-            candidate("mindorigin150/occam-review", 22, "minimal-review"),
-            candidate("large/popular-review", 25000, "review"),
-            candidate("tools/token-meter", 800, "cost", adjacent=True),
-        ]
-        self.store.db.execute("DELETE FROM searches WHERE id=?", (self.search_id,))
-        self.store.db.commit()
-        github = FrozenGitHub([
-            ("token cost", [items[2]]),
-            ("overengineering", [items[0], items[1]]),
-        ], readmes={
-            item["full_name"]: "# Tool\n## Installation\n## Usage\nDocumented workflow" for item in items
-        })
-        first = SearchEngine(self.store, github).search(SearchRequest.from_dict({
-            "request": "Codex过度设计和重复审查", "core_concepts": ["overengineering", "code review minimalism"],
-            "adjacent_concepts": ["token cost"], "artifact_types": ["skill"]
-        }), "deep")
-        self.assertNotIn("occam-review", json.dumps(first["candidates"][0].get("discovery_paths", [])))
-        by_name = {item["full_name"].lower(): item for item in first["candidates"]}
-        result = rank_search(self.store, first["search_id"], {
-            "assessments": [self._assessment(by_name[item["full_name"].lower()]) for item in items]
-        })
-        gems = {item["repo"].lower() for item in result["buckets"]["gems"]}
-        self.assertIn("mindorigin150/occam-review", gems)
-        self.assertGreaterEqual(result["coverage"]["adjacent_share"], 0.2)
+        self.assertEqual(result["display_order"], ["owner/first", "owner/second"])
+        self.assertEqual([item["repo"] for item in result["items"]], result["display_order"])
+        self.assertNotIn("scores", result["items"][0])
+        self.assertEqual(result["items"][0]["forks"], 1)
+        self.assertEqual(result["items"][0]["open_issues"], 2)
+        self.assertEqual(result["items"][0]["boundary_role"], "wildcard")
 
-    def test_invalid_evidence_reference_fails(self):
-        item = candidate("owner/repo", 10, "x")
-        self.store.save_candidate(self.search_id, item)
-        assessment = self._assessment(item)
-        assessment["reasons"][0]["evidence_ids"] = ["made-up"]
+    def test_evidence_owned_by_another_candidate_rejects_only_that_item(self):
+        wrong = f"repo:{self.second['full_name'].lower()}:readme:overview"
+        result = rank_search(self.store, self.search_id, [
+            selected(self.first, label="commitment device", evidence_id=wrong),
+            selected(self.second, label="ambient display"),
+        ])
+
+        self.assertEqual(result["display_order"], ["owner/second"])
+        self.assertEqual(result["rejected_items"][0]["repo"], "owner/first")
+        self.assertIn(
+            f"evidence_not_owned:{wrong}",
+            result["rejected_items"][0]["reasons"],
+        )
+
+    def test_non_verbatim_quote_is_rejected(self):
+        result = rank_search(self.store, self.search_id, [
+            selected(self.first, label="commitment device", quote="Text not in the snapshot"),
+        ])
+
+        self.assertEqual(result["items"], [])
+        self.assertEqual(
+            result["rejected_items"][0]["reasons"],
+            ["quote_not_verbatim_at_recorded_sha"],
+        )
+
+    def test_agent_label_need_not_appear_in_repository_text(self):
+        result = rank_search(self.store, self.search_id, [
+            selected(self.first, label="commitment device"),
+        ])
+
+        self.assertEqual(result["display_order"], ["owner/first"])
+        self.assertNotIn("commitment device", self.first["readme"])
+        self.assertEqual(result["items"][0]["mechanism_label"], "commitment device")
+
+    def test_all_items_rejected_stays_open_for_a_corrected_selection(self):
+        result = rank_search(self.store, self.search_id, [
+            selected(self.first, label="commitment device", quote="Absent from the snapshot"),
+        ])
+
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["next_action"], "rank")
+        self.assertIsNone(self.store.get_ranking(self.search_id))
+        self.assertEqual(
+            result["rejected_items"][0]["evidence_ids_checked"],
+            ["repo:owner/first:readme:overview"],
+        )
+
+        corrected = rank_search(self.store, self.search_id, [
+            selected(self.first, label="commitment device"),
+        ])
+        self.assertEqual(corrected["next_action"], "done")
+        self.assertEqual(corrected["display_order"], ["owner/first"])
+        self.assertIsNotNone(self.store.get_ranking(self.search_id))
+
+    def test_one_accepted_item_is_terminal_and_saved(self):
+        result = rank_search(self.store, self.search_id, [
+            selected(self.first, label="commitment device"),
+            selected(self.second, label="ambient feedback", quote="Absent from the snapshot"),
+        ])
+
+        self.assertEqual(result["next_action"], "done")
+        self.assertEqual(result["display_order"], ["owner/first"])
+        self.assertEqual(len(result["rejected_items"]), 1)
+        self.assertIsNotNone(self.store.get_ranking(self.search_id))
+
+    def test_single_line_quote_verifies_against_wrapped_recorded_text(self):
+        # The contract forbids multi-line quotes, so the wrap is always on the recorded
+        # side: the Agent reads rendered README text and submits it as one line.
+        wrapped = self.first["evidence"][1]["facts"]["text"].replace(
+            " on a", chr(10) + "   on a",
+        )
+        self.first["evidence"][1]["facts"]["text"] = wrapped
+        self.store.save_candidate(self.search_id, self.first)
+
+        result = rank_search(self.store, self.search_id, [
+            selected(self.first, label="commitment device",
+                     quote="Blocks distracting apps on a schedule."),
+        ])
+
+        self.assertEqual(result["display_order"], ["owner/first"])
+
+    def test_differing_word_or_letter_case_still_fails(self):
+        for quote in (
+            "Blocks distracting tabs on a schedule.",
+            "blocks distracting apps on a schedule.",
+        ):
+            with self.subTest(quote=quote):
+                result = rank_search(self.store, self.search_id, [
+                    selected(self.first, label="commitment device", quote=quote),
+                ])
+                self.assertEqual(result["items"], [])
+                self.assertEqual(
+                    result["rejected_items"][0]["reasons"],
+                    ["quote_not_verbatim_at_recorded_sha"],
+                )
+
+    def test_invalid_selection_shape_fails_at_the_contract_boundary(self):
         with self.assertRaises(ContractError):
-            rank_search(self.store, self.search_id, [assessment])
-
-    def test_low_quality_candidates_do_not_fill_buckets(self):
-        item = candidate("owner/empty", 0, "empty", quality=False)
-        item["evidence"] = [item["evidence"][0]]
-        self.store.save_candidate(self.search_id, item)
-        assessment = self._assessment(item, relevance=20, uniqueness=100, usability=10, difficulty="unknown")
-        assessment["use_case"] = "unknown"
-        assessment["reasons"][0]["evidence_ids"] = [f"repo:{item['full_name'].lower()}:metadata"]
-        result = rank_search(self.store, self.search_id, [assessment])
-        self.assertEqual(result["coverage"]["returned"], 0)
-
-    def test_activity_uses_explicit_replay_reference_time(self):
-        item = candidate("owner/stable", 10, "focus")
-        self.store.save_candidate(self.search_id, item)
-        assessment = self._assessment(item)
-        reference_time = "2026-09-01T00:00:00+00:00"
-
-        with patch(
-            "muse_shroom.analyze._utc_now",
-            return_value=datetime(2030, 1, 1, tzinfo=timezone.utc),
-        ):
-            first = rank_search(
-                self.store, self.search_id, [assessment],
-                reference_time=reference_time,
+            rank_search(
+                self.store,
+                self.search_id,
+                [{"repo": "owner/first", "rationale": "missing fields"}],
+                strict=True,
             )
-        with patch(
-            "muse_shroom.analyze._utc_now",
-            return_value=datetime(2040, 1, 1, tzinfo=timezone.utc),
-        ):
-            second = rank_search(
-                self.store, self.search_id, [assessment],
-                reference_time=reference_time,
-            )
-
-        first_activity = first["items"][0]["scores"]["components"]["activity"]
-        second_activity = second["items"][0]["scores"]["components"]["activity"]
-        self.assertEqual(first_activity, second_activity)
 
 
 if __name__ == "__main__":

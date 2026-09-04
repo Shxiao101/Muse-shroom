@@ -43,7 +43,7 @@ v0.6.0 把宿主世界知识做成独立 sidecar：最多 2 条 `host_hypothesis
 muse-shroom search --request examples/music-ai.request.json --mode quick --output search.json
 muse-shroom observe --search-id SEARCH_ID --output observe.json
 muse-shroom iterate --search-id SEARCH_ID --refinement examples/focus-tools.hypothesis.json --output iterate.json
-muse-shroom rank --search-id SEARCH_ID --assessments assessments.json --output rank.json
+muse-shroom rank --search-id SEARCH_ID --selection selection.json --output rank.json
 ```
 
 所有命令默认输出 JSON。JSON 输入请保存为 UTF-8 文件；Windows 不要使用 `Get-Content | muse-shroom`。`--output` 把完整 JSON 写到文件，控制台只打印回执。相同 request 和 mode 默认复用已完成的 `search_id`，需要新召回时加 `--refresh`。`--data-dir` 可覆盖平台数据目录。MCP 与 CLI 共用同一凭据存储和 SQLite 目录；多轮工具必须显式传 `search_id`。
@@ -54,7 +54,7 @@ muse-shroom rank --search-id SEARCH_ID --assessments assessments.json --output r
 muse-shroom explorer
 ```
 
-默认打开 `http://127.0.0.1:8765/`，只绑定 loopback。Explorer 子命令支持 `--host`、`--port`、`--no-browser`；数据目录仍用全局 `--data-dir`（`muse-shroom --data-dir DIR explorer`）。绑定 `0.0.0.0` 等非本机地址必须显式加 `--allow-remote`（无认证，会暴露本地搜索数据）。`rank` 完成后会在后台启动一次 Explorer 并在结果里返回 `explorer_url`，由宿主 Agent 把链接交给你；它不会自动打开浏览器，服务器在闲置一段时间后自行退出。加 `--no-explore` 或设 `MUSE_SHROOM_NO_EXPLORER=1` 可关闭。Skill / MCP / CLI 在没有 Explorer 时功能不变，只是少这条链接。`?debug=1` 才显示 selection_order、score components 和 query history。
+默认打开 `http://127.0.0.1:8765/`，只绑定 loopback。Explorer 子命令支持 `--host`、`--port`、`--no-browser`；数据目录仍用全局 `--data-dir`（`muse-shroom --data-dir DIR explorer`）。绑定 `0.0.0.0` 等非本机地址必须显式加 `--allow-remote`（无认证，会暴露本地搜索数据）。`rank` 完成后会在后台启动一次 Explorer 并在结果里返回 `explorer_url`，由宿主 Agent 把链接交给你；它不会自动打开浏览器，服务器在闲置一段时间后自行退出。加 `--no-explore` 或设 `MUSE_SHROOM_NO_EXPLORER=1` 可关闭。Skill / MCP / CLI 在没有 Explorer 时功能不变，只是少这条链接。`?debug=1` 才显示 discovery paths、coverage 和 query history。
 
 ## MCP 宿主配置
 
@@ -123,7 +123,7 @@ Boundary release gate 把两类证据分开报告，不再合成一个数字：
 
 评测 harness 使用确定性 hypothesis 策略（`evaluation/version_worker.py`），该策略只能提升当前 observation 已给出的证据，**按构造无法产生跨域跳跃**。因此在这个 harness 下 `discovery_verdict` 恒为 `not_measured`，`cross_mechanism_status` 恒为 `not_measured`。
 
-**这是设计结果，不是缺陷。** 整体 verdict 因此长期停在 `needs_review`：两个 mechanics gate 都 `pass` 已经是当前 harness 能给出的最强状态。要拿到整体 `pass`，必须先有 host-in-the-loop 的 discovery 评测，那部分尚未实现。不要把 `not_measured` 或 `needs_review` 当成质量回归来排查。
+**这是设计结果，不是缺陷。** 整体 verdict 因此长期停在 `needs_review`：两个 mechanics gate 都 `pass` 已经是当前确定性 harness 能给出的最强状态。host-in-the-loop 的真实 MCP 录制入口已经实现，但它只产出诊断，不构成发布结论：evaluation/ 下的所有 fixture 都是模型撰写的，与它们的一致程度无法授权发布。发布判断来自 `evaluation/ab-protocol.md` 里的配对盲评——同一个 Agent、同一套配置，在有无 Muse-shroom 两种情况下跑真实需求，阈值在读取任何结果之前就已登记。不要把 `not_measured` 或 `needs_review` 当成质量回归来排查。
 
 同理，confirmation 精度有多个分母不同的指标：`confirmation_precision` 只统计命中 Golden 答案的确认，`blind_precision` 只统计人工盲标为 meaningful 的确认。单看任何一个都会低估实际质量。
 

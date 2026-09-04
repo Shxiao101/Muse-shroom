@@ -115,21 +115,28 @@ def _focus_github() -> FrozenGitHub:
     )
 
 
-def _excerpt(store: Store, search_id: str, name: str = "focus/timer") -> str:
+def _excerpt(store: Store, search_id: str, name: str = "focus/timer") -> dict:
     stored = store.get_candidate(name, search_id)
     return next(
-        evidence["id"] for evidence in stored["evidence"]
+        evidence for evidence in stored["evidence"]
         if evidence["kind"] == "readme_excerpt"
     )
 
 
-def _assessment(excerpt: str, name: str = "focus/timer") -> dict:
+def _assessment(excerpt: dict | str, name: str = "focus/timer") -> dict:
+    if isinstance(excerpt, dict):
+        evidence_id = excerpt["id"]
+        quote = next(
+            line.strip() for line in excerpt["facts"]["text"].splitlines() if line.strip()
+        )
+    else:
+        evidence_id = excerpt
+        quote = "Pomodoro."
     return {
-        "repo": name, "relevance": 90, "uniqueness": 70, "usability": 80,
-        "difficulty": "easy", "use_case": "Pomodoro workflow",
-        "category": "focus", "artifact_type": "application",
-        "reasons": [{"text": "Documented workflow", "evidence_ids": [excerpt]}],
-        "risks": [{"text": "Check metadata", "evidence_ids": [f"repo:{name}:metadata"]}],
+        "repo": name, "rationale": "Documented workflow",
+        "mechanism_label": "Agent-authored attention control",
+        "source_term": quote.split()[0], "quote": quote,
+        "evidence_ids": [evidence_id], "boundary_role": "edge",
     }
 
 
@@ -231,7 +238,7 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
                 }))
                 mcp_rank = _payload(await client.call_tool("muse_rank", {
                     "search_id": core["search_id"],
-                    "assessments": [_assessment(excerpt)],
+                    "selection": [_assessment(excerpt)],
                 }))
             with tempfile.TemporaryDirectory() as other:
                 mcp_fresh = create_server(data_dir=other, github=_github(), log_level="ERROR")
@@ -254,7 +261,8 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(mcp_rank["next_action"], "done")
             self.assertEqual(mcp_rank["search_id"], core["search_id"])
             self.assertIn("focus/timer", mcp_rank["display_order"])
-            self.assertEqual(set(mcp_rank["buckets"]), {"popular", "gems", "adjacent"})
+            self.assertNotIn("buckets", mcp_rank)
+            self.assertNotIn("scores", mcp_rank["items"][0])
 
     async def test_observe_is_read_only(self):
         github = _github()
@@ -316,7 +324,7 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
                     store.close()
                 ranked = _payload(await client.call_tool("muse_rank", {
                     "search_id": search_id,
-                    "assessments": [_assessment(excerpt)],
+                    "selection": [_assessment(excerpt)],
                 }))
                 after_rank = _payload(await client.call_tool("muse_observe", {"search_id": search_id}))
                 continued = _payload(await client.call_tool("muse_iterate", {
@@ -350,19 +358,11 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
                 })
                 bad_evidence = await client.call_tool("muse_rank", {
                     "search_id": searched["search_id"],
-                    "assessments": [_assessment("made-up")],
+                    "selection": [_assessment("made-up")],
                 })
                 bad_mechanism = await client.call_tool("muse_rank", {
                     "search_id": searched["search_id"],
-                    "assessments": [{
-                        **_assessment("repo:focus/timer:metadata"),
-                        "use_case": "unknown",
-                        "mechanism": "not-a-real-mechanism",
-                        "reasons": [{
-                            "text": "metadata only",
-                            "evidence_ids": ["repo:focus/timer:metadata"],
-                        }],
-                    }],
+                    "selection": [_assessment("repo:focus/timer:metadata")],
                 })
                 store = Store(directory)
                 try:
@@ -377,10 +377,14 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("ContractError", _error_text(bad_request))
             self.assertTrue(bad_hypothesis.is_error)
             self.assertIn("ContractError", _error_text(bad_hypothesis))
-            self.assertTrue(bad_evidence.is_error)
-            self.assertIn("ContractError", _error_text(bad_evidence))
-            self.assertTrue(bad_mechanism.is_error)
-            self.assertIn("ContractError", _error_text(bad_mechanism))
+            self.assertFalse(bad_evidence.is_error)
+            self.assertEqual(_payload(bad_evidence)["rejected_items"][0]["reasons"], [
+                "evidence_not_owned:made-up",
+            ])
+            self.assertFalse(bad_mechanism.is_error)
+            self.assertEqual(_payload(bad_mechanism)["rejected_items"][0]["reasons"], [
+                "quote_not_verbatim_at_recorded_sha",
+            ])
             self.assertEqual(ids, {searched["search_id"]})
             self.assertNotIn("missing-id", ids)
 
@@ -435,8 +439,8 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
         blob = _dump(listed)
         for token in (
             "problem_concepts", "mechanisms", "exploration_directions",
-            "decision", "negative_directions", "relevance", "use_case",
-            "artifact_type", "evidence_ids", "reasons", "risks",
+            "decision", "negative_directions", "rationale", "mechanism_label",
+            "source_term", "quote", "evidence_ids", "boundary_role",
         ):
             self.assertIn(token, blob)
         search = _tool_schema(listed, "muse_search")
@@ -447,9 +451,9 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
         hypothesis = _tool_schema(listed, "muse_iterate")["properties"]["hypothesis"]
         self.assertIn("decision", hypothesis.get("required", []))
         self.assertEqual(hypothesis["properties"]["decision"].get("enum"), ["continue", "stop"])
-        assessment_schema = _tool_schema(listed, "muse_rank")["properties"]["assessments"]
+        assessment_schema = _tool_schema(listed, "muse_rank")["properties"]["selection"]
         assessment_blob = _dump(assessment_schema)
-        self.assertIn("use_case", assessment_blob)
+        self.assertIn("mechanism_label", assessment_blob)
         self.assertIn("evidence_ids", assessment_blob)
         descriptions = " ".join(
             getattr(_named_tool(listed, name), "description", "") or ""
@@ -457,7 +461,7 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("problem_concepts", descriptions)
         self.assertIn("decision", descriptions)
-        self.assertIn("reasons", descriptions)
+        self.assertIn("ordered repository selection", descriptions)
 
     async def test_muse_search_rejects_unknown_fields_and_exposes_legacy(self):
         github = _github()
@@ -574,7 +578,7 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
                 }))
                 unknown_rank = await client.call_tool("muse_rank", {
                     "search_id": search_id,
-                    "assessments": [{
+                    "selection": [{
                         **_assessment(excerpt),
                         "fit": 9,
                         "caveats": "guessed",
@@ -582,47 +586,28 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
                 })
                 missing_fields = await client.call_tool("muse_rank", {
                     "search_id": search_id,
-                    "assessments": [{
+                    "selection": [{
                         "repo": "focus/timer",
-                        "relevance": 90,
-                        "uniqueness": 70,
-                        "usability": 80,
+                        "rationale": "missing the rest",
                     }],
                 })
                 invalid_artifact_type = await client.call_tool("muse_rank", {
                     "search_id": search_id,
-                    "assessments": [{
+                    "selection": [{
                         **_assessment(excerpt),
                         "artifact_type": "banana",
                     }],
                 })
                 invalid_evidence_ids = await client.call_tool("muse_rank", {
                     "search_id": search_id,
-                    "assessments": [{
+                    "selection": [{
                         **_assessment(excerpt),
-                        "reasons": [{
-                            "text": "wrong shape",
-                            "evidence_ids": excerpt,
-                        }],
+                        "evidence_ids": excerpt["id"],
                     }],
                 })
                 explicit_unknown = _payload(await client.call_tool("muse_rank", {
                     "search_id": search_id,
-                    "assessments": [{
-                        "repo": "focus/timer",
-                        "relevance": 40,
-                        "uniqueness": 40,
-                        "usability": 40,
-                        "difficulty": "unknown",
-                        "use_case": "unknown",
-                        "category": "focus",
-                        "artifact_type": "unknown",
-                        "reasons": [{
-                            "text": "metadata only",
-                            "evidence_ids": ["repo:focus/timer:metadata"],
-                        }],
-                        "risks": [],
-                    }],
+                    "selection": [_assessment("repo:focus/timer:metadata")],
                 }))
         self.assertTrue(bad_hypothesis.is_error)
         self.assertIn("ContractError", _error_text(bad_hypothesis))
@@ -634,13 +619,20 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(unknown_rank.is_error)
         self.assertIn("fit", _error_text(unknown_rank))
         self.assertTrue(missing_fields.is_error)
-        self.assertIn("use_case", _error_text(missing_fields))
+        self.assertIn("mechanism_label", _error_text(missing_fields))
         self.assertTrue(invalid_artifact_type.is_error)
         self.assertIn("artifact_type", _error_text(invalid_artifact_type))
         self.assertTrue(invalid_evidence_ids.is_error)
         self.assertIn("evidence_ids", _error_text(invalid_evidence_ids))
         self.assertEqual(explicit_unknown["search_id"], search_id)
-        self.assertEqual(explicit_unknown["next_action"], "done")
+        # Metadata evidence carries no quotable text, so the only item is rejected and
+        # the session stays open for a corrected selection instead of reporting done.
+        self.assertEqual(explicit_unknown["items"], [])
+        self.assertEqual(explicit_unknown["next_action"], "rank")
+        self.assertEqual(
+            explicit_unknown["rejected_items"][0]["reasons"],
+            ["quote_not_verbatim_at_recorded_sha"],
+        )
 
     async def test_fresh_agent_focus_flow_uses_v04_schema_and_one_search_id(self):
         github = _focus_github()
@@ -684,7 +676,7 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
                     store.close()
                 ranked = _payload(await client.call_tool("muse_rank", {
                     "search_id": search_id,
-                    "assessments": assessments,
+                    "selection": assessments,
                 }))
             restored = ExplorerReadModel(data_dir=directory).search_summary(search_id)
         self.assertTrue(status["database_available"])

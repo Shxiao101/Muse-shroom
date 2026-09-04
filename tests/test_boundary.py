@@ -170,15 +170,11 @@ class BoundaryTests(unittest.TestCase):
         by_term = {item["term"]: item for item in boundary.discovered_term_evidence}
 
         self.assertIn("behavioral friction", by_term)
-        self.assertIn("biofeedback", by_term)
-        self.assertIn("digital minimalism", by_term)
         self.assertEqual(by_term["behavioral friction"]["sources"][0]["source_field"], "description")
-        self.assertEqual(by_term["biofeedback"]["sources"][0]["source_field"], "readme_features")
-        self.assertEqual(by_term["digital minimalism"]["kind"], "project_category")
-        self.assertFalse(by_term["digital minimalism"]["promotable"])
-        self.assertEqual(by_term["biofeedback"]["promotion_confidence"], "high")
-        self.assertTrue(by_term["biofeedback"]["promotable"])
-        self.assertGreater(by_term["biofeedback"]["confidence"], 0.8)
+        self.assertEqual(by_term["behavioral friction"]["kind"], "source_term")
+        self.assertIn("request_anchored", by_term["behavioral friction"])
+        self.assertNotIn("promotable", by_term["behavioral friction"])
+        self.assertNotIn("promotion_confidence", by_term["behavioral friction"])
 
     def test_discovered_directions_filter_generic_and_explicitly_excluded_topics(self):
         request = SearchRequest.from_dict({
@@ -225,18 +221,18 @@ class BoundaryTests(unittest.TestCase):
                 })
                 stored = store.get_candidate("focus/timer", first["search_id"])
                 excerpt = next(
-                    item["id"] for item in stored["evidence"]
+                    item for item in stored["evidence"]
                     if item["kind"] == "readme_excerpt"
                 )
+                quote = next(
+                    line.strip() for line in excerpt["facts"]["text"].splitlines()
+                    if line.strip()
+                )
                 ranked = rank_search(store, first["search_id"], [{
-                    "repo": "focus/timer", "relevance": 90, "uniqueness": 75,
-                    "usability": 80, "difficulty": "easy", "use_case": "Pomodoro workflow",
-                    "category": "focus", "artifact_type": "application",
-                    "reasons": [{"text": "Documented workflow", "evidence_ids": [excerpt]}],
-                    "risks": [{
-                        "text": "Check project metadata",
-                        "evidence_ids": ["repo:focus/timer:metadata"],
-                    }],
+                    "repo": "focus/timer", "rationale": "Documented workflow",
+                    "mechanism_label": "pomodoro", "source_term": quote.split()[0],
+                    "quote": quote, "evidence_ids": [excerpt["id"]],
+                    "boundary_role": "anchor",
                 }])
                 snapshots = store.boundary_snapshots(first["search_id"])
             finally:
@@ -324,8 +320,8 @@ class BoundaryTests(unittest.TestCase):
         by_term = {item["term"]: item for item in boundary.discovered_term_evidence}
 
         self.assertIn("decision log", by_term)
-        self.assertEqual(by_term["decision log"]["kind"], "project_category")
-        self.assertEqual(by_term["decision log"]["disposition"], "needs_confirmation")
+        self.assertEqual(by_term["decision log"]["kind"], "source_term")
+        self.assertNotIn("disposition", by_term["decision log"])
         self.assertNotIn("bilingual decision", by_term)
         self.assertNotIn("each contribution", by_term)
         self.assertNotIn("full description", by_term)
@@ -353,9 +349,10 @@ class BoundaryTests(unittest.TestCase):
         boundary = build_boundary([candidate], [], request)
         by_term = {item["term"]: item for item in boundary.discovered_term_evidence}
 
-        self.assertEqual(by_term["attendance tracking"]["kind"], "project_category")
+        self.assertEqual(by_term["attendance tracking"]["kind"], "source_term")
+        self.assertFalse(by_term["attendance tracking"]["request_anchored"])
 
-    def test_evidence_relevance_and_specificity_gate_keep_low_quality_terms_traceable(self):
+    def test_request_anchoring_is_reported_without_a_promotion_gate(self):
         request = SearchRequest.from_dict({
             "request": "reduce coding agent overthinking",
             "problem_concepts": ["coding agent overthinking"],
@@ -387,28 +384,16 @@ class BoundaryTests(unittest.TestCase):
         by_term = {item["term"]: item for item in boundary.discovered_term_evidence}
 
         self.assertIn("browser automation", by_term)
-        self.assertFalse(by_term["browser automation"]["promotable"])
-        self.assertEqual(by_term["browser automation"]["promotion_confidence"], "low")
-        self.assertLess(by_term["browser automation"]["evidence_relevance_score"], 50)
         self.assertIn("decision monitoring", by_term)
-        self.assertTrue(by_term["decision monitoring"]["promotable"])
-        self.assertEqual(by_term["decision monitoring"]["mechanism_specificity"], "behavioral_signal")
-        self.assertIn("local_problem", by_term["decision monitoring"]["evidence_relevance_reason"])
-
-        # Gate telemetry names which condition each term failed, so the promotion
-        # funnel is readable from the artifact instead of an ad-hoc script. It is
-        # diagnostic only and must not change what promotes.
-        self.assertIsNone(by_term["decision monitoring"]["gate_blocked_by"])
         self.assertTrue(by_term["decision monitoring"]["request_anchored"])
-        self.assertEqual(
-            by_term["browser automation"]["gate_blocked_by"], "request_anchored",
-        )
         self.assertFalse(by_term["browser automation"]["request_anchored"])
         for item in boundary.discovered_term_evidence:
-            self.assertEqual(item["promotable"], item["gate_blocked_by"] is None)
+            self.assertEqual(item["kind"], "source_term")
             self.assertIn("mechanism_anchored", item)
+            self.assertNotIn("gate_blocked_by", item)
+            self.assertNotIn("promotable", item)
 
-    def test_umbrella_category_is_not_promotable_even_when_request_relevant(self):
+    def test_umbrella_category_is_exposed_as_a_raw_source_term(self):
         request = SearchRequest.from_dict({
             "request": "keep long projects motivating",
             "problem_concepts": ["long project motivation"],
@@ -429,9 +414,10 @@ class BoundaryTests(unittest.TestCase):
             if value["term"] == "data visualization"
         )
 
-        self.assertEqual(item["mechanism_specificity"], "domain_category")
-        self.assertFalse(item["promotable"])
-        self.assertEqual(item["promotion_confidence"], "low")
+        self.assertEqual(item["kind"], "source_term")
+        self.assertTrue(item["request_anchored"])
+        self.assertNotIn("mechanism_specificity", item)
+        self.assertNotIn("promotable", item)
 
     def test_token_equivalent_mechanisms_do_not_create_boundary_gain(self):
         previous = {

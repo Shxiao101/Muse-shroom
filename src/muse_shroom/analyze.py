@@ -206,6 +206,7 @@ def make_evidence(candidate: dict[str, Any], readme: str, readme_truncated: bool
             "description": candidate.get("description"),
             "stars": candidate.get("stargazers_count", 0),
             "forks": candidate.get("forks_count", 0),
+            "open_issues": candidate.get("open_issues_count", 0),
             "archived": candidate.get("archived", False),
             "license": (candidate.get("license") or {}).get("spdx_id"),
             "topics": candidate.get("topics", []),

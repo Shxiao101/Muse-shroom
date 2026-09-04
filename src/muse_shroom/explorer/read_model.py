@@ -203,39 +203,30 @@ def _public_mechanisms(raw: Any) -> list[dict[str, Any]]:
 
 
 def _public_ranked_item(item: dict[str, Any], *, bucket: str | None, debug: bool) -> dict[str, Any]:
-    assessment = item.get("assessment") or {}
     payload = {
         "repo": item.get("repo"),
         "url": item.get("url"),
         "description": item.get("description"),
         "stars": item.get("stars"),
+        "star_growth": item.get("star_growth"),
+        "forks": item.get("forks"),
+        "open_issues": item.get("open_issues"),
+        "pushed_at": item.get("pushed_at"),
+        "archived": item.get("archived"),
+        "license": item.get("license"),
+        "language": item.get("language"),
         "topics": list(item.get("topics") or [])[:8],
-        "bucket": bucket,
         "boundary_role": item.get("boundary_role"),
         "new_mechanisms": list(item.get("new_mechanisms") or []),
-        "why_different": item.get("why_different") or "",
-        "artifact_type": assessment.get("artifact_type"),
-        "mechanisms": _public_mechanisms(item.get("mechanisms")),
-        "relevance": assessment.get("relevance"),
-        "transferability": (
-            item.get("transferability")
-            if item.get("transferability") is not None
-            else assessment.get("transferability")
-        ),
-        "boundary_value": assessment.get("boundary_value"),
-        "inspiration_score": item.get("inspiration_score"),
-        "use_case": assessment.get("use_case"),
-        "difficulty": assessment.get("difficulty"),
-        "category": assessment.get("category"),
+        "rationale": item.get("rationale") or "",
+        "mechanism_label": item.get("mechanism_label") or "",
+        "source_term": item.get("source_term") or "",
+        "quote": item.get("quote") or "",
+        "evidence_ids": list(item.get("evidence_ids") or []),
+        "verification": item.get("verification") or {},
     }
     if debug:
-        scores = item.get("scores") or {}
-        payload["scores"] = {
-            "popular": scores.get("popular"),
-            "gem": scores.get("gem"),
-            "adjacent": scores.get("adjacent"),
-            "components": scores.get("components") or {},
-        }
+        payload["discovery_paths"] = list(item.get("discovery_paths") or [])
     return payload
 
 
@@ -274,12 +265,9 @@ def _visible_repos(
     use_ranking: bool,
 ) -> list[dict[str, Any]]:
     if use_ranking and ranking:
-        buckets = ranking.get("buckets") or {}
-        ranked_items = ranking.get("items")
-        if not isinstance(ranked_items, list):
-            ranked_items = [item for values in buckets.values() for item in values]
+        ranked_items = list(ranking.get("items") or [])
         return [
-            {**item, "_bucket": _bucket_of(str(item.get("repo") or ""), buckets)}
+            {**item, "_bucket": None}
             for item in ranked_items
         ][:MAX_GRAPH_REPOS]
     by_name = {_key(item.get("full_name") or ""): item for item in candidates}
@@ -832,44 +820,20 @@ class ExplorerReadModel:
                     "search_id": search_id,
                     "ranked": False,
                     "display_order": [],
-                    "buckets": {"popular": [], "gems": [], "adjacent": []},
                     "items": [],
                     "boundary_summary": None,
                     "newly_presented_mechanisms": [],
                 }
-            buckets = ranking.get("buckets") or {}
             display_order = list(ranking.get("display_order") or [])
-            items = []
-            for bucket_name, bucket_items in buckets.items():
-                public_bucket = []
-                for item in bucket_items:
-                    public = _public_ranked_item(item, bucket=bucket_name, debug=debug)
-                    public_bucket.append(public)
-                buckets[bucket_name] = public_bucket
-            ranked_items = ranking.get("items")
-            if not isinstance(ranked_items, list):
-                ranked_items = [
-                    item for name in display_order
-                    for item in (ranking.get("buckets") or {}).get(_bucket_of(name, ranking.get("buckets") or {}) or "", [])
-                    if _key(item.get("repo") or "") == _key(name)
-                ]
+            ranked_items = list(ranking.get("items") or [])
             items = [
-                _public_ranked_item(
-                    item,
-                    bucket=_bucket_of(str(item.get("repo") or ""), ranking.get("buckets") or {}),
-                    debug=debug,
-                )
+                _public_ranked_item(item, bucket=None, debug=debug)
                 for item in ranked_items
             ]
             payload = {
                 "search_id": search_id,
                 "ranked": True,
                 "display_order": display_order,
-                "buckets": {
-                    "popular": buckets.get("popular") or [],
-                    "gems": buckets.get("gems") or [],
-                    "adjacent": buckets.get("adjacent") or [],
-                },
                 "items": items,
                 "boundary_summary": ranking.get("boundary_summary"),
                 "semantic_hypotheses": list(ranking.get("semantic_hypotheses") or []),
@@ -877,8 +841,8 @@ class ExplorerReadModel:
                 "next_action": ranking.get("next_action") or "done",
             }
             if debug:
-                payload["selection_order"] = list(ranking.get("selection_order") or [])
                 payload["coverage"] = ranking.get("coverage")
+                payload["rejected_items"] = list(ranking.get("rejected_items") or [])
             return payload
         finally:
             store.close()
@@ -891,15 +855,8 @@ class ExplorerReadModel:
                 raise KeyError(f"repository not found in local snapshots: {repo}")
             ranking = store.get_ranking(search_id)
             ranked_item = None
-            bucket = None
             if ranking:
-                bucket = _bucket_of(repo, ranking.get("buckets") or {})
-                ranked_items = ranking.get("items")
-                if not isinstance(ranked_items, list):
-                    ranked_items = [
-                        item for values in (ranking.get("buckets") or {}).values()
-                        for item in values
-                    ]
+                ranked_items = list(ranking.get("items") or [])
                 ranked_item = next((
                     item for item in ranked_items
                     if _key(item.get("repo") or "") == _key(repo)
@@ -917,39 +874,22 @@ class ExplorerReadModel:
                 "topics": public.get("topics") or [],
                 "language": public.get("language"),
                 "latest_release": public.get("latest_release"),
-                "artifact_type": None,
                 "mechanisms": _public_mechanisms(public.get("mechanisms") or (ranked_item or {}).get("mechanisms")),
                 "boundary_role": (ranked_item or {}).get("boundary_role"),
-                "bucket": bucket,
                 "new_mechanisms": list((ranked_item or {}).get("new_mechanisms") or []),
-                "why_different": (ranked_item or {}).get("why_different") or "",
-                "assessment": None,
-                "reasons": [],
-                "risks": [],
+                "rationale": (ranked_item or {}).get("rationale") or "",
+                "mechanism_label": (ranked_item or {}).get("mechanism_label") or "",
+                "source_term": (ranked_item or {}).get("source_term") or "",
+                "quote": (ranked_item or {}).get("quote") or "",
+                "evidence_ids": list((ranked_item or {}).get("evidence_ids") or []),
+                "verification": (ranked_item or {}).get("verification") or {},
                 "evidence": public.get("evidence") or [],
             }
             if ranked_item:
-                assessment = ranked_item.get("assessment") or {}
-                payload["artifact_type"] = assessment.get("artifact_type")
-                payload["assessment"] = {
-                    "relevance": assessment.get("relevance"),
-                    "uniqueness": assessment.get("uniqueness"),
-                    "usability": assessment.get("usability"),
-                    "difficulty": assessment.get("difficulty"),
-                    "use_case": assessment.get("use_case"),
-                    "category": assessment.get("category"),
-                    "artifact_type": assessment.get("artifact_type"),
-                    "mechanism": assessment.get("mechanism"),
-                    "transferability": assessment.get("transferability"),
-                    "boundary_value": assessment.get("boundary_value"),
-                }
-                payload["reasons"] = assessment.get("reasons") or []
-                payload["risks"] = assessment.get("risks") or []
-                payload["inspiration_score"] = ranked_item.get("inspiration_score")
                 if not payload["evidence"]:
                     payload["evidence"] = ranked_item.get("evidence") or []
             if debug and ranked_item:
-                payload["scores"] = ranked_item.get("scores")
+                payload["discovery_paths"] = list(ranked_item.get("discovery_paths") or [])
             return payload
         finally:
             store.close()

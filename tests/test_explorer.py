@@ -47,21 +47,23 @@ def _github() -> FrozenGitHub:
     )
 
 
-def _excerpt(store: Store, search_id: str, name: str) -> str:
+def _excerpt(store: Store, search_id: str, name: str) -> dict:
     stored = store.get_candidate(name, search_id)
     return next(
-        evidence["id"] for evidence in stored["evidence"]
+        evidence for evidence in stored["evidence"]
         if evidence["kind"] == "readme_excerpt"
     )
 
 
-def _assessment(excerpt: str, name: str) -> dict:
+def _assessment(excerpt: dict, name: str) -> dict:
+    quote = next(
+        line.strip() for line in excerpt["facts"]["text"].splitlines() if line.strip()
+    )
     return {
-        "repo": name, "relevance": 90, "uniqueness": 70, "usability": 80,
-        "difficulty": "easy", "use_case": "Documented workflow",
-        "category": "focus", "artifact_type": "application",
-        "reasons": [{"text": "Documented workflow", "evidence_ids": [excerpt]}],
-        "risks": [{"text": "Check metadata", "evidence_ids": [f"repo:{name}:metadata"]}],
+        "repo": name, "rationale": "Documented workflow",
+        "mechanism_label": f"Agent label for {name}",
+        "source_term": quote.split()[0], "quote": quote,
+        "evidence_ids": [excerpt["id"]], "boundary_role": "edge",
     }
 
 
@@ -172,9 +174,6 @@ class ExplorerReadModelTests(unittest.TestCase):
             store, _github, search_id = _session(directory, rank=True)
             try:
                 ranking = store.get_ranking(search_id)
-                compatibility_free = dict(ranking)
-                compatibility_free.pop("buckets")
-                store.save_ranking(search_id, compatibility_free)
                 view = ExplorerReadModel(data_dir=directory).result_view(search_id)
             finally:
                 store.close()
@@ -183,7 +182,7 @@ class ExplorerReadModelTests(unittest.TestCase):
             self.assertEqual(summary["status"], "ranked")
             self.assertEqual(view["display_order"], ranking["display_order"])
             self.assertEqual([item["repo"] for item in view["items"]], ranking["display_order"])
-            self.assertEqual(view["buckets"], {"popular": [], "gems": [], "adjacent": []})
+            self.assertNotIn("buckets", view)
             self.assertEqual(
                 [item["repo"] for item in ranking["items"]],
                 ranking["display_order"],
@@ -195,8 +194,9 @@ class ExplorerReadModelTests(unittest.TestCase):
             for item in view["items"]:
                 self.assertIn("boundary_role", item)
                 self.assertIn("new_mechanisms", item)
-                self.assertIn("why_different", item)
-                self.assertNotIn("components", item.get("scores") or {})
+                self.assertIn("rationale", item)
+                self.assertIn("mechanism_label", item)
+                self.assertNotIn("scores", item)
 
     def test_historical_result_view_does_not_expose_final_rank(self):
         with tempfile.TemporaryDirectory() as directory:

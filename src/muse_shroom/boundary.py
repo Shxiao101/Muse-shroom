@@ -88,21 +88,6 @@ MECHANISM_HINTS = {
     "pacing", "pomodoro", "reminder", "sensemaking", "tracking", "visualization",
     "wellbeing", "timer", "workflow",
 }
-# Optional precision aids only. This is not a complete mechanism vocabulary and
-# must never be extended from holdout benchmark answers.
-DISCOVERY_PHRASE_HINTS = {
-    "accountability", "audio reactive", "behavior design", "behavioral economics",
-    "behavioral friction", "biofeedback", "change impact", "commitment device",
-    "creative coding", "decision hygiene", "decision record", "digital minimalism",
-    "digital wellbeing", "environmental cue", "feedback loop", "focus mode",
-    "habit tracking", "hardware controller", "implementation minimalism",
-    "knowledge graph", "local first", "memory timeline", "music visualization",
-    "notification intervention", "physical environment", "progress visualization",
-    "progressive summarization", "replacement behavior", "reward schedule",
-    "risk visualization", "screen time", "sensemaking", "social accountability",
-    "spaced repetition", "tangible interface", "usage tracking", "visual feedback",
-    "website blocker",
-}
 GENERIC_MECHANISM_SUFFIXES = {
     "archive", "auditing", "feedback", "friction", "graph", "history",
     "journal", "mapping", "monitoring", "replay", "review", "timeline",
@@ -153,9 +138,6 @@ CONFIRMATION_SPECIFICITY_SCORES = {
     "project_category": 35,
     "packaging": 15,
 }
-PROMOTABLE_SPECIFICITIES = frozenset({
-    "mechanism", "behavioral_signal", "intervention", "workflow_pattern",
-})
 CONFIRMATION_SOURCE_SCORES = {
     "readme_concept_match": 95,
     "readme_features": 90,
@@ -367,7 +349,6 @@ def _specificity_class(term: str) -> str:
         return "technology"
     if (
         set(tokens) & MECHANISM_HINTS
-        or _normalized(term) in {_normalized(value) for value in DISCOVERY_PHRASE_HINTS}
         or tokens[-1] in TRANSFER_MECHANISM_TAILS
     ):
         return "mechanism"
@@ -398,16 +379,8 @@ def _specificity_with_context(term: str, sources: Iterable[dict[str, Any]]) -> s
 
 
 def mechanism_specificity(term: str, sources: Iterable[dict[str, Any]] = ()) -> str:
-    """Return the semantic specificity used by confirmation and presentation gates."""
+    """Return a diagnostic text-shape classification; it never gates Agent labels."""
     return _specificity_with_context(term, sources)
-
-
-def is_promotable_specificity(specificity: str) -> bool:
-    return str(specificity) in PROMOTABLE_SPECIFICITIES
-
-
-def is_promotable_term(term: str, sources: Iterable[dict[str, Any]] = ()) -> bool:
-    return is_promotable_specificity(mechanism_specificity(term, sources))
 
 
 def _term_distance(text: str, term: str, anchors: Iterable[str]) -> int:
@@ -474,10 +447,6 @@ def _structured_phrases(text: Any) -> list[str]:
         tokens = normalized.split()
         if not tokens:
             continue
-        phrases.update(
-            phrase for phrase in DISCOVERY_PHRASE_HINTS
-            if _hint_present(segment, phrase)
-        )
         for end in range(1, len(tokens) + 1):
             last = tokens[end - 1]
             adjective_gerund = (
@@ -816,11 +785,6 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
         if (
             not key or key in known or key in GENERIC_DISCOVERED_TERMS
             or key in TECHNOLOGY_DISCOVERED_TERMS or len(key) < 3 or len(key) > 80
-            or (
-                len(tokens) == 1
-                and key not in DISCOVERY_PHRASE_HINTS
-                and key not in MECHANISM_HINTS
-            )
             or any("#" in token or any(character.isdigit() for character in token) for token in tokens)
             or (tokens and tokens[0] in PHRASE_BOUNDARY_TOKENS | VERB_BOUNDARY_TOKENS)
             or any(_contains_normalized(key, exclusion) for exclusion in exclusions)
@@ -1038,139 +1002,17 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
                     evidence_id=str(relation.get("id") or relation_id), evidence_text=detail,
                     confidence=.78, relationship_backed=True,
                 )
-    def term_kind(key: str) -> str:
-        _, _, specificity, _, _ = term_quality(key)
-        if (
-            specificity not in PROMOTABLE_SPECIFICITIES
-            or term_disposition(key) != "direct_promote"
-        ):
-            return "project_category"
-        if any(
-            source["relationship_backed"] and source["request_anchored"]
-            for source in sources[key]
-        ):
-            return "cross_domain_direction"
-        return "candidate_mechanism"
-
-    def term_quality(key: str) -> tuple[int, str, str, bool, str]:
-        anchored_sources = [source for source in sources[key] if source["request_anchored"]]
-        score_sources = anchored_sources or sources[key]
-        source_scores = [int(source["evidence_relevance_score"]) for source in score_sources]
-        score = max(source_scores, default=0)
-        if len(support_repos[key]) >= 2:
-            score = min(100, score + 12)
-        if len({str(source["source_field"]) for source in sources[key]}) >= 2:
-            score = min(100, score + 6)
-        specificity = _specificity_with_context(key, sources[key])
-        promotable_specificity = specificity in PROMOTABLE_SPECIFICITIES
-        request_anchored = bool(anchored_sources)
-        confidence = (
-            "high" if promotable_specificity and request_anchored and score >= 75
-            else "medium" if promotable_specificity and request_anchored and score >= 50
-            else "low"
-        )
-        promotable = confidence == "high"
-        best = max(
-            score_sources, key=lambda source: int(source["evidence_relevance_score"]),
-            default={},
-        )
-        reason = str(best.get("evidence_relevance_reason") or "no relevant evidence")
-        if specificity == "domain_category":
-            reason = f"{reason},umbrella_category"
-        elif not promotable_specificity:
-            reason = f"{reason},insufficient_specificity"
-        return score, reason, specificity, promotable, confidence
-
-    def gate_signals(key: str) -> dict[str, Any]:
-        """Report why a term did or did not reach direct promotion.
-
-        Diagnostic only: this reads the same signals `term_quality` already uses
-        and never changes which terms promote. Anchoring is computed over every
-        source, while the emitted `sources` list below is truncated to three, so
-        these term-level flags are the complete picture and the truncated list
-        is not.
-        """
-        entries = sources[key]
-        request_anchored = any(source["request_anchored"] for source in entries)
-        mechanism_anchored = any(source["mechanism_anchored"] for source in entries)
-        _, _, specificity, promotable, _ = term_quality(key)
-        if promotable:
-            blocked_by = None
-        elif specificity not in PROMOTABLE_SPECIFICITIES:
-            blocked_by = "specificity"
-        elif not request_anchored:
-            blocked_by = "request_anchored"
-        else:
-            blocked_by = "score"
-        return {
-            "request_anchored": request_anchored,
-            "mechanism_anchored": mechanism_anchored,
-            "gate_blocked_by": blocked_by,
-        }
-
-    def term_disposition(key: str) -> str:
-        score, _, specificity, promotable, confidence = term_quality(key)
-        if promotable:
-            return "direct_promote"
-        core_sources = [source for source in sources[key] if source["core_use_case"]]
-        if not core_sources:
-            return "reject"
-        if specificity in PROMOTABLE_SPECIFICITIES:
-            # Medium evidence and concrete low-confidence mechanisms are checked
-            # in a separate stage instead of weakening the direct-promotion gate.
-            if confidence == "medium" or score >= 24:
-                return "needs_confirmation"
-            return "reject"
-        tokens = key.split()
-        uncertain_category = (
-            specificity == "project_category"
-            and len(tokens) >= 2
-            and tokens[-1] not in NON_MECHANISM_ENDINGS
-            and (
-                score >= 70
-                or (len(support_repos[key]) >= 2 and score >= 45)
-            )
-        )
-        return "needs_confirmation" if uncertain_category else "reject"
-
-    ranked = sorted(
-        support_repos,
-        key=lambda key: (
-            {"direct_promote": 0, "needs_confirmation": 1, "reject": 2}[
-                term_disposition(key)
-            ],
-            {"high": 0, "medium": 1, "low": 2}[term_quality(key)[4]],
-            0 if term_kind(key) == "cross_domain_direction"
-            else 1 if term_kind(key) == "candidate_mechanism" else 2,
-            min(int(item["relevance_rank"]) for item in sources[key]),
-            min(int(item["relevance_distance"]) for item in sources[key]),
-            min(
-                DISCOVERY_SOURCE_PRIORITY.get(str(item["source_field"]), 5)
-                for item in sources[key]
-            ),
-            -len(support_repos[key]),
-            -max(float(item["confidence"]) for item in sources[key]),
-            key,
-        ),
-    )
+    # Source terms are observations, not code-approved mechanism names. Preserve
+    # discovery order and expose the previous anchoring calculations only as signals.
+    ranked = list(support_repos)[:limit]
     result: list[dict[str, Any]] = []
-    for key in ranked[:limit]:
-        kind = term_kind(key)
-        relevance_score, relevance_reason, specificity, promotable, promotion_confidence = (
-            term_quality(key)
-        )
-        disposition = term_disposition(key)
+    for key in ranked:
+        entries = sources[key]
         result.append({
             "term": display[key],
-            "kind": kind,
-            "confidence": max(float(item["confidence"]) for item in sources[key]),
-            "evidence_relevance_score": relevance_score,
-            "evidence_relevance_reason": relevance_reason,
-            "mechanism_specificity": specificity,
-            "promotion_confidence": promotion_confidence,
-            "promotable": promotable,
-            "disposition": disposition,
-            **gate_signals(key),
+            "kind": "source_term",
+            "request_anchored": any(source["request_anchored"] for source in entries),
+            "mechanism_anchored": any(source["mechanism_anchored"] for source in entries),
             "support_count": len(support_repos[key]),
             "sources": [
                 {
@@ -1180,7 +1022,7 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
                         "relevance_distance", "full_evidence_text",
                     }
                 }
-                for source in sources[key][:3]
+                for source in entries[:3]
             ],
         })
     return result
@@ -1221,11 +1063,16 @@ def build_boundary(candidates: Iterable[dict[str, Any]], presented: Iterable[dic
     recalled = mechanism_names(candidate_list)
     presented_names = mechanism_names(presented_list)
     recalled_keys = {value.casefold() for value in recalled}
-    rejected = list(dict.fromkeys(str(value).strip() for value in rejected_directions if str(value).strip()))
-    negatives = list(dict.fromkeys(str(value).strip() for value in negative_directions if str(value).strip()))
-    rejected_keys = {value.casefold() for value in rejected}
-    negative_keys = {value.casefold() for value in negatives}
-    blocked_keys = rejected_keys | negative_keys
+    rejected = list(dict.fromkeys(
+        str(value).strip() for value in rejected_directions if str(value).strip()
+    ))
+    negatives = list(dict.fromkeys(
+        str(value).strip() for value in negative_directions if str(value).strip()
+    ))
+    blocked_keys = {
+        *(value.casefold() for value in rejected),
+        *(value.casefold() for value in negatives),
+    }
     confirmed_keys = (
         {str(value).casefold() for value in confirmed_directions}
         if confirmed_directions is not None else recalled_keys
@@ -1236,50 +1083,13 @@ def build_boundary(candidates: Iterable[dict[str, Any]], presented: Iterable[dic
         and concept.term.casefold() in confirmed_keys
         and concept.term.casefold() not in blocked_keys
     ]
+    explored_keys = {value.casefold() for value in explored}
     unexplored = [
         concept.term for concept in request.exploration_directions
-        if concept.term.casefold() not in {value.casefold() for value in explored}
+        if concept.term.casefold() not in explored_keys
         and concept.term.casefold() not in blocked_keys
     ]
     term_evidence = discovered_term_evidence(candidate_list, request)
-    known_confirmation_terms = [
-        *(concept.term for concept in request.mechanisms),
-        *(concept.term for concept in request.exploration_directions),
-        *confirmed_keys,
-        *(
-            str(record.get("candidate") or "")
-            for record in confirmation_records
-            if record.get("confirmation_status") == "confirmed"
-        ),
-    ]
-    queue = []
-    for item in term_evidence:
-        if item.get("disposition") != "needs_confirmation":
-            continue
-        queued = {
-            "candidate": str(item["term"]),
-            "discovery_evidence": list(item.get("sources") or []),
-            "confirmation_queries": [],
-            "confirmation_evidence": [],
-            "confirmation_status": "pending",
-            "confirmation_reason": str(item.get("evidence_relevance_reason") or ""),
-            "evidence_relevance_score": item.get("evidence_relevance_score"),
-            "mechanism_specificity": item.get("mechanism_specificity"),
-            "specificity_tier": (
-                "mechanism"
-                if is_promotable_specificity(str(item.get("mechanism_specificity") or ""))
-                else "provisional_category"
-            ),
-            "promotion_confidence": item.get("promotion_confidence"),
-            "support_count": item.get("support_count"),
-        }
-        queued.update(_confirmation_priority(item, known_confirmation_terms))
-        queue.append(queued)
-    queue.sort(key=lambda item: (
-        0 if item.get("specificity_tier") == "mechanism" else 1,
-        -int(item.get("confirmation_priority_score") or 0),
-        str(item.get("candidate") or "").casefold(),
-    ))
     return SearchBoundary(
         recalled_mechanisms=recalled,
         presented_mechanisms=presented_names,
@@ -1294,7 +1104,7 @@ def build_boundary(candidates: Iterable[dict[str, Any]], presented: Iterable[dic
         rejected_directions=rejected,
         discovered_terms=[str(item["term"]) for item in term_evidence],
         discovered_term_evidence=term_evidence,
-        confirmation_queue=queue,
+        confirmation_queue=[],
         mechanism_confirmations=[dict(item) for item in confirmation_records],
         negative_directions=negatives,
     )
