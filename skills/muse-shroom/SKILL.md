@@ -1,9 +1,9 @@
 ---
-name: github-inspiration-discovery
+name: muse-shroom
 description: Use ONLY when the user explicitly asks for Muse-shroom or for boundary discovery by name — for example "use Muse-shroom", "使用 Muse-shroom", "search with Muse-shroom", "muse-shroom 搜一下", or "run boundary discovery". When they do: discover evidence-backed GitHub projects across the user's current solution boundary, including anchors, edges, leaps, and transferable wildcards, for a fuzzy problem, tool, plugin, mod, MCP, or agent skill. Do NOT use it when the user merely asks to find, recommend, or compare GitHub projects, libraries, or tools without naming Muse-shroom; for known-repository code search; or for automatic installation.
 ---
 
-# GitHub Inspiration Discovery
+# Muse-shroom: GitHub boundary discovery
 
 Turn a fuzzy request into an evidence-backed shortlist with Muse-shroom. You interpret the need, decide whether to continue searching, and own the final selection, order, mechanism labels, roles, and rationales. Muse-shroom owns queries and budgets, records raw facts, and mechanically validates candidate/evidence ownership and exact quoted text.
 

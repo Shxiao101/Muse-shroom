@@ -33,7 +33,7 @@ MCP 是可选 extra。安装 `[mcp]` 后可用 `muse-shroom-mcp` 或 `python -m 
 
 ## 工作流
 
-宿主 Agent 使用 [`skills/github-inspiration-discovery`](skills/github-inspiration-discovery/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → `rank`。快搜是 `search` 然后 `rank`。MCP 可用时优先调用 `muse_search` / `muse_observe` / `muse_iterate` / `muse_rank`；否则走 CLI。策略相同。
+宿主 Agent 使用 [`skills/muse-shroom`](skills/muse-shroom/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → `rank`。快搜是 `search` 然后 `rank`。MCP 可用时优先调用 `muse_search` / `muse_observe` / `muse_iterate` / `muse_rank`；否则走 CLI。策略相同。
 
 v0.4 请求把语义拆成 `problem_concepts`、`mechanisms`、`exploration_directions`。契约在 Skill 的 `references/` 下。
 
@@ -129,4 +129,4 @@ Boundary release gate 把两类证据分开报告，不再合成一个数字：
 
 ## 首版边界
 
-没有远程 MCP 服务、独立模型 API、云端 Web UI、账号系统、后台监控、自动安装项目或全量 GitHub 索引。本地 `muse-shroom explorer` 只读浏览已有 session。`skills/github-inspiration-discovery` 可独立复制到支持 Skills 的宿主中。
+没有远程 MCP 服务、独立模型 API、云端 Web UI、账号系统、后台监控、自动安装项目或全量 GitHub 索引。本地 `muse-shroom explorer` 只读浏览已有 session。`skills/muse-shroom` 可独立复制到支持 Skills 的宿主中。

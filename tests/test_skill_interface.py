@@ -3,8 +3,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / "skills" / "github-inspiration-discovery" / "SKILL.md"
-REFERENCES = ROOT / "skills" / "github-inspiration-discovery" / "references"
+SKILL = ROOT / "skills" / "muse-shroom" / "SKILL.md"
+REFERENCES = ROOT / "skills" / "muse-shroom" / "references"
 
 
 class SkillInterfaceTests(unittest.TestCase):
