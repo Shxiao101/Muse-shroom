@@ -5,7 +5,7 @@ description: Discover evidence-backed GitHub projects across the user's current 
 
 # GitHub Inspiration Discovery
 
-Turn a fuzzy request into an evidence-backed shortlist with Muse-shroom. You interpret the need, decide whether to continue searching, write assessments, and explain the ranked result. Muse-shroom owns queries, retrieval, budgets, ranking, and explanation metadata.
+Turn a fuzzy request into an evidence-backed shortlist with Muse-shroom. You interpret the need, decide whether to continue searching, and own the final selection, order, mechanism labels, roles, and rationales. Muse-shroom owns queries and budgets, records raw facts, and mechanically validates candidate/evidence ownership and exact quoted text.
 
 Contracts: [request-contract.md](references/request-contract.md), [hypothesis-contract.md](references/hypothesis-contract.md), [assessment-contract.md](references/assessment-contract.md), [result-contract.md](references/result-contract.md). Follow `next_action` from each search/observe/iterate/rank response: `iterate`, `rank`, or `done`.
 
@@ -51,15 +51,19 @@ Call `muse_search` with the SearchRequest, `mode`, and optional `refresh`; or `m
 
 Quick mode skips this section and goes to assess.
 
-Each round, read `observation` in this order: `stop`, `unexplored_directions`, `boundary_delta`, `mechanism_distribution`, `ambiguity_signals`, `discovered_term_evidence`, `semantic_hypotheses`, `remaining_budget`, `anchors`. For evidence-derived additions, promote only terms carried by `discovered_term_evidence`; cite `discovered_term`, that term's own evidence ID, or `user_request`. During iterations 1 and 2 you may also submit at most two session-wide `host_hypothesis` additions. Do not rebuild the strategy from the original request or by scanning the whole candidate pool.
+Each round, read `observation` in this order: `stop`, `unexplored_directions`, `boundary_delta`, `mechanism_distribution`, `ambiguity_signals`, `discovered_term_evidence`, `semantic_hypotheses`, `remaining_budget`, `anchors`. For evidence-derived additions, use source terms carried by `discovered_term_evidence`; cite `discovered_term`, that term's own evidence ID, or `user_request`. `request_anchored` is context for your judgement, never a permission gate. During iterations 1 and 2 you may also submit at most two session-wide `host_hypothesis` additions. Do not rebuild the strategy from the original request or by scanning the whole candidate pool.
 
 The initial deep search response contains the observation used to decide the first iteration. After every successful `muse_iterate` whose `next_action` is still `iterate`, call `muse_observe` before preparing another hypothesis. Never chain two `muse_iterate` calls without an intervening `muse_observe`. If observe returns `next_action=done` or `can_iterate=false`, do not iterate again.
 
 If `stop.should_stop` is true, stop. `stop.signals` are advisory. You may continue when budget, discovered terms, or unexplored directions still look useful.
 
-Each continue picks a few directions only, in this order: during iterations 1-2, optionally submit a world-knowledge leap through `host_hypothesis`; then correct obvious semantic drift; cover unexplored mechanisms; verify a high-value discovered term; expand an evidence-backed relation. Do not iterate to collect more repos of an already-covered mechanism. Do not invent evidence-derived directions without evidence.
+Each continue picks a few directions only, in this order: during iterations 1-2, consider a world-knowledge leap through `host_hypothesis`; then correct obvious semantic drift; cover unexplored mechanisms; verify a high-value discovered term; expand an evidence-backed relation. Do not iterate to collect more repos of an already-covered mechanism. Do not invent evidence-derived directions without evidence.
 
-A `host_hypothesis` must be a genuinely different mechanism, not a synonym; must include `request_anchor` matching an existing problem concept or alias; must give a concise causal transfer rationale; must respect exclusions and negatives; and must not claim that repository evidence already exists or name a repository. You may submit both hypotheses together or reserve one for the second observation. Zero hypotheses is valid. After iteration two, or after two host hypotheses, all further refinements must be evidence-derived.
+A `host_hypothesis` must be a genuinely different mechanism, not a synonym; must include `request_anchor` matching an existing problem concept or alias; must give a concise causal transfer rationale; must respect exclusions and negatives; and must not claim that repository evidence already exists or name a repository. You may submit both hypotheses together or reserve one for the second observation.
+
+At the first iteration of a deep search, record a decision about the cross-domain leap: either submit a `host_hypothesis`, or say why this request admits no transfer from a neighbouring domain. Put that in `reason`, or in `stop_reason` when you stop this round — both are single-line and capped at 500 characters, so keep it to a sentence or two. Declining is a legitimate outcome and zero hypotheses remains valid; an unstated decline is not, and stopping at the first iteration does not excuse it. Do not manufacture a hypothesis to satisfy this: a synonym of a mechanism already in the request, or one whose causal connection you cannot state, is worse than a stated decline.
+
+After iteration two, or after two host hypotheses, all further refinements must be evidence-derived.
 
 Write a hypothesis per [hypothesis-contract.md](references/hypothesis-contract.md). Call `muse_iterate` with that `search_id` and hypothesis, or `muse-shroom iterate --search-id ID --refinement HYPOTHESIS`. On stop, still call iterate with `decision=stop` so the session records the ending.
 
@@ -67,23 +71,23 @@ If the user later says “还有吗”, “再找一些”, or “换点不同�
 
 Map follow-up preferences into the hypothesis fields in [hypothesis-contract.md](references/hypothesis-contract.md), not chat memory. Do not write a new positive preference into `negative_directions` or `rejected_directions`.
 
-## 7. Assess
+## 7. Select and order
 
-Assess useful shortlist rows with [assessment-contract.md](references/assessment-contract.md). Cite evidence IDs on that candidate. Mark unverified capabilities unknown. Optional `mechanism` must match that candidate's `mechanisms[].name` or `matched_terms`; omit it if unsure. `transferability` is migratability onto the user's problem; `boundary_value` is whether the approach is actually different. Numeric scores are ranking inputs, not validation thresholds. Do not order the list.
+Choose useful candidates and put them in the exact order you want to present. Follow [assessment-contract.md](references/assessment-contract.md). For each item, write a rationale, assign `boundary_role`, provide your own `mechanism_label`, copy an exact `source_term` and quote, and cite evidence IDs owned by that candidate. The label is an interpretation and need not appear in the quote. You—not code—balance a mainstream anchor, new mechanisms, cross-mechanism leaps, transferable wildcards, and repetition.
 
-When `semantic_hypotheses` shows `evidence_found`, assess the supplied semantic assessment candidate. Name the exact evidence-backed mechanism, cite the corresponding `mechanism_match`, and keep the use case conservative and README-backed.
+When `semantic_hypotheses` shows `evidence_found`, consider the supplied semantic candidate. Cite its corresponding evidence when you select it, but do not copy the hypothesis term as a label unless that is genuinely your interpretation.
 
-Type-aware checks: applications need install and an entry point; MCP needs tool contract and permissions; Skills need trigger boundary; mods need compatibility and uninstall path. A verified use_case must cite a `readme_excerpt`.
+Type-aware judgement remains yours: applications normally need install and an entry point; MCPs need a tool contract and permissions; Skills need a trigger boundary; mods need compatibility and an uninstall path. If evidence is insufficient, omit the repository.
 
 On a contract error, fix the JSON and retry this step. Do not search again.
 
-## 8. Rank
+## 8. Validate the selection
 
-Call `muse_rank` with `search_id` and assessments, or `muse-shroom rank --search-id ID --assessments ASSESSMENTS --output RANK.json`. Use [result-contract.md](references/result-contract.md). Follow `items` / `display_order`; compatibility buckets are not an ordering instruction. A successful rank with `next_action=done` is terminal: stop retrieval and diagnostics immediately. Do not call `muse_observe`, `muse_inspect`, shell commands, or other tools after successful rank. Do not issue no-op shell commands merely to signal progress, delay, or narrate internal state. The rank response already carries `explorer_url`; surfacing it needs no further tool call and does not make the turn non-terminal.
+Call `muse_rank` with `search_id` and the ordered `selection`, or `muse-shroom rank --search-id ID --selection SELECTION --output RANK.json`. Use [result-contract.md](references/result-contract.md). The accepted `items` preserve your order exactly; inspect `rejected_items` for mechanical citation failures. If every item was rejected, `next_action` is `rank`, nothing was saved, and the session stays open: correct the cited evidence or quotes from the `reasons` and `evidence_ids_checked` fields and call `muse_rank` again without searching. A rank with `next_action=done` is terminal: stop retrieval and diagnostics immediately. Do not call `muse_observe`, `muse_inspect`, shell commands, or other tools after successful rank. Do not issue no-op shell commands after successful rank. The rank response already carries `explorer_url`; surfacing it needs no further tool call.
 
 ## 9. Present
 
-Follow `display_order`. For each item: name, one-line use, boundary role, why it is worth looking at, and an explicit new-mechanism field. Render `New mechanism: <comma-separated new_mechanisms>` when the array is non-empty and `New mechanism: none` when it is empty, translated to the user's language when appropriate. Use only that item's `new_mechanisms`; do not infer one from its description or category. Use the role meanings in the result contract. Do not dump internal scores. Do not append a second priority, recommendation, or best-first order after the ranked list. Scenario guidance may map a need to an item, but must not create or imply another ranking.
+Follow `display_order`. For each item: name, one-line use, boundary role, rationale, and an explicit new-mechanism field. Render `New mechanism: <comma-separated new_mechanisms>` when the array is non-empty and `New mechanism: none` when it is empty, translated when appropriate. Do not append a second priority, recommendation, or best-first order after the list.
 
 Only validated semantic mechanisms that appear in final ranked items may be presented as formal new mechanisms. Distinguish `proposed`, `searched`, `evidence_found`, `validated`, `rejected`, and `inconclusive` from `semantic_hypotheses`. Rejected and inconclusive hypotheses may be summarized briefly in deep mode.
 

@@ -79,10 +79,10 @@ class MuseCore:
         finally:
             store.close()
 
-    def rank(self, search_id: str, assessments: Any) -> dict[str, Any]:
+    def rank(self, search_id: str, selection: Any) -> dict[str, Any]:
         store = self._store()
         try:
-            result = rank_search(store, search_id, assessments, strict=True)
+            result = rank_search(store, search_id, selection, strict=True)
         finally:
             store.close()
         from .explorer.launcher import ensure_explorer
@@ -102,11 +102,7 @@ class MuseCore:
             if search_id:
                 ranking = store.get_ranking(search_id)
                 if ranking:
-                    ranked_items = ranking.get("items")
-                    if not isinstance(ranked_items, list):
-                        ranked_items = [
-                            item for bucket in ranking.get("buckets", {}).values() for item in bucket
-                        ]
+                    ranked_items = list(ranking.get("items") or [])
                     ranking_item = next((
                         item for item in ranked_items
                         if item.get("repo", "").lower() == repo.lower()

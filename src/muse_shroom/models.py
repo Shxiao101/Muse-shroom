@@ -28,19 +28,15 @@ HYPOTHESIS_FIELDS = frozenset({
     "rejected_directions", "reason", "stop_reason", "remaining_unexplored_directions",
     "add_exploration_directions", "strategies", "promote_discovered_terms",
 })
-ASSESSMENT_REQUIRED_FIELDS = (
-    "repo", "relevance", "uniqueness", "usability", "difficulty", "use_case",
-    "category", "artifact_type", "reasons", "risks",
-)
-ASSESSMENT_OPTIONAL_FIELDS = frozenset({"mechanism", "transferability", "boundary_value"})
-ASSESSMENT_FIELDS = frozenset(ASSESSMENT_REQUIRED_FIELDS) | ASSESSMENT_OPTIONAL_FIELDS
-CLAIM_FIELDS = frozenset({"text", "evidence_ids"})
-RANK_PAYLOAD_FIELDS = frozenset({"assessments"})
+SELECTION_FIELDS = frozenset({
+    "repo", "rationale", "mechanism_label", "source_term", "quote",
+    "evidence_ids", "boundary_role",
+})
+RANK_PAYLOAD_FIELDS = frozenset({"selection"})
+BOUNDARY_ROLES = ("anchor", "edge", "leap", "wildcard")
 SEARCH_ARTIFACT_TYPES = (
     "application", "mcp", "skill", "mod", "plugin", "library",
 )
-ASSESSMENT_ARTIFACT_TYPES = (*SEARCH_ARTIFACT_TYPES, "unknown")
-ASSESSMENT_DIFFICULTIES = ("easy", "medium", "hard", "unknown")
 
 
 def reject_unknown_fields(
@@ -596,7 +592,10 @@ class SearchHypothesis:
             exclude=cls._strings(data, "exclude", 10),
             rejected_directions=cls._strings(data, "rejected_directions", 10),
             reason=cls._optional_text(data, "reason", 500, strict=strict),
-            stop_reason=cls._optional_text(data, "stop_reason", 200, strict=strict),
+            # Matches `reason`: both now carry the round's rationale, including the
+            # required cross-domain decision, so they get the same budget. A 200-char
+            # cap discarded whole iterations over a few characters of explanation.
+            stop_reason=cls._optional_text(data, "stop_reason", 500, strict=strict),
             remaining_unexplored_directions=cls._strings(data, "remaining_unexplored_directions", 10),
             add_exploration_directions=[
                 ExplorationAddition.from_value(item, strict=strict) for item in additions_raw
@@ -666,167 +665,74 @@ class SearchHypothesis:
         )
 
 
-def _optional_score(value: Any, name: str, *, strict: bool = False) -> float | None:
-    if value is None:
-        if strict:
-            raise ContractError(f"{name} must be a number")
-        return None
-    return _score(value, name, strict=strict)
-
-
 @dataclass(slots=True)
-class Assessment:
+class Selection:
+    """One Agent-chosen repository in the exact order it should be displayed."""
+
     repo: str
-    relevance: float
-    uniqueness: float
-    usability: float
-    difficulty: str
-    use_case: str
-    category: str
-    artifact_type: str
-    reasons: list[dict[str, Any]] = field(default_factory=list)
-    risks: list[dict[str, Any]] = field(default_factory=list)
-    mechanism: str = ""
-    transferability: float | None = None
-    boundary_value: float | None = None
+    rationale: str
+    mechanism_label: str
+    source_term: str
+    quote: str
+    evidence_ids: list[str]
+    boundary_role: str
 
     @classmethod
     def from_dict(
-        cls,
-        data: dict[str, Any],
-        evidence: set[str] | dict[str, str],
-        *,
-        strict: bool = False,
-    ) -> "Assessment":
+        cls, data: dict[str, Any], *, strict: bool = False,
+    ) -> "Selection":
         if not isinstance(data, dict):
-            raise ContractError("each assessment must be an object")
+            raise ContractError("each selection item must be an object")
         if strict:
             reject_unknown_fields(
-                data,
-                ASSESSMENT_FIELDS,
-                where="Assessment",
-                extra_hint=(
-                    "Required fields: repo, relevance, uniqueness, usability, difficulty, "
-                    "use_case, category, artifact_type, reasons, risks. Optional: mechanism, "
-                    "transferability, boundary_value. Explicit 'unknown' is valid; omitting a "
-                    "required field is not."
-                ),
+                data, SELECTION_FIELDS, where="Selection",
             )
             require_fields(
-                data,
-                ASSESSMENT_REQUIRED_FIELDS,
-                where="Assessment",
-                extra_hint="Explicit 'unknown' is valid; missing fields are not auto-filled.",
+                data, tuple(sorted(SELECTION_FIELDS)), where="Selection",
             )
-        repo_raw = data.get("repo", "")
-        if strict and not isinstance(repo_raw, str):
-            raise ContractError("assessment repo must be a string in owner/name form")
-        repo = str(repo_raw).strip().lower()
+        string_fields = (
+            "repo", "rationale", "mechanism_label", "source_term", "quote", "boundary_role",
+        )
+        if strict and any(not isinstance(data.get(name), str) for name in string_fields):
+            raise ContractError("selection text fields must be strings")
+        repo = str(data.get("repo") or "").strip().lower()
         if "/" not in repo:
-            raise ContractError("assessment repo must be owner/name")
-        if strict:
-            difficulty_raw = data.get("difficulty")
-            if not isinstance(difficulty_raw, str) or not difficulty_raw.strip():
-                raise ContractError("difficulty must be easy, medium, hard, or unknown")
-            difficulty = difficulty_raw.strip()
-        else:
-            difficulty = str(data.get("difficulty", "unknown")).lower()
-        if difficulty not in ASSESSMENT_DIFFICULTIES:
-            raise ContractError("difficulty must be easy, medium, hard, or unknown")
-        reasons = data.get("reasons", [])
-        risks = data.get("risks", [])
-        if not isinstance(reasons, list):
-            raise ContractError("reasons must be an array")
-        if not isinstance(risks, list):
-            raise ContractError("risks must be an array")
-        reasons = list(reasons)
-        risks = list(risks)
-        if strict and not reasons:
-            raise ContractError("reasons must contain at least one evidence-backed reason")
-        evidence_ids = set(evidence)
-        for item in reasons + risks:
-            if not isinstance(item, dict):
-                raise ContractError("each reason/risk needs text")
-            if strict:
-                reject_unknown_fields(item, CLAIM_FIELDS, where="reason/risk")
-                require_fields(
-                    item, ("text", "evidence_ids"), where="reason/risk",
-                )
-                if not isinstance(item["text"], str):
-                    raise ContractError("each reason/risk text must be a string")
-            if not str(item.get("text", "")).strip():
-                raise ContractError("each reason/risk needs text")
-            cited = item.get("evidence_ids", [])
-            if strict and (
-                not isinstance(cited, list)
-                or any(not isinstance(evidence_id, str) for evidence_id in cited)
-            ):
-                raise ContractError("each reason/risk evidence_ids must be an array of strings")
-            if not cited:
-                raise ContractError("each reason/risk must cite at least one evidence id")
-            unknown = set(cited if strict else map(str, cited)) - evidence_ids
-            if unknown:
-                raise ContractError(f"unknown evidence ids for {repo}: {sorted(unknown)}")
-        if strict:
-            use_case_raw = data.get("use_case")
-            if not isinstance(use_case_raw, str):
-                raise ContractError("use_case must be a string; use 'unknown' when unverified")
-            use_case = use_case_raw.strip()
-            if not use_case:
-                raise ContractError("use_case is required; use 'unknown' when unverified")
-            category_raw = data.get("category")
-            if not isinstance(category_raw, str):
-                raise ContractError("category must be a string")
-            category = category_raw.strip()
-            if not category:
-                raise ContractError("category is required; use a specific sub-direction")
-            artifact_type_raw = data.get("artifact_type")
-            if not isinstance(artifact_type_raw, str):
-                raise ContractError("artifact_type must be a string")
-            artifact_type = artifact_type_raw.strip()
-            if not artifact_type:
-                raise ContractError("artifact_type is required; use 'unknown' when unverified")
-            if artifact_type not in ASSESSMENT_ARTIFACT_TYPES:
-                raise ContractError(
-                    "artifact_type must be application, mcp, skill, mod, plugin, library, or unknown"
-                )
-        else:
-            use_case = str(data.get("use_case", "unknown")).strip() or "unknown"
-            category = str(data.get("category", "uncategorized")).strip() or "uncategorized"
-            artifact_type = str(data.get("artifact_type", "unknown")).strip().lower() or "unknown"
-        if use_case.casefold() != "unknown" and isinstance(evidence, dict):
-            cited_reason_ids = {
-                str(evidence_id) for item in reasons for evidence_id in item.get("evidence_ids", [])
-            }
-            if not any(evidence.get(evidence_id) == "readme_excerpt" for evidence_id in cited_reason_ids):
-                raise ContractError(
-                    f"verified use_case for {repo} must cite at least one readme excerpt"
-                )
-        if strict and "mechanism" in data and not isinstance(data["mechanism"], str):
-            raise ContractError("assessment mechanism must be a string")
-        mechanism = str(data.get("mechanism") or "").strip()
-        if mechanism and (len(mechanism) > 160 or "\n" in mechanism or "\r" in mechanism):
-            raise ContractError("assessment mechanism must be a single-line string up to 160 characters")
+            raise ContractError("selection repo must be owner/name")
+        text = {
+            name: str(data.get(name) or "").strip()
+            for name in ("rationale", "mechanism_label", "source_term", "quote")
+        }
+        if any(not value for value in text.values()):
+            raise ContractError(
+                "selection rationale, mechanism_label, source_term, and quote are required"
+            )
+        if any("\n" in value or "\r" in value for value in text.values()):
+            raise ContractError("selection text fields must be single-line strings")
+        if len(text["mechanism_label"]) > 160:
+            raise ContractError("mechanism_label must be at most 160 characters")
+        evidence_raw = data.get("evidence_ids")
+        if not isinstance(evidence_raw, list) or not evidence_raw:
+            raise ContractError("selection evidence_ids must be a non-empty array")
+        if strict and any(not isinstance(value, str) for value in evidence_raw):
+            raise ContractError("selection evidence_ids must contain strings")
+        evidence_ids = [str(value).strip() for value in evidence_raw]
+        if any(not value for value in evidence_ids):
+            raise ContractError("selection evidence_ids must not contain empty values")
+        if len(evidence_ids) != len(set(evidence_ids)):
+            raise ContractError("selection evidence_ids must be unique")
+        role = str(data.get("boundary_role") or "").strip().lower()
+        if role not in BOUNDARY_ROLES:
+            raise ContractError(
+                "boundary_role must be anchor, edge, leap, or wildcard"
+            )
         return cls(
             repo=repo,
-            relevance=_score(data.get("relevance"), "relevance", strict=strict),
-            uniqueness=_score(data.get("uniqueness"), "uniqueness", strict=strict),
-            usability=_score(data.get("usability"), "usability", strict=strict),
-            difficulty=difficulty,
-            use_case=use_case,
-            category=category,
-            artifact_type=artifact_type,
-            reasons=reasons,
-            risks=risks,
-            mechanism=mechanism,
-            transferability=_optional_score(
-                data.get("transferability"), "transferability", strict=strict,
-            )
-            if "transferability" in data else None,
-            boundary_value=_optional_score(
-                data.get("boundary_value"), "boundary_value", strict=strict,
-            )
-            if "boundary_value" in data else None,
+            rationale=text["rationale"],
+            mechanism_label=text["mechanism_label"],
+            source_term=text["source_term"],
+            quote=text["quote"],
+            evidence_ids=evidence_ids,
+            boundary_role=role,
         )
 
 

@@ -36,7 +36,10 @@ class FrozenGitHub:
         self.request_counts["core"] += 1
         if full_name.lower() not in self.readmes:
             raise GitHubNotFoundError("README missing")
-        return ApiResult(self.readmes[full_name.lower()])
+        return ApiResult({
+            "text": self.readmes[full_name.lower()],
+            "sha": f"fixture-sha-{full_name.lower()}",
+        })
 
     def latest_release(self, full_name: str) -> ApiResult:
         self.request_counts["core"] += 1

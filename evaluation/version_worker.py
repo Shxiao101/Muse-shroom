@@ -66,18 +66,7 @@ def _mechanism_redundancy(candidates: list[dict[str, Any]]) -> float:
 
 def deterministic_hypothesis(observation: dict[str, Any], used: set[str]) -> dict[str, Any] | None:
     """Choose only an observed direction; golden answers never enter this policy."""
-    evidence = [
-        item for _, item in sorted(
-            enumerate(observation.get("discovered_term_evidence") or []),
-            key=lambda pair: (
-                0 if pair[1].get("promotion_confidence") == "high"
-                else 1 if pair[1].get("promotion_confidence") == "medium" else 2,
-                0 if pair[1].get("kind") == "candidate_mechanism"
-                else 1 if pair[1].get("kind") == "cross_domain_direction" else 2,
-                pair[0],
-            ),
-        )
-    ]
+    evidence = list(observation.get("discovered_term_evidence") or [])
     def promote(item: dict[str, Any]) -> dict[str, Any] | None:
         term = str(item.get("term") or "").strip()
         key = term.casefold()
@@ -93,10 +82,6 @@ def deterministic_hypothesis(observation: dict[str, Any], used: set[str]) -> dic
         }
 
     for item in evidence:
-        if item.get("kind") not in {"candidate_mechanism", "cross_domain_direction"}:
-            continue
-        if item.get("promotable") is False:
-            continue
         hypothesis = promote(item)
         if hypothesis is not None:
             return hypothesis
@@ -131,79 +116,52 @@ def deterministic_hypothesis(observation: dict[str, Any], used: set[str]) -> dic
             "reason": "deterministic evaluation: cover observed unexplored direction",
         }
 
-    # Third fallback: a real host Agent may add an exploration direction that cites
-    # an evidence ID, with no `promotable` requirement (see _validate_hypothesis in
-    # src/muse_shroom/iteration.py). Without this the policy halts whenever nothing
-    # is promotable, which made the benchmark under-report what a host can do.
-    # `gate_blocked_by` names terms the core typed as mechanisms but gated on
-    # anchoring or score; when the field is absent the set membership fails and the
-    # policy behaves exactly as before.
-    for item in evidence:
-        if item.get("gate_blocked_by") not in {"request_anchored", "score"}:
-            continue
-        term = str(item.get("term") or "").strip()
-        key = term.casefold()
-        if not term or key in used:
-            continue
-        evidence_id = next(
-            (
-                str(source.get("evidence_id") or "").strip()
-                for source in item.get("sources") or []
-                if source.get("core_use_case") and str(source.get("evidence_id") or "").strip()
-            ),
-            "",
-        )
-        if not evidence_id:
-            continue
-        used.add(key)
-        return {
-            "decision": "continue",
-            "target_direction": term,
-            "add_exploration_directions": [{
-                "term": term,
-                "evidence": evidence_id,
-                "reason": "deterministic evaluation: evidence-backed observed mechanism",
-            }],
-            "strategies": ["keyword"],
-            "reason": "deterministic evaluation: explore an evidence-backed observed term",
-        }
     return None
 
 
-def deterministic_assessment(candidate: dict[str, Any], request_payload: dict[str, Any]) -> dict[str, Any]:
-    """Build a traceable ranking fixture; this is not a semantic quality judge."""
-    evidence = list(candidate.get("evidence") or [])
-    excerpt = next((item for item in evidence if item.get("kind") == "readme_excerpt"), None)
-    metadata = next((item for item in evidence if item.get("kind") == "github_metadata"), None)
-    citation = excerpt or metadata or (evidence[0] if evidence else None)
-    if citation is None or not citation.get("id"):
-        raise ValueError(f"evaluation candidate lacks evidence: {candidate.get('full_name')}")
-    excerpt_text = str(((excerpt or {}).get("facts") or {}).get("text") or "").strip()
+def _selection_source(candidate: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    for evidence in candidate.get("evidence") or []:
+        facts = evidence.get("facts") or {}
+        texts: list[tuple[str, str]] = []
+        if evidence.get("kind") == "readme_excerpt":
+            texts.append((str(facts.get("text") or ""), str(facts.get("sha") or "")))
+        elif evidence.get("kind") == "readme":
+            texts.append((
+                str(candidate.get("readme") or ""),
+                str(facts.get("sha") or candidate.get("readme_sha") or ""),
+            ))
+        elif evidence.get("kind") == "mechanism_match":
+            for match in facts.get("mechanisms") or []:
+                texts.append((
+                    str(match.get("text") or ""),
+                    str(match.get("sha") or candidate.get("readme_sha") or ""),
+                ))
+        for text, sha in texts:
+            line = next((part.strip() for part in text.splitlines() if part.strip()), "")
+            if evidence.get("id") and line and sha:
+                return evidence, line
+    raise ValueError(
+        f"evaluation candidate lacks SHA-bound textual evidence: {candidate.get('full_name')}"
+    )
+
+
+def deterministic_selection(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Build a mechanically traceable fixture for exercising the selection contract."""
+    citation, source_line = _selection_source(candidate)
     mechanisms = list(candidate.get("mechanisms") or [])
     topics = list(candidate.get("topics") or [])
-    artifact_types = list(request_payload.get("artifact_types") or [])
+    source_term = " ".join(source_line.split()[: min(5, len(source_line.split()))])
     return {
         "repo": candidate["full_name"],
-        "relevance": 75,
-        "uniqueness": 72,
-        "usability": 70 if excerpt else 45,
-        "difficulty": "unknown",
-        "use_case": excerpt_text[:180] if excerpt_text else "unknown",
-        "category": (
+        "rationale": "Deterministic evaluation fixture backed by recorded source text",
+        "mechanism_label": (
             str((mechanisms[0] or {}).get("name") or "") if mechanisms
-            else str(topics[0]) if topics else "boundary candidate"
+            else str(topics[0]) if topics else "source-backed candidate"
         ),
-        "artifact_type": str(artifact_types[0]) if artifact_types else "application",
-        "reasons": [{
-            "text": "Deterministic evaluation fixture based on candidate evidence",
-            "evidence_ids": [citation["id"]],
-        }],
-        "risks": [{
-            "text": "Semantic usefulness still requires blind human review",
-            "evidence_ids": [(metadata or citation)["id"]],
-        }],
-        "transferability": 65,
-        "boundary_value": 70 if mechanisms else 45,
+        "source_term": source_term,
+        "quote": source_line,
+        "evidence_ids": [citation["id"]],
+        "boundary_role": "edge",
     }
 
 
@@ -216,7 +174,8 @@ def _compact_ranking(ranking: dict[str, Any] | None) -> dict[str, Any] | None:
             "repo": item.get("repo"),
             "boundary_role": item.get("boundary_role"),
             "new_mechanisms": list(item.get("new_mechanisms") or []),
-            "why_different": item.get("why_different"),
+            "rationale": item.get("rationale"),
+            "mechanism_label": item.get("mechanism_label"),
         } for item in ranking.get("items") or []],
         "boundary_summary": ranking.get("boundary_summary") or {},
         "coverage": ranking.get("coverage") or {},
@@ -317,18 +276,23 @@ def main(argv: list[str] | None = None) -> int:
             if args.boundary_rank:
                 if not args.agentic:
                     raise ValueError("--boundary-rank requires --agentic")
-                assessments = [
-                    deterministic_assessment(candidate, request_payload)
-                    for candidate in candidates
-                ]
-                if assessments:
+                selection = []
+                for candidate in candidates:
+                    try:
+                        selection.append(deterministic_selection(candidate))
+                    except ValueError:
+                        # Historical cassettes predate recorded README SHAs. They
+                        # remain usable for retrieval replay, but cannot exercise
+                        # the current quote-verification contract.
+                        continue
+                if selection:
                     rank_options = {}
                     if "reference_time" in inspect.signature(
                         ranking_module.rank_search
                     ).parameters:
                         rank_options["reference_time"] = github.payload.get("captured_at")
                     ranking = ranking_module.rank_search(
-                        store, output["search_id"], assessments, **rank_options,
+                        store, output["search_id"], selection, **rank_options,
                     )
             boundary = dict(output.get("boundary") or {})
             if ranking:

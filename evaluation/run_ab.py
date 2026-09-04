@@ -9,7 +9,7 @@ import tempfile
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -229,6 +229,108 @@ def execute(args: argparse.Namespace) -> None:
     }, ensure_ascii=False, indent=2))
 
 
+def adapt_direct_arm(
+    requests_payload: dict[str, Any], direct_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate direct-host output and emit the same result envelope as Muse-shroom."""
+    requests = {
+        str(item.get("prompt_id") or ""): item
+        for item in requests_payload.get("requests") or []
+    }
+    direct = {
+        str(item.get("prompt_id") or ""): item
+        for item in direct_payload.get("results") or []
+    }
+    if not requests or set(requests) != set(direct):
+        raise ValueError("direct arm prompt IDs must exactly match ab-requests.json")
+    metadata = direct_payload.get("metadata")
+    required_metadata = {
+        "model_id", "muse_shroom_revision", "skill_component_digest",
+        "timestamp", "configuration",
+    }
+    if not isinstance(metadata, dict) or not required_metadata <= set(metadata):
+        raise ValueError("direct arm metadata is incomplete")
+    results: list[dict[str, Any]] = []
+    for prompt_id, request in requests.items():
+        item = direct[prompt_id]
+        candidates = item.get("candidates")
+        if not isinstance(candidates, list):
+            raise ValueError(f"direct arm candidates must be an array for {prompt_id}")
+        results.append({
+            "prompt_id": prompt_id,
+            "category": request.get("category"),
+            "request": request.get("request"),
+            "candidates": candidates,
+        })
+    return {
+        "schema_version": 2,
+        "arm": "direct",
+        "metadata": metadata,
+        "results": results,
+    }
+
+
+def check_claim_traceability(
+    arm_payload: dict[str, Any], repository_facts: dict[str, Any],
+) -> dict[str, Any]:
+    """Check existence, archive state, and exact quoted text without judging claims."""
+    rows: list[dict[str, Any]] = []
+    for result in arm_payload.get("results") or []:
+        for candidate in result.get("candidates") or []:
+            repo_name = str(candidate.get("repo") or candidate.get("full_name") or "")
+            facts = repository_facts.get(repo_name.casefold()) or {}
+            failures: list[str] = []
+            if not facts.get("exists"):
+                failures.append("repository_not_found")
+            elif facts.get("archived"):
+                failures.append("repository_archived")
+            quote = str(candidate.get("quote") or "")
+            source_term = str(candidate.get("source_term") or "")
+            if quote:
+                sources = [
+                    source for source in facts.get("sources") or []
+                    if isinstance(source, dict) and source.get("sha")
+                ]
+                if not any(
+                    quote in str(source.get("text") or "")
+                    and (not source_term or source_term in str(source.get("text") or ""))
+                    for source in sources
+                ):
+                    failures.append("quote_not_verbatim_at_recorded_sha")
+            rows.append({
+                "prompt_id": result.get("prompt_id"),
+                "repo": repo_name,
+                "passed": not failures,
+                "failures": failures,
+            })
+    return {
+        "arm": arm_payload.get("arm"),
+        "checked": len(rows),
+        "passed": sum(item["passed"] for item in rows),
+        "failed": sum(not item["passed"] for item in rows),
+        "repositories": rows,
+        "measurement": "claim_traceability_only",
+    }
+
+
+def _adapt_direct_command(args: argparse.Namespace) -> None:
+    payload = adapt_direct_arm(
+        json.loads(args.requests.read_text(encoding="utf-8")),
+        json.loads(args.input.read_text(encoding="utf-8")),
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _check_claims_command(args: argparse.Namespace) -> None:
+    payload = check_claim_traceability(
+        json.loads(args.arm.read_text(encoding="utf-8")),
+        json.loads(args.repository_facts.read_text(encoding="utf-8")),
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Capture or replay a blind Muse-shroom A/B evaluation")
     subparsers = parser.add_subparsers(dest="action", required=True)
@@ -252,6 +354,16 @@ def _parser() -> argparse.ArgumentParser:
     blind.set_defaults(handler=lambda args: build_blind_pack(
         args.baseline, args.candidate, blind_path=args.output, key_path=args.key, seed=args.seed
     ))
+    direct = subparsers.add_parser("adapt-direct", help="validate direct-host structured output")
+    direct.add_argument("--requests", type=Path, required=True)
+    direct.add_argument("--input", type=Path, required=True)
+    direct.add_argument("--output", type=Path, required=True)
+    direct.set_defaults(handler=_adapt_direct_command)
+    claims = subparsers.add_parser("check-claims", help="check repository and quote facts")
+    claims.add_argument("--arm", type=Path, required=True)
+    claims.add_argument("--repository-facts", type=Path, required=True)
+    claims.add_argument("--output", type=Path, required=True)
+    claims.set_defaults(handler=_check_claims_command)
     return parser
 
 

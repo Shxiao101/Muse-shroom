@@ -70,7 +70,7 @@ class IterationContractTests(unittest.TestCase):
                             for item in executed))
         self.assertEqual(skipped, [])
 
-    def test_low_confidence_discovered_term_cannot_be_promoted(self):
+    def test_observed_source_term_is_not_blocked_by_code_confidence(self):
         request = SearchRequest.from_dict(FOCUS_REQUEST)
         hypothesis = SearchHypothesis.from_dict({
             "decision": "continue",
@@ -89,8 +89,7 @@ class IterationContractTests(unittest.TestCase):
             }],
         }
 
-        with self.assertRaisesRegex(ContractError, "not a promotable"):
-            validate_hypothesis_evidence(hypothesis, request, boundary, [])
+        validate_hypothesis_evidence(hypothesis, request, boundary, [])
 
 
 class AgenticLoopTests(unittest.TestCase):
@@ -362,7 +361,7 @@ class AgenticLoopTests(unittest.TestCase):
         self.assertEqual(events[1]["hypothesis"]["decision"], "stop")
         self.assertEqual(events[2]["hypothesis"]["concepts"], ["deep work"])
 
-    def test_duplicate_queries_are_skipped_and_can_stop_the_loop(self):
+    def test_duplicate_queries_are_advisory_and_session_reaches_iteration_two(self):
         item = repo("focus/timer", 4, description="Pomodoro timer")
         github = FrozenGitHub(
             [("pomodoro", [item]), ("focus", [item])],
@@ -383,13 +382,19 @@ class AgenticLoopTests(unittest.TestCase):
                     "reason": "repeat the same mechanism wording",
                     "concepts": ["pomodoro"],
                 })
+                third = engine.iterate(first["search_id"], {
+                    "decision": "continue",
+                    "reason": "use the remaining round for a new direction",
+                    "concepts": ["biofeedback"],
+                })
             finally:
                 store.close()
 
         self.assertGreaterEqual(second["observation"]["query_summary"]["skipped_count"], 1)
-        self.assertIn("duplicate_queries", second["observation"]["stop"]["reasons"])
-        self.assertTrue(second["observation"]["stop"]["should_stop"])
-        self.assertEqual(second["next_action"], "rank")
+        self.assertIn("duplicate_queries", second["observation"]["stop"]["signals"])
+        self.assertFalse(second["observation"]["stop"]["should_stop"])
+        self.assertEqual(second["next_action"], "iterate")
+        self.assertEqual(third["iteration"], 2)
 
     def test_stop_does_not_overwrite_executed_iteration_history(self):
         item = repo("focus/timer", 4, description="Pomodoro timer")
@@ -554,18 +559,18 @@ class AgenticLoopTests(unittest.TestCase):
                 first = engine.search(request, "deep")
                 stored = store.get_candidate("focus/timer", first["search_id"])
                 excerpt = next(
-                    evidence["id"] for evidence in stored["evidence"]
+                    evidence for evidence in stored["evidence"]
                     if evidence["kind"] == "readme_excerpt"
                 )
+                quote = next(
+                    line.strip() for line in excerpt["facts"]["text"].splitlines()
+                    if line.strip()
+                )
                 rank_search(store, first["search_id"], [{
-                    "repo": "focus/timer", "relevance": 90, "uniqueness": 70,
-                    "usability": 80, "difficulty": "easy", "use_case": "Pomodoro workflow",
-                    "category": "focus", "artifact_type": "application",
-                    "reasons": [{"text": "Documented workflow", "evidence_ids": [excerpt]}],
-                    "risks": [{
-                        "text": "Check metadata",
-                        "evidence_ids": ["repo:focus/timer:metadata"],
-                    }],
+                    "repo": "focus/timer", "rationale": "Documented workflow",
+                    "mechanism_label": "pomodoro", "source_term": quote.split()[0],
+                    "quote": quote, "evidence_ids": [excerpt["id"]],
+                    "boundary_role": "anchor",
                 }])
                 after_rank = SearchEngine(store, None).observe(first["search_id"])
                 continued = engine.iterate(first["search_id"], {

@@ -68,20 +68,119 @@ or the deterministic policy. Run the enforced normalized check with:
 python evaluation/check_boundary_leakage.py
 ```
 
-Host-in-the-loop discovery uses an isolated `prepare / collect / score` workflow
-that must not see Golden files. Capture records host actions and GitHub responses
-into a per-run cassette (serial queue, 3.5s search interval, Retry-After /
-X-RateLimit-Reset, 60s secondary-limit backoff). Replay reapplies those actions
-without calling the model. Deterministic and host cassettes stay separate.
+Host-in-the-loop discovery now starts with an isolated `prepare / collect /
+summarize` recording workflow. `prepare` writes anonymous cases, Agent
+instructions, and an MCP configuration into a fresh bundle while keeping the
+case map and Golden data outside it. `collect` is the stdio MCP server itself:
+the host calls the normal Muse-shroom tools and the proxy records those calls
+and GitHub responses as they happen. There is no handwritten transcript input.
 
 ```console
-python evaluation/host_eval.py prepare --bundle evaluation/host-bundle
-python evaluation/host_eval.py collect --mode capture --transcript TRANSCRIPT.json --cassette evaluation/cassettes/host.json.gz --output evaluation/results/host-collect.json --data-dir evaluation/results/host-data
-python evaluation/host_eval.py collect --mode replay --transcript TRANSCRIPT.json --cassette evaluation/cassettes/host.json.gz --output evaluation/results/host-replay.json --data-dir evaluation/results/host-replay-data
-python evaluation/host_eval.py score --collect evaluation/results/host-collect.json --mapping evaluation/host-bundle.case-map.json --output evaluation/results/host-score.json
+python evaluation/host_eval.py prepare --suite development --bundle evaluation/host-dev-bundle
+# Configure the host with evaluation/host-dev-bundle/mcp.json and follow HOST-RUN.md.
+# The generated MCP command runs:
+python evaluation/host_eval.py collect --bundle evaluation/host-dev-bundle --attempt-root evaluation/results/host-development
+python evaluation/host_eval.py summarize --attempt evaluation/results/host-development/attempt-01 --mapping evaluation/host-dev-bundle.case-map.json --suite development
 ```
 
-The v0.6.0 capability gate requires a valid transcript, leakage pass, no-cannibalization pass, and at least one development case that both queried a Golden cross-domain direction and retrieved matching repository mechanism evidence. Agent numeric scores do not affect this gate. Holdout discovery quality stays observational.
+Each capture gets a new `attempt-NN` directory. A summarized attempt is sealed
+and cannot be overwritten; a later replay or scoring fix can reuse its cassette
+without another live Agent run.
+
+An MCP client allocates an attempt whenever it launches or relaunches the
+recorder, including launches the host never uses, so `attempt-NN` numbers do not
+correspond one-to-one with evaluation runs. An attempt that recorded no host tool
+call holds a start event and nothing else — no host decision, no GitHub response,
+no result. Governance treats those as an absence of measurement: they are neither
+classified nor taken as the newest attempt. Attempts that did record calls are
+never skipped, so a later failure still cannot be bypassed by an older pass. Pass
+the real attempt path to `summarize`; do not assume `attempt-01`.
+
+MCP clients normally terminate a stdio server rather than shutting it down, so
+`attempt.close()` often never runs and the attempt carries no close event.
+Termination is the ordinary path, not a defect: the cassette is saved after every
+recorded call, so a terminated capture still holds complete artifacts up to its
+last call. `summarize` therefore seals a capture with no close event once the
+attempt has been quiet for `CAPTURE_QUIESCE_SECONDS` (60s), and records
+`close_kind` as `graceful`, `terminated`, or `failed`. Close the host and its MCP
+server before summarizing; the quiet period is what prevents sealing a live
+capture.
+
+Complete the development shakedown before preparing the six-case holdout bundle.
+Development is leaked and always `release_eligible: false`.
+
+### The development shakedown preflight
+
+Holdout `prepare` and `collect` both run the same preflight against the **newest**
+sealed development attempt. An older attempt is never used as a fallback, so a
+shakedown that regressed cannot be bypassed. Expected case counts come from that
+attempt's manifest; no suite size is hard-coded.
+
+The preflight checks facts about the capture, never what it found:
+
+| check | rule |
+|---|---|
+| attempt is sealed | `manifest.json` and `raw-summary.json` both present |
+| identity agreement | attempt, suite, bundle, component and cassette digests match between manifest and summary |
+| capture completed | classified `capture_complete`, closed, no diagnostic failures, all prepared cases run |
+| rate denominator | `host_hypothesis_proposal_case_rate.total` equals the prepared case count |
+| `agent_visible_component_digest` | digest of `src/` + `skills/` equals the shakedown's |
+
+**No rate gates a capture.** `host_hypothesis_proposal_case_rate` is reported for a
+human to read and nothing else. Gating on agreement with a model-authored answer
+key would measure whether one model guesses another's vocabulary, so those gates,
+their ratios, and the acknowledgement flow were removed. A shakedown is a readiness
+report, not a permission.
+
+The component digest binds a shakedown to the Skill revision it measured. The
+whole-bundle digest cannot do this, because development and holdout bundles
+necessarily differ in `cases.json`, `mcp.json`, and `HOST-RUN.md`. Revising the
+Skill after a shakedown invalidates it; re-run the shakedown first.
+
+```console
+python evaluation/host_eval.py prepare --suite holdout --bundle evaluation/host-bundle   --development-root evaluation/results/host-development
+# Configure the host with evaluation/host-bundle/mcp.json and follow HOST-RUN.md.
+# The generated MCP command carries --development-root.
+python evaluation/host_eval.py summarize --attempt evaluation/results/host-holdout/attempt-NN --mapping evaluation/host-bundle.case-map.json --suite holdout
+```
+
+`collect` re-runs the whole preflight before allocating `attempt-NN`, so a
+development attempt sealed as incomplete between `prepare` and `collect` still
+blocks the capture.
+
+### Capture classifications
+
+Summarization classifies a sealed attempt by whether it completed, never by what it
+found. Outcome classifications keyed to an answer key were removed along with the
+gates that consumed them.
+
+- `capture_complete` — the recorder produced intact artifacts. Case rows are included.
+- `capture_incomplete` — an infrastructure, transcript, or pacing failure. Case rows
+  are omitted, and this is the only classification that permits recapturing the same
+  holdout suite: a capture that produced intact artifacts has been observed, and
+  re-running those cases would test a revised system against known results.
+
+### Pipeline telemetry
+
+`summarize` reports one suite-independent chain per case and in aggregate:
+hypothesis → executed query → evidence found → selected by the Agent → displayed.
+Every link is a fact about the run, with no answer key involved. `pipeline_rates`
+carries `executed_query`, `matching_evidence`, `agent_selected`, and `presented`.
+
+`case_level_summary_included: false` suppresses case rows from the summary. It is
+**summary suppression, not an information barrier**: `transcript.jsonl`, the
+cassette, and the external case map all remain on disk, and diagnosing a
+`capture_incomplete` attempt requires reading them. Holdout independence still
+rests on not using raw case-specific results to tune an allowed retry.
+
+The release decision does not come from this recorder. It comes from the matched
+blind A/B in `evaluation/ab-protocol.md`, which compares the same Agent and
+configuration with and without Muse-shroom on real recorded needs. Nothing in a
+shakedown or holdout summary is a release claim. The four small
+publication artifacts — `manifest.json`, `raw-summary.json`, `leakage.json`, and
+`score.json` — are published under `evaluation/evidence/`, which is deliberately
+outside the ignored `evaluation/results/` capture tree. The multi-megabyte cassette
+stays ignored; its digest in the manifest identifies it.
 
 Capture the complete deterministic flow once in a credential-bearing host context, then replay
 it fully offline:
@@ -111,7 +210,7 @@ for comparison with earlier releases, but they do not make the discovery gate
 pass.
 
 `boundary_quality_passed` and `mechanics_verdict` cover only reproducible
-mechanics: evidence-backed promotions, query evolution, duplicate-query rate,
+mechanics: evidence-backed additions, query evolution, duplicate-query rate,
 presentation repetition, and invalid gain. A `host_in_loop` payload additionally
 evaluates `discovery_quality_passed` from meaningful gain, cross-mechanism
 transfer, and mainstream coverage. The overall verdict is `fail` when either

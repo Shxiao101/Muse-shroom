@@ -10,7 +10,7 @@ from muse_shroom.queries import hypothesis_queries
 from muse_shroom.ranking import rank_search
 from muse_shroom.search import SearchEngine
 from muse_shroom.sidecar import (
-    compare_base_artifacts, match_hypothesized_term, plan_sidecar_queries,
+    compare_base_ledgers, match_hypothesized_term, plan_sidecar_queries,
     public_hypothesis, split_additions, validate_host_hypotheses,
 )
 from muse_shroom.storage import Store
@@ -44,21 +44,24 @@ def _hypothesis(*terms_and_anchors):
     }
 
 
-def _assessment(name, mechanism, evidence_id, *, transferability=10, boundary_value=10):
+def _selection(candidate, mechanism, evidence_id):
+    evidence = next(item for item in candidate.get("evidence") or [] if item.get("id") == evidence_id)
+    facts = evidence.get("facts") or {}
+    if evidence.get("kind") == "readme_excerpt":
+        text = str(facts.get("text") or "")
+    elif evidence.get("kind") == "mechanism_match":
+        text = str((facts.get("mechanisms") or [{}])[0].get("text") or "")
+    else:
+        raise AssertionError("selection fixture requires textual evidence")
+    quote = next(part.strip() for part in text.splitlines() if part.strip())
     return {
-        "repo": name,
-        "relevance": 80,
-        "uniqueness": 70,
-        "usability": 70,
-        "difficulty": "unknown",
-        "use_case": "unknown",
-        "category": "sidecar",
-        "artifact_type": "application",
-        "mechanism": mechanism,
-        "transferability": transferability,
-        "boundary_value": boundary_value,
-        "reasons": [{"text": "mechanism present", "evidence_ids": [evidence_id]}],
-        "risks": [],
+        "repo": candidate["full_name"],
+        "rationale": "Source-backed fixture selection",
+        "mechanism_label": mechanism,
+        "source_term": quote.split()[0],
+        "quote": quote,
+        "evidence_ids": [evidence_id],
+        "boundary_role": "edge",
     }
 
 
@@ -236,15 +239,19 @@ class SidecarSearchTests(unittest.TestCase):
         right = disabled.search(request, "deep")
         enabled_iter = enabled.iterate(left["search_id"], _hypothesis(("physiological pacing", "focus")))
         disabled_iter = disabled.iterate(right["search_id"], _hypothesis(("physiological pacing", "focus")))
-        left_snap = enabled_iter["observation"]["sidecar_metrics"]
         self.assertEqual(
-            compare_base_artifacts(
-                enabled_iter["observation"].get("sidecar_metrics") and
-                store_a.get_session_state(left["search_id"])["semantic_sidecar"]["base_artifacts"],
-                store_b.get_session_state(right["search_id"])["semantic_sidecar"]["base_artifacts"],
+            compare_base_ledgers(
+                store_a.get_session_state(left["search_id"])["semantic_sidecar"]["base_ledger"],
+                store_b.get_session_state(right["search_id"])["semantic_sidecar"]["base_ledger"],
             ),
             [],
         )
+        # The ledger is internal audit state. Exporting it every round spent ~5KB of an
+        # output already capped at SEARCH_OUTPUT_MAX_BYTES and failed whole iterations.
+        for output in (left, enabled_iter):
+            metrics = (output.get("observation") or {}).get("sidecar_metrics") or {}
+            self.assertNotIn("base_ledger", metrics)
+            self.assertNotIn("base_ledger", output.get("sidecar_metrics") or {})
         left_regular = [
             item["full_name"] for item in enabled_iter["candidates"]
             if item.get("full_name") != "labs/pacing"
@@ -297,12 +304,12 @@ class SidecarSearchTests(unittest.TestCase):
         engine, store = self._engine(github)
         search = engine.search(SearchRequest.from_dict(REQUEST), "deep")
         iterated = engine.iterate(search["search_id"], _hypothesis(("physiological pacing", "focus")))
-        assessments = []
+        selection = []
         for item in iterated["candidates"]:
             evidence_id = next(
                 (
                     ev["id"] for ev in item.get("evidence") or []
-                    if ev.get("kind") in {"readme_excerpt", "github_metadata", "mechanism_match"}
+                    if ev.get("kind") == "readme_excerpt"
                 ),
                 None,
             )
@@ -315,11 +322,8 @@ class SidecarSearchTests(unittest.TestCase):
                     ev["id"] for ev in item.get("evidence") or []
                     if ev.get("kind") == "mechanism_match"
                 )
-            assessments.append(_assessment(
-                item["full_name"], mechanism or "pomodoro", evidence_id,
-                transferability=10, boundary_value=10,
-            ))
-        ranking = rank_search(store, search["search_id"], assessments)
+            selection.append(_selection(item, mechanism or "pomodoro", evidence_id))
+        ranking = rank_search(store, search["search_id"], selection)
         statuses = {item["term"]: item["status"] for item in ranking["semantic_hypotheses"]}
         self.assertIn(statuses.get("physiological pacing"), {"validated", "presented", "evidence_found"})
 
@@ -336,20 +340,18 @@ class SidecarSearchTests(unittest.TestCase):
         engine, store = self._engine(github)
         search = engine.search(SearchRequest.from_dict(REQUEST), "deep")
         iterated = engine.iterate(search["search_id"], _hypothesis(("physiological pacing", "focus")))
-        assessments = []
+        selection = []
         for item in iterated["candidates"]:
             evidence_id = next(
-                (ev["id"] for ev in item.get("evidence") or [] if ev.get("id")), None,
+                (
+                    ev["id"] for ev in item.get("evidence") or []
+                    if ev.get("kind") == "readme_excerpt"
+                ),
+                None,
             )
-            assessments.append({
-                "repo": item["full_name"],
-                "relevance": 80, "uniqueness": 70, "usability": 70,
-                "difficulty": "unknown", "use_case": "unknown",
-                "category": "base", "artifact_type": "application",
-                "reasons": [{"text": "ok", "evidence_ids": [evidence_id]}],
-                "risks": [],
-            })
-        ranking = rank_search(store, search["search_id"], assessments)
+            if evidence_id:
+                selection.append(_selection(item, "base mechanism", evidence_id))
+        ranking = rank_search(store, search["search_id"], selection)
         for item in ranking["items"]:
             self.assertNotIn("physiological pacing", item.get("new_mechanisms") or [])
 

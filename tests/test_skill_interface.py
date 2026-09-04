@@ -107,8 +107,13 @@ class SkillInterfaceTests(unittest.TestCase):
             self.assertIn("initial deep search response", text)
         for text in (self.skill, result_contract):
             self.assertIn("terminal", text)
-            self.assertIn("successful rank", text)
             self.assertIn("Do not call", text)
+            # Terminality is conditional: a rank where every item failed verification
+            # leaves the session open so the Agent can resubmit corrected quotes.
+            self.assertIn("next_action", text)
+            self.assertIn("rejected_items", text)
+        self.assertIn("nothing was saved", result_contract)
+        self.assertIn("call `muse_rank` again", result_contract)
         self.assertIn("Do not issue no-op shell commands", self.skill)
         self.assertIn("only before rank", self.skill)
 

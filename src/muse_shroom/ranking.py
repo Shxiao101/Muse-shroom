@@ -1,632 +1,318 @@
 from __future__ import annotations
 
-import math
-from datetime import datetime
-import re
-from collections import Counter
+from copy import deepcopy
 from dataclasses import asdict
 from typing import Any, Iterable
 
-from .analyze import age_days
-from .boundary import (
-    _normalized, annotate_candidate_mechanisms, build_boundary,
-    is_promotable_specificity, is_promotable_term,
-)
-from .boundary_score import (
-    RANK_BOUNDARY_WEIGHTS, RELEVANCE_GATE, TYPE_QUALITY_GATE,
-    assign_boundary_role, boundary_summary, candidate_mechanism_names,
-    contribution_score, evidence_mechanism_labels, exploration_terms,
-    gated_boundary_value, inspiration_score, mechanism_overlap,
-    new_mechanisms_for, novelty_score, recalled_mechanism_counts,
-    redundancy_penalty,
-)
-from .models import (
-    Assessment, ContractError, RANK_PAYLOAD_FIELDS, SearchRequest,
-    reject_unknown_fields, repo_key,
-)
-from .selection import mechanism_rejected
+from .models import ContractError, RANK_PAYLOAD_FIELDS, Selection, reject_unknown_fields, repo_key
 from .sidecar import (
-    SEMANTIC_PARTITION, mark_presented, mark_validated, merge_candidate_view,
-    public_hypothesis, refresh_statuses, strip_unvalidated_semantic_terms,
-    unvalidated_terms,
+    derive_hypothesis_status, merge_candidate_view, public_hypothesis,
 )
 from .storage import Store
 
 
-DIFFICULTY = {"easy": 100.0, "medium": 65.0, "hard": 25.0, "unknown": 45.0}
+def _collapsed(value: Any) -> str:
+    """Collapse whitespace runs only.
 
-
-def _presentation_candidates(candidates: Iterable[dict[str, Any]],
-                             rejected: Iterable[str],
-                             nonpromotable_exploration: Iterable[str] = (),
-                             ) -> tuple[list[dict[str, Any]], set[str]]:
-    views = []
-    rejected_labels: set[str] = set()
-    blocked_auto_labels = {
-        str(value).strip().casefold()
-        for value in nonpromotable_exploration if str(value).strip()
-    }
-    for candidate in candidates:
-        kept = []
-        for mechanism in candidate.get("mechanisms") or []:
-            auto_category = (
-                mechanism.get("role") == "exploration"
-                and str(mechanism.get("name") or "").strip().casefold() in blocked_auto_labels
-            )
-            if mechanism_rejected(mechanism, rejected) or auto_category:
-                labels = [mechanism.get("name") or "", *(mechanism.get("matched_terms") or [])]
-                rejected_labels.update(
-                    str(label).strip().casefold()
-                    for label in labels
-                    if str(label).strip()
-                )
-                continue
-            kept.append(mechanism)
-        view = dict(candidate)
-        view["mechanisms"] = kept
-        views.append(view)
-    return views, rejected_labels
+    README line wrapping is a rendering artifact, not content, and is the most likely
+    cause of a spurious rejection when an Agent copies a quote across a wrap. Nothing
+    else is normalised: case, punctuation and word forms must still match exactly, or
+    the quote check would become another vocabulary gate.
+    """
+    return " ".join(str(value or "").split())
 
 
 def _metadata_facts(candidate: dict[str, Any]) -> dict[str, Any]:
-    for evidence in candidate.get("evidence", []):
+    for evidence in candidate.get("evidence") or []:
         if evidence.get("kind") == "github_metadata":
-            return dict(evidence.get("facts", {}))
+            facts = evidence.get("facts")
+            return dict(facts) if isinstance(facts, dict) else {}
     return {}
 
 
-def _readme_facts(candidate: dict[str, Any]) -> dict[str, Any]:
-    for evidence in candidate.get("evidence", []):
-        if evidence.get("kind") == "readme":
-            return dict(evidence.get("facts", {}))
-    return {}
+def _license(candidate: dict[str, Any]) -> str | None:
+    value = candidate.get("license")
+    if isinstance(value, dict):
+        value = value.get("spdx_id")
+    if value is None:
+        value = _metadata_facts(candidate).get("license")
+    return str(value) if value else None
 
 
-def _percentiles(candidates: list[dict[str, Any]]) -> dict[str, float]:
-    star_values = sorted({int(item.get("stargazers_count", 0)) for item in candidates})
-    if len(star_values) == 1:
-        return {repo_key(item): 100.0 for item in candidates}
-    denominator = max(1, len(star_values) - 1)
-    ranks = {stars: index / denominator * 100 for index, stars in enumerate(star_values)}
-    return {repo_key(item): ranks[int(item.get("stargazers_count", 0))] for item in candidates}
-
-
-def _type_quality(artifact_type: str, candidate: dict[str, Any]) -> float:
-    readme = _readme_facts(candidate)
-    metadata = _metadata_facts(candidate)
-    base = 20.0
-    if readme:
-        base += 15
-    if readme.get("has_install"):
-        base += 20
-    if readme.get("has_usage"):
-        base += 15
-    if metadata.get("license") and metadata["license"] != "NOASSERTION":
-        base += 10
-    if candidate.get("latest_release"):
-        base += 10
-    if artifact_type == "mcp":
-        base += 10 if readme.get("mentions_tool_contract") else -10
-        base += 10 if readme.get("mentions_permissions") else -5
-    elif artifact_type == "skill":
-        lower = candidate.get("readme", "").lower()
-        base += 10 if "trigger" in lower or "when to use" in lower else -5
-        base += 10 if "skill.md" in lower else -5
-    elif artifact_type == "mod":
-        base += 10 if readme.get("mentions_compatibility") else -10
-        base += 10 if readme.get("mentions_uninstall") else -5
-    return max(0.0, min(100.0, base))
-
-
-def _relationship(candidate: dict[str, Any]) -> float:
-    strengths = {"key_file": 95, "readme_link": 90, "reverse_readme": 85, "fork": 65, "same_owner": 45}
-    values = [strengths.get(path.get("relation"), 30) for path in candidate.get("discovery_paths", [])
-              if path.get("kind") == "relationship"]
-    return max(values, default=30 if candidate.get("discovery_paths") else 0)
-
-
-def _similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
-    def tokens(item: dict[str, Any]) -> set[str]:
-        stopwords = {"the", "and", "for", "with", "from", "tool", "tools", "app", "application", "project", "github"}
-        description = re.findall(r"[a-z0-9_+#.-]{3,}", str(item.get("description", "")).lower())
-        return (
-            set(map(str.lower, item.get("topics", [])))
-            | {item.get("assessment", {}).get("category", "").lower()}
-            | (set(description) - stopwords)
-        )
-    left_tokens = tokens(left)
-    right_tokens = tokens(right)
-    left_tokens.discard("")
-    right_tokens.discard("")
-    union = left_tokens | right_tokens
-    return len(left_tokens & right_tokens) / len(union) if union else 0.0
-
-
-def _mechanism_penalty(item: dict[str, Any], peers: list[dict[str, Any]]) -> float:
-    return max((mechanism_overlap(item, other) for other in peers), default=0.0) * 100
-
-
-def _mmr_select(pool: list[dict[str, Any]], count: int, selected: list[dict[str, Any]],
-                score_name: str, diversity: float = 0.22,
-                *, boundary_ctx: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    chosen: list[dict[str, Any]] = []
-    remaining = list(pool)
-    ctx = boundary_ctx or {}
-    presented = set(ctx.get("presented") or [])
-    presented_counts: Counter[str] = ctx.get("presented_counts") or Counter()
-    exploration = list(ctx.get("exploration") or [])
-    pool_counts = ctx.get("pool_counts") or Counter()
-    mode = str(ctx.get("mode") or "deep")
-    weights = RANK_BOUNDARY_WEIGHTS
-    if mode != "deep":
-        weights = {key: value * 0.4 for key, value in RANK_BOUNDARY_WEIGHTS.items()}
-
-    while remaining and len(chosen) < count:
-        def value(item: dict[str, Any]) -> tuple[float, str]:
-            peers = selected + chosen
-            text_penalty = max((_similarity(item, other) for other in peers), default=0.0) * 100
-            mech_penalty = _mechanism_penalty(item, peers)
-            penalty = mech_penalty * 0.65 + text_penalty * 0.35
-            contrib = gated_boundary_value(
-                contribution_score(item, presented, exploration=exploration),
-                item, relevance=float(item["assessment"]["relevance"]),
-                evidence_completeness=float(item["scores"]["components"].get("evidence_completeness") or 0),
-            )
-            novelty = gated_boundary_value(
-                novelty_score(
-                    item, presented=presented, recalled_counts=pool_counts, exploration=exploration,
-                ),
-                item, relevance=float(item["assessment"]["relevance"]),
-                evidence_completeness=float(item["scores"]["components"].get("evidence_completeness") or 0),
-            )
-            red = redundancy_penalty(item, presented, presented_counts=presented_counts)
-            transfer = item["assessment"].get("transferability")
-            transfer = 50.0 if transfer is None else float(transfer)
-            boundary_value = item["assessment"].get("boundary_value")
-            allowed = contrib > 15 or novelty > 15
-            value_bonus = 0.0
-            if allowed and boundary_value is not None:
-                value_bonus = (float(boundary_value) - 50.0) * weights["boundary_value"]
-            base = item["scores"][score_name]
-            live = (
-                base * (1 - diversity) - penalty * diversity
-                + contrib * weights["contribution"]
-                + novelty * weights["novelty"]
-                + (transfer - 50.0) * weights["transferability"]
-                + value_bonus
-                - red * weights["redundancy"]
-            )
-            return live, str(item.get("repo") or "").lower()
-
-        best = sorted(remaining, key=lambda item: (-value(item)[0], str(item.get("repo") or "").lower()))[0]
-        chosen.append(best)
-        remaining.remove(best)
-        for name in candidate_mechanism_names(best):
-            presented.add(name.casefold())
-            presented_counts[name.casefold()] += 1
-    if boundary_ctx is not None:
-        boundary_ctx["presented"] = presented
-        boundary_ctx["presented_counts"] = presented_counts
-    return chosen
-
-
-def _explain_ranked_items(items: list[dict[str, Any]], presented_before: Iterable[str],
-                          *, anchor_repo: str = "") -> None:
-    presented = {str(name).casefold() for name in presented_before if str(name).strip()}
-    for item in items:
-        fresh = new_mechanisms_for(item, presented)
-        role = (
-            "anchor" if item["repo"].casefold() == anchor_repo.casefold()
-            else assign_boundary_role(item, presented)
-        )
-        transfer = item["assessment"].get("transferability")
-        reason = ""
-        reasons = item.get("assessment", {}).get("reasons") or []
-        if reasons and str(reasons[0].get("text") or "").strip():
-            reason = str(reasons[0]["text"]).strip()
-        mechanisms = candidate_mechanism_names(item)
-        if fresh:
-            lead = "introduces " + ", ".join(fresh)
-        elif mechanisms:
-            lead = "shares already presented mechanisms"
-        else:
-            lead = "has no labeled mechanism"
-        item["boundary_role"] = role
-        item["new_mechanisms"] = fresh
-        item["why_different"] = (f"{lead}; {reason}" if reason else lead)[:240]
-        item["transferability"] = 50.0 if transfer is None else float(transfer)
-        item["inspiration_score"] = item["scores"]["components"].get("inspiration")
-        for name in candidate_mechanism_names(item):
-            presented.add(name.casefold())
-
-
-def _display_mechanism_sequence(items: list[dict[str, Any]],
-                                presented_before: Iterable[str]) -> tuple[list[str], list[str]]:
-    keys = {str(name).casefold() for name in presented_before if str(name).strip()}
-    shown = [str(name) for name in presented_before if str(name).strip()]
-    introduced: list[str] = []
-    for item in items:
-        for name in candidate_mechanism_names(item):
-            key = name.casefold()
-            if key in keys:
-                continue
-            keys.add(key)
-            shown.append(name)
-            introduced.append(name)
-    return shown, introduced
-
-
-def _compatibility_buckets(
-    items: list[dict[str, Any]], by_name: dict[str, dict[str, Any]],
-) -> dict[str, list[dict[str, Any]]]:
-    """Project a completed Boundary composition onto the legacy lane fields."""
-    buckets: dict[str, list[dict[str, Any]]] = {
-        "popular": [], "gems": [], "adjacent": [],
+def _star_growth(store: Store, repo: str) -> dict[str, Any] | None:
+    history = store.star_history(repo)
+    if len(history) < 2:
+        return None
+    return {
+        "from": history[0]["stars"],
+        "to": history[-1]["stars"],
+        "from_time": history[0]["captured_at"],
+        "to_time": history[-1]["captured_at"],
     }
-    for item in items:
-        kinds = set(by_name[item["repo"].lower()].get("matched_kinds") or [])
-        popularity = float(item["scores"]["components"].get("popularity_percentile") or 0)
-        # Confirmation is a retrieval/shortlist lane, not a legacy presentation
-        # bucket. Confirmed mechanisms are represented by the Boundary fields.
-        if "adjacent" in kinds:
-            buckets["adjacent"].append(item)
-        elif popularity >= 60:
-            buckets["popular"].append(item)
-        else:
-            buckets["gems"].append(item)
-    return buckets
+
+
+def _recorded_texts(
+    candidate: dict[str, Any], evidence: dict[str, Any],
+) -> list[tuple[str, str]]:
+    """Return exact recorded source text paired with its repository SHA."""
+    facts = evidence.get("facts")
+    facts = facts if isinstance(facts, dict) else {}
+    kind = str(evidence.get("kind") or "")
+    recorded: list[tuple[str, str]] = []
+    if kind == "readme":
+        text = str(candidate.get("readme") or "")
+        sha = str(facts.get("sha") or candidate.get("readme_sha") or "")
+        if text and sha:
+            recorded.append((text, sha))
+    elif kind == "readme_excerpt":
+        text = str(facts.get("text") or "")
+        sha = str(facts.get("sha") or "")
+        if text and sha:
+            recorded.append((text, sha))
+    elif kind == "mechanism_match":
+        for match in facts.get("mechanisms") or []:
+            if not isinstance(match, dict):
+                continue
+            text = str(match.get("text") or "")
+            sha = str(match.get("sha") or "")
+            if not sha and match.get("source_field") == "readme":
+                sha = str(candidate.get("readme_sha") or "")
+            if text and sha:
+                recorded.append((text, sha))
+    return recorded
+
+
+def _verify_selection(
+    selection: Selection, candidate: dict[str, Any],
+) -> tuple[list[str], dict[str, Any] | None]:
+    evidence_by_id = {
+        str(item.get("id") or ""): item
+        for item in candidate.get("evidence") or []
+        if str(item.get("id") or "")
+    }
+    unknown = [value for value in selection.evidence_ids if value not in evidence_by_id]
+    if unknown:
+        return [f"evidence_not_owned:{value}" for value in unknown], None
+    source_term = _collapsed(selection.source_term)
+    quote = _collapsed(selection.quote)
+    for evidence_id in selection.evidence_ids:
+        for text, sha in _recorded_texts(candidate, evidence_by_id[evidence_id]):
+            collapsed = _collapsed(text)
+            if source_term in collapsed and quote in collapsed:
+                return [], {"evidence_id": evidence_id, "sha": sha}
+    return ["quote_not_verbatim_at_recorded_sha"], None
+
+
+def _raw_item(
+    store: Store, candidate: dict[str, Any], selection: Selection,
+    verification: dict[str, Any], new_mechanisms: list[str],
+) -> dict[str, Any]:
+    metadata = _metadata_facts(candidate)
+    stars = int(candidate.get("stargazers_count", metadata.get("stars", 0)) or 0)
+    forks = int(candidate.get("forks_count", metadata.get("forks", 0)) or 0)
+    open_issues = int(
+        candidate.get("open_issues_count", metadata.get("open_issues", 0)) or 0
+    )
+    return {
+        **asdict(selection),
+        "repo": candidate.get("full_name") or selection.repo,
+        "url": candidate.get("html_url"),
+        "description": candidate.get("description"),
+        "stars": stars,
+        "star_growth": _star_growth(store, selection.repo),
+        "forks": forks,
+        "open_issues": open_issues,
+        "pushed_at": candidate.get("pushed_at", metadata.get("pushed_at")),
+        "archived": bool(candidate.get("archived", metadata.get("archived", False))),
+        "license": _license(candidate),
+        "language": candidate.get("language"),
+        "topics": list(candidate.get("topics") or metadata.get("topics") or []),
+        "evidence": list(candidate.get("evidence") or []),
+        "discovery_paths": list(candidate.get("discovery_paths") or []),
+        "new_mechanisms": new_mechanisms,
+        "verification": verification,
+    }
+
+
+def _selection_payload(payload: Any, *, strict: bool) -> list[Selection]:
+    if isinstance(payload, dict):
+        if strict:
+            reject_unknown_fields(payload, RANK_PAYLOAD_FIELDS, where="muse_rank payload")
+        raw = payload.get("selection")
+    else:
+        raw = payload
+    if not isinstance(raw, list) or not raw:
+        raise ContractError("selection must be a non-empty ordered list")
+    parsed = [Selection.from_dict(item, strict=strict) for item in raw]
+    repos = [item.repo for item in parsed]
+    if len(repos) != len(set(repos)):
+        raise ContractError("selection must not contain the same repository twice")
+    return parsed
+
+
+def _mark_sidecar_selection(
+    records: list[dict[str, Any]], items: Iterable[dict[str, Any]],
+    candidates: dict[str, dict[str, Any]],
+) -> None:
+    for record in records:
+        hypothesis_id = str(record.get("id") or "")
+        record["validated"] = False
+        record["selected"] = False
+        record["presented"] = False
+        record["assessment_repo"] = None
+        for item in items:
+            name = str(item.get("repo") or "").casefold()
+            candidate = candidates.get(name) or {}
+            cited = set(item.get("evidence_ids") or [])
+            linked = False
+            for evidence in candidate.get("evidence") or []:
+                if str(evidence.get("id") or "") not in cited:
+                    continue
+                facts = evidence.get("facts") or {}
+                linked = str(facts.get("hypothesis_id") or "") == hypothesis_id or any(
+                    str(value.get("hypothesis_id") or "") == hypothesis_id
+                    for value in facts.get("mechanisms") or [] if isinstance(value, dict)
+                )
+                if linked:
+                    break
+            if linked:
+                record["validated"] = True
+                record["selected"] = True
+                record["presented"] = True
+                record["assessment_repo"] = item.get("repo")
+                break
+        record["status"] = derive_hypothesis_status(record)
+
+
+def _unique_labels(values: Iterable[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        label = str(value).strip()
+        key = label.casefold()
+        if label and key not in seen:
+            seen.add(key)
+            result.append(label)
+    return result
 
 
 def rank_search(
-    store: Store,
-    search_id: str,
-    assessment_payload: Any,
-    *,
-    strict: bool = False,
-    reference_time: str | datetime | None = None,
+    store: Store, search_id: str, selection_payload: Any, *, strict: bool = False,
 ) -> dict[str, Any]:
+    """Validate and record an Agent-owned ordered repository selection."""
     session = store.load_search(search_id)
-    candidates = [
-        item for item in session["candidates"]
-        if item.get("retrieval_partition") != SEMANTIC_PARTITION
-    ]
-    try:
-        boundary_request = SearchRequest.from_dict(session["request"])
-    except ContractError:
-        # Rankings created by v0.2/v0.3 tests or persisted sessions may only
-        # contain the original request string.
-        boundary_request = SearchRequest.from_dict({
-            "request": str(session["request"].get("request") or "legacy search"),
-            "problem_concepts": [str(session["request"].get("request") or "legacy search")],
-        })
-    for candidate in candidates:
-        annotate_candidate_mechanisms(candidate, boundary_request)
     session_state = store.get_session_state(search_id)
     sidecar_state = session_state.get("semantic_sidecar") or {}
-    sidecar_candidates = list(sidecar_state.get("candidates") or [])
     sidecar_records = list(sidecar_state.get("hypotheses") or [])
-    by_name = {repo_key(item): item for item in candidates}
-    for item in sidecar_candidates:
-        key = repo_key(item)
+
+    by_name = {repo_key(item): item for item in session.get("candidates") or []}
+    for candidate in sidecar_state.get("candidates") or []:
+        key = repo_key(candidate)
         if not key:
             continue
-        if key in by_name:
-            by_name[key] = merge_candidate_view(by_name[key], item)
-        elif item.get("semantic_assessment") or item.get("selected_for_assessment"):
-            by_name[key] = item
-    if isinstance(assessment_payload, dict):
-        if strict:
-            reject_unknown_fields(
-                assessment_payload, RANK_PAYLOAD_FIELDS, where="muse_rank payload",
-            )
-        raw_assessments = assessment_payload.get("assessments", [])
-    else:
-        raw_assessments = assessment_payload
-    if not isinstance(raw_assessments, list):
-        raise ContractError("assessments must be a list or an object containing assessments")
-    assessments: dict[str, Assessment] = {}
-    for raw in raw_assessments:
-        if not isinstance(raw, dict):
-            raise ContractError("each assessment must be an object")
-        name = str(raw.get("repo", "")).lower()
-        if name not in by_name:
-            raise ContractError(f"assessment references unknown candidate: {name}")
-        evidence = {
-            str(item.get("id")): str(item.get("kind"))
-            for item in by_name[name].get("evidence", [])
-        }
-        assessment = Assessment.from_dict(raw, evidence, strict=strict)
-        if assessment.mechanism:
-            allowed = evidence_mechanism_labels(by_name[name])
-            if assessment.mechanism.casefold() not in allowed:
-                raise ContractError(
-                    f"assessment mechanism for {name} must match evidence-backed mechanisms"
-                )
-        assessments[name] = assessment
-        store.save_assessment(search_id, name, asdict(assessment))
-    if not assessments:
-        raise ContractError("at least one assessment is required")
+        by_name[key] = merge_candidate_view(by_name[key], candidate) if key in by_name else candidate
 
-    mode = str(session.get("mode") or "quick")
-    previous_boundary = store.latest_boundary_snapshot(search_id)
-    rejected = list((previous_boundary or {}).get("boundary", {}).get("rejected_directions", []))
-    negatives = list((previous_boundary or {}).get("boundary", {}).get("negative_directions", []))
-    presented_before = list((previous_boundary or {}).get("boundary", {}).get("presented_mechanisms") or [])
-    if (previous_boundary or {}).get("stage") == "rank":
-        presented_before = list(
-            ((store.latest_boundary_snapshot(search_id, ("search", "expand", "iterate")) or {}).get("boundary") or {})
-            .get("presented_mechanisms") or []
-        )
-    nonpromotable_confirmed = []
-    for record in session_state.get("confirmation_records") or []:
-        if record.get("confirmation_status") != "confirmed":
+    selections = _selection_payload(selection_payload, strict=strict)
+    previous_snapshot = store.latest_boundary_snapshot(
+        search_id, ("search", "expand", "iterate")
+    ) or {}
+    boundary = deepcopy(previous_snapshot.get("boundary") or {})
+    presented_before = _unique_labels(boundary.get("presented_mechanisms") or [])
+    presented_keys = {value.casefold() for value in presented_before}
+
+    items: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    introduced: list[str] = []
+    for index, selection in enumerate(selections):
+        candidate = by_name.get(selection.repo)
+        if candidate is None:
+            rejected.append({
+                "index": index, "repo": selection.repo, "reasons": ["unknown_candidate"],
+            })
             continue
-        term = str(record.get("candidate") or "")
-        specificity = str(record.get("mechanism_specificity") or "")
-        promotable = (
-            is_promotable_specificity(specificity)
-            if specificity else is_promotable_term(term)
-        )
-        if not promotable:
-            nonpromotable_confirmed.append(term)
-    presentation_candidates, rejected_mechanism_labels = _presentation_candidates(
-        list(by_name.values()), rejected, nonpromotable_confirmed,
-    )
-    presentation_by_name = {repo_key(item): item for item in presentation_candidates}
-    presented_before = [
-        name for name in presented_before
-        if str(name).casefold() not in rejected_mechanism_labels
-    ]
-    exploration = exploration_terms(boundary_request)
-    pool_counts = recalled_mechanism_counts(presentation_candidates)
-    percentiles = _percentiles(list(by_name.values()))
-    scored = []
-    for name, assessment in assessments.items():
-        candidate = presentation_by_name[name]
-        stars = int(candidate.get("stargazers_count", 0))
-        popularity = percentiles[name]
-        activity = max(
-            0.0,
-            100.0 - age_days(
-                candidate.get("pushed_at"), reference_time=reference_time,
-            ) / 7,
-        )
-        type_quality = _type_quality(assessment.artifact_type, candidate)
-        relation = _relationship(candidate)
-        evidence_completeness = float(
-            candidate.get("selection_score_components", {}).get("evidence_completeness", 0)
-        )
-        exposure = max(0.0, min(100.0, 100 - 20 * math.log10(stars + 1)))
-        easy = DIFFICULTY[assessment.difficulty]
-        feedback_adjustment = store.feedback_bias(name) * 15.0
-        popular_score = (
-            assessment.relevance * .30 + popularity * .30 + activity * .15 +
-            type_quality * .15 + assessment.usability * .10 + feedback_adjustment
-        )
-        gem_score = (
-            assessment.relevance * .25 + assessment.uniqueness * .18 + assessment.usability * .14 +
-            easy * .08 + exposure * .10 + type_quality * .08 + relation * .07 +
-            evidence_completeness * .10 + feedback_adjustment
-        )
-        adjacent_score = (
-            assessment.relevance * .22 + assessment.uniqueness * .25 + assessment.usability * .14 +
-            easy * .09 + type_quality * .09 + relation * .11
-            + evidence_completeness * .10 + feedback_adjustment
-        )
-        boundary_score = (
-            assessment.relevance * .32 + assessment.uniqueness * .16
-            + assessment.usability * .12 + type_quality * .12
-            + evidence_completeness * .13 + popularity * .08
-            + relation * .07 + feedback_adjustment
-        )
-        novelty = novelty_score(
-            candidate, presented=presented_before, recalled_counts=pool_counts, exploration=exploration,
-        )
-        contribution = contribution_score(candidate, presented_before, exploration=exploration)
-        transfer = 50.0 if assessment.transferability is None else float(assessment.transferability)
-        inspiration = inspiration_score(
-            assessment.relevance, novelty, transfer, evidence_completeness,
-        )
-        assessment_data = asdict(assessment)
-        if str(assessment_data.get("mechanism") or "").casefold() in rejected_mechanism_labels:
-            assessment_data["mechanism"] = ""
-        item = {
-            "repo": candidate["full_name"], "url": candidate.get("html_url"),
-            "description": candidate.get("description"), "stars": stars,
-            "topics": candidate.get("topics", []), "assessment": assessment_data,
-            "mechanisms": candidate.get("mechanisms", []),
-            "discovery_paths": candidate.get("discovery_paths", []),
-            "evidence": candidate.get("evidence", []),
-            "scores": {
-                "popular": round(max(0, min(100, popular_score)), 2),
-                "gem": round(max(0, min(100, gem_score)), 2),
-                "adjacent": round(max(0, min(100, adjacent_score)), 2),
-                "boundary": round(max(0, min(100, boundary_score)), 2),
-                "components": {
-                    "popularity_percentile": round(popularity, 2), "activity": round(activity, 2),
-                    "type_quality": round(type_quality, 2), "relationship": round(relation, 2),
-                    "underexposure": round(exposure, 2),
-                    "feedback_adjustment": round(feedback_adjustment, 2),
-                    "evidence_completeness": round(evidence_completeness, 2),
-                    "mechanism_novelty": novelty,
-                    "boundary_contribution": contribution,
-                    "inspiration": inspiration,
-                },
-            },
-            "star_growth": None,
-        }
-        history = store.star_history(name)
-        if len(history) >= 2:
-            item["star_growth"] = {
-                "from": history[0]["stars"], "to": history[-1]["stars"],
-                "from_time": history[0]["captured_at"], "to_time": history[-1]["captured_at"],
-            }
-        scored.append(item)
+        reasons, verification = _verify_selection(selection, candidate)
+        if reasons:
+            rejected.append({
+                "index": index, "repo": selection.repo, "reasons": reasons,
+                # Enough to tell "wrong evidence cited" from "right evidence, wrong
+                # quote". Recorded text is never returned.
+                "evidence_ids_checked": list(selection.evidence_ids),
+            })
+            continue
+        label_key = selection.mechanism_label.casefold()
+        new_mechanisms = []
+        if label_key not in presented_keys:
+            new_mechanisms = [selection.mechanism_label]
+            introduced.append(selection.mechanism_label)
+            presented_keys.add(label_key)
+        items.append(_raw_item(
+            store, candidate, selection, verification or {}, new_mechanisms,
+        ))
 
-    eligible = [
-        item for item in scored
-        if item["assessment"]["relevance"] >= RELEVANCE_GATE
-        and item["scores"]["components"]["type_quality"] >= TYPE_QUALITY_GATE
-    ]
-    boundary_ctx = {
-        "presented": {name.casefold() for name in presented_before},
-        "presented_counts": Counter(name.casefold() for name in presented_before),
-        "exploration": exploration,
-        "pool_counts": pool_counts,
-        "mode": mode,
-    }
-    anchor_pool = [
-        item for item in eligible
-        if item["scores"]["components"]["popularity_percentile"] >= 60
-    ]
-    anchor = _mmr_select(anchor_pool, 1, [], "boundary", boundary_ctx=boundary_ctx)
-    used = {item["repo"].lower() for item in anchor}
-    remaining = [item for item in eligible if item["repo"].lower() not in used]
-    display_items = anchor + _mmr_select(
-        remaining, max(0, 10 - len(anchor)), anchor, "boundary",
-        boundary_ctx=boundary_ctx,
-    )
-    # The user-visible order is composed directly against Boundary contribution,
-    # novelty, transferability, redundancy, and one mainstream anchor. Legacy
-    # lanes are projected only after this order is final.
-    display_presented_before: list[str] = []
-    eligible_names = {item["repo"].lower() for item in eligible}
-    assessment_payloads = {name: asdict(item) for name, item in assessments.items()}
-    mark_validated(
-        sidecar_records,
-        assessments=assessment_payloads,
-        candidates_by_name=presentation_by_name,
-        eligible_names=eligible_names,
-    )
-    blocked = unvalidated_terms(sidecar_records)
-    for item in display_items:
-        item["mechanisms"] = [
-            mechanism for mechanism in item.get("mechanisms") or []
-            if _normalized(mechanism.get("name")) not in blocked
-        ]
-    _explain_ranked_items(
-        display_items, display_presented_before,
-        anchor_repo=str(anchor[0]["repo"]) if anchor else "",
-    )
-    for item in display_items:
-        item["new_mechanisms"] = strip_unvalidated_semantic_terms(
-            item.get("new_mechanisms") or [], blocked,
-        )
-        if item.get("boundary_role") in {"leap", "wildcard"} and not item.get("new_mechanisms"):
-            item["boundary_role"] = "edge"
-    ranked_items = display_items
-    display_order = [item["repo"] for item in display_items]
-    mark_presented(sidecar_records, display_order)
-    refresh_statuses(sidecar_records)
-    base_keys = {repo_key(item) for item in candidates}
-    regular_eligible = [item for item in eligible if item["repo"].lower() in base_keys]
-    regular_anchor_pool = [
-        item for item in regular_eligible
-        if item["scores"]["components"]["popularity_percentile"] >= 60
-    ]
-    regular_ctx = {
-        "presented": {name.casefold() for name in presented_before},
-        "presented_counts": Counter(name.casefold() for name in presented_before),
-        "exploration": exploration,
-        "pool_counts": pool_counts,
-        "mode": mode,
-    }
-    regular_anchor = _mmr_select(regular_anchor_pool, 1, [], "boundary", boundary_ctx=regular_ctx)
-    regular_used = {item["repo"].lower() for item in regular_anchor}
-    regular_remaining = [item for item in regular_eligible if item["repo"].lower() not in regular_used]
-    regular_display = regular_anchor + _mmr_select(
-        regular_remaining, max(0, 10 - len(regular_anchor)), regular_anchor, "boundary",
-        boundary_ctx=regular_ctx,
-    )
-    regular_order = [item["repo"].lower() for item in regular_display]
-    union_order = {item["repo"].lower() for item in display_items}
-    displaced = [name for name in regular_order if name not in union_order]
+    display_order = [str(item["repo"]) for item in items]
+    _mark_sidecar_selection(sidecar_records, items, by_name)
     sidecar_state["hypotheses"] = sidecar_records
     metrics = sidecar_state.setdefault("metrics", {})
-    metrics["validated_presented"] = sum(1 for item in sidecar_records if item.get("presented"))
-    metrics["regular_top10_displaced"] = len(displaced)
+    metrics["validated_presented"] = sum(
+        1 for record in sidecar_records if record.get("presented")
+    )
+    metrics["agent_selected"] = len(items)
     session_state["semantic_sidecar"] = sidecar_state
     store.save_session_state(search_id, session_state)
-    selection_order = list(display_order)
-    buckets = _compatibility_buckets(display_items, by_name)
-    returned_names = {item["repo"].lower() for item in ranked_items}
-    presented_views = []
-    for name in returned_names:
-        view = presentation_by_name.get(name)
-        if view is None:
-            continue
-        if view.get("retrieval_partition") == SEMANTIC_PARTITION:
-            record = next(
-                (
-                    item for item in sidecar_records
-                    if str(item.get("assessment_repo") or "").casefold() == name
-                    and item.get("presented")
-                ),
-                None,
-            )
-            if record is None:
-                continue
-        presented_views.append(view)
-    boundary = build_boundary(
-        candidates, presented_views,
-        boundary_request, rejected_directions=rejected,
-        negative_directions=negatives,
-        confirmed_directions=(session_state.get("confirmed_directions") or []),
-    ).to_dict()
-    if blocked:
-        for field in ("recalled_mechanisms", "presented_mechanisms", "explored_directions"):
-            boundary[field] = strip_unvalidated_semantic_terms(boundary.get(field) or [], blocked)
+
+    selected_labels = [item["mechanism_label"] for item in items]
+    boundary["presented_mechanisms"] = _unique_labels([*presented_before, *selected_labels])
+    boundary["recalled_mechanisms"] = _unique_labels([
+        *(boundary.get("recalled_mechanisms") or []), *selected_labels,
+    ])
+    origins = dict(boundary.get("mechanism_origins") or {})
+    origins["agent_selection"] = _unique_labels(selected_labels)
+    boundary["mechanism_origins"] = origins
     delta = store.save_boundary_snapshot(
         search_id, "rank", boundary,
-        visible_repos={
-            "assessment_repos": display_order,
-            "pool_repos": [str(item.get("full_name")) for item in candidates],
-        },
+        visible_repos={"assessment_repos": display_order, "pool_repos": list(by_name)},
     )
-    assignments = sum(len(item.get("mechanisms") or []) for item in ranked_items)
-    redundancy = round(
-        max(0, assignments - len(boundary["presented_mechanisms"])) / max(1, assignments), 3,
-    )
-    shown, introduced = _display_mechanism_sequence(display_items, display_presented_before)
-    summary = boundary_summary(ranked_items, display_presented_before, shown, redundancy)
-    summary["new_mechanisms_introduced"] = introduced
-    summary["mechanisms_shown"] = shown
+    role_counts = {
+        role: sum(item["boundary_role"] == role for item in items)
+        for role in ("anchor", "edge", "leap", "wildcard")
+    }
+    summary = {
+        **{f"{role}_count": count for role, count in role_counts.items()},
+        "mechanisms_shown": _unique_labels([*presented_before, *selected_labels]),
+        "new_mechanisms_introduced": introduced,
+    }
+    # A selection where every item failed verification is not a finished search. Saving
+    # it and reporting "done" would strand the Agent: the Skill treats rank-with-done as
+    # terminal, so it could never resubmit corrected quotes.
+    recoverable = not items and bool(rejected)
     result = {
-        "schema_version": 2, "search_id": search_id,
-        "stale": bool(session["stale"]), "incomplete_phase": session["incomplete_phase"],
-        "next_action": "done",
-        "buckets": buckets,
-        "items": ranked_items,
+        "schema_version": 3,
+        "search_id": search_id,
+        "stale": bool(session["stale"]),
+        "incomplete_phase": session["incomplete_phase"],
+        "next_action": "rank" if recoverable else "done",
+        "items": items,
         "display_order": display_order,
-        "selection_order": selection_order,
-        "boundary": boundary, "boundary_delta": delta,
+        "rejected_items": rejected,
+        "boundary": boundary,
+        "boundary_delta": delta,
         "boundary_summary": summary,
         "newly_presented_mechanisms": introduced,
         "semantic_hypotheses": [public_hypothesis(item) for item in sidecar_records],
-        "sidecar_metrics": dict(sidecar_state.get("metrics") or {}),
+        "sidecar_metrics": {
+            **dict(metrics),
+            "base_ledger": list(sidecar_state.get("base_ledger") or []),
+        },
         "coverage": {
-            "recalled": len(candidates), "assessed": len(assessments), "eligible": len(eligible),
-            "returned": len(ranked_items),
-            "adjacent_share": round(len(buckets["adjacent"]) / max(1, len(ranked_items)), 3),
-            "mechanism_count": len(boundary["recalled_mechanisms"]),
+            "recalled": len(by_name),
+            "selected": len(selections),
+            "returned": len(items),
+            "rejected": len(rejected),
+            "evidence_verified": len(items),
             "presented_mechanism_count": len(boundary["presented_mechanisms"]),
-            "mechanism_redundancy": redundancy,
-            "boundary_gain": len(delta["new_mechanisms"]),
-            "direction_coverage": round(
-                len(boundary["explored_directions"])
-                / max(1, len(boundary["explored_directions"]) + len(boundary["unexplored_directions"])),
-                3,
-            ),
-            "anchor_count": summary["anchor_count"],
-            "edge_count": summary["edge_count"],
-            "leap_count": summary["leap_count"],
-            "wildcard_count": summary["wildcard_count"],
-            "semantic_assessed": sum(
-                1 for item in sidecar_records if item.get("assessment_repo")
-            ),
-            "semantic_presented": sum(1 for item in sidecar_records if item.get("presented")),
-            "regular_top10_displaced": len(displaced),
+            **{f"{role}_count": count for role, count in role_counts.items()},
         },
     }
-    store.save_ranking(search_id, result)
+    if not recoverable:
+        store.save_ranking(search_id, result)
     return result

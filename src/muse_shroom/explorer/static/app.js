@@ -459,15 +459,13 @@ function resultCard(item, searchId) {
   const meta = [
     item.stars != null ? `${item.stars} ${t("stars")}` : "",
     item.language || "",
-    item.artifact_type || "",
   ].filter(Boolean);
   const topics = (item.topics || []).slice(0, 4);
-  // Composed from fields, never from why_different: that string is engine prose
-  // that already concatenates the mechanism list with a reason sentence.
-  const mechanism = (item.new_mechanisms || [])[0];
+  const mechanism = item.mechanism_label || (item.new_mechanisms || [])[0];
   return `<a class="card" href="${href}">
     <h3>${esc(item.repo)}</h3>
     <p class="card-desc">${esc(item.description || t("noDescription"))}</p>
+    ${item.rationale ? `<p>${esc(item.rationale)}</p>` : ""}
     ${meta.length ? `<p class="card-meta">${meta.map((m) => esc(m)).join(" · ")}</p>` : ""}
     ${topics.length ? `<p class="card-topics">${topics.map((x) => `<span class="topic">${esc(x)}</span>`).join("")}</p>` : ""}
     <p class="card-foot">
@@ -581,11 +579,8 @@ async function renderRepo(searchId, repo) {
   const meta = [
     detail.stars != null ? `${detail.stars} ${t("stars")}` : "",
     detail.language || "",
-    detail.artifact_type || "",
     release || "",
   ].filter(Boolean);
-  const reasons = detail.reasons || [];
-  const assessment = detail.assessment || {};
   main.innerHTML = `
     <p><a class="back" href="#/s/${encodeURIComponent(searchId)}/results">${esc(t("backToResults"))}</a></p>
     <article class="repo">
@@ -600,44 +595,22 @@ async function renderRepo(searchId, repo) {
         <h2>${esc(t("whyTitle"))}</h2>
         ${(detail.new_mechanisms || []).length
           ? `<p class="introduces"><span class="label">${esc(t("introduces"))}</span> ${pills(detail.new_mechanisms, "discovered")}</p>` : ""}
-        ${reasons.length ? `<p class="reason">${esc(reasons[0].text || "")}</p>` : ""}
+        ${detail.mechanism_label ? `<p>${esc(detail.mechanism_label)}</p>` : ""}
+        ${detail.rationale ? `<p class="reason">${esc(detail.rationale)}</p>` : ""}
       </section>
 
       <section>
         <h2>${esc(t("evidenceTitle"))}</h2>
-        ${reasons.length ? reasons.map((reason) => `
-          <div class="claim">
-            <p>${esc(reason.text || "")}</p>
-            ${(reason.evidence_ids || []).map((id) => byId.has(id) ? evidenceBlock(byId.get(id)) : "").join("")}
-          </div>`).join("") : `<p class="sub">${esc(t("noEvidence"))}</p>`}
+        ${detail.quote ? `<div class="claim"><p>${esc(detail.source_term || "")}</p>
+          <blockquote class="quote"><p>${esc(detail.quote)}</p></blockquote></div>`
+          : `<p class="sub">${esc(t("noEvidence"))}</p>`}
+        ${(detail.evidence_ids || []).map((id) => byId.has(id) ? evidenceBlock(byId.get(id)) : "").join("")}
       </section>
-
-      ${assessment.use_case || assessment.category || assessment.difficulty ? `
-      <section>
-        <h2>${esc(t("useCaseTitle"))}</h2>
-        ${assessment.use_case ? `<p>${esc(assessment.use_case)}</p>` : ""}
-        <p class="meta">
-          ${assessment.category ? `<span class="pill">${esc(t("categoryLabel"))}: ${esc(assessment.category)}</span>` : ""}
-          ${assessment.difficulty ? `<span class="pill">${esc(t("difficultyLabel"))}: ${esc(assessment.difficulty)}</span>` : ""}
-        </p>
-      </section>` : ""}
-
-      ${(detail.risks || []).length ? `
-      <section>
-        <h2>${esc(t("risksTitle"))}</h2>
-        ${detail.risks.map((risk) => `<p>${esc(risk.text || risk)}</p>`).join("")}
-      </section>` : ""}
 
       ${(detail.mechanisms || []).length ? `
       <section>
         <h2>${esc(t("mechanismsTitle"))}</h2>
         <p>${pills((detail.mechanisms || []).map((item) => item.name))}</p>
-      </section>` : ""}
-
-      ${current.debug && detail.scores ? `
-      <section>
-        <h2>${esc(t("scoresTitle"))}</h2>
-        <pre class="evidence">${esc(JSON.stringify(detail.scores, null, 2))}</pre>
       </section>` : ""}
 
       <p class="sub">${esc(t("notCloned"))}</p>

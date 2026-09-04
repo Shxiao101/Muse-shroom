@@ -34,6 +34,7 @@ def empty_sidecar_state() -> dict[str, Any]:
         "hypotheses": [],
         "candidates": [],
         "queries": [],
+        "base_ledger": [],
         "metrics": empty_sidecar_metrics(),
     }
 
@@ -408,103 +409,39 @@ def refresh_statuses(records: Iterable[dict[str, Any]]) -> None:
         record["status"] = derive_hypothesis_status(record)
 
 
-def assessment_cites_mechanism(
-    assessment: dict[str, Any], candidate: dict[str, Any], term: str,
-) -> bool:
-    named = str(assessment.get("mechanism") or "").strip()
-    if named.casefold() != term.casefold():
-        return False
-    allowed_ids = {
-        str(evidence_id)
-        for mechanism in candidate.get("mechanisms") or []
-        if str(mechanism.get("name") or "").casefold() == term.casefold()
-        for evidence_id in mechanism.get("evidence_ids") or []
-    }
-    cited: set[str] = set()
-    for reason in assessment.get("reasons") or []:
-        for evidence_id in reason.get("evidence_ids") or []:
-            cited.add(str(evidence_id))
-    return bool(allowed_ids & cited)
-
-
-def mark_validated(
-    records: list[dict[str, Any]],
-    *,
-    assessments: dict[str, dict[str, Any]],
-    candidates_by_name: dict[str, dict[str, Any]],
-    eligible_names: set[str],
-) -> None:
-    for record in records:
-        term = str(record.get("term") or "")
-        for name, assessment in assessments.items():
-            candidate = candidates_by_name.get(name)
-            if candidate is None or name not in eligible_names:
-                continue
-            if assessment_cites_mechanism(assessment, candidate, term):
-                record["validated"] = True
-                record["assessment_repo"] = candidate.get("full_name") or name
-                break
-        record["status"] = derive_hypothesis_status(record)
-
-
-def mark_presented(records: list[dict[str, Any]], display_order: Iterable[str]) -> None:
-    shown = {str(name).casefold() for name in display_order}
-    for record in records:
-        repo = str(record.get("assessment_repo") or "").casefold()
-        record["presented"] = bool(record.get("validated") and repo in shown)
-        record["status"] = derive_hypothesis_status(record)
-
-
-def unvalidated_terms(records: Iterable[dict[str, Any]]) -> set[str]:
-    return {
-        _normalized(item.get("term"))
-        for item in records
-        if not item.get("validated") and _normalized(item.get("term"))
-    }
-
-
-def strip_unvalidated_semantic_terms(
-    names: Iterable[str], blocked: set[str],
-) -> list[str]:
-    result: list[str] = []
-    for name in names:
-        if _normalized(name) in blocked:
-            continue
-        result.append(name)
-    return result
-
-
-def base_artifact_snapshot(
-    *,
-    query_fingerprints: list[str],
-    candidate_names: list[str],
-    readme_names: list[str],
-    shortlist_names: list[str],
-    lane_counts: dict[str, int],
-    recalled_mechanisms: list[str],
-    presented_mechanisms: list[str],
-    explored_directions: list[str],
+def base_ledger_entry(
+    *, stage: str, iteration: int, queries: Iterable[dict[str, Any]],
+    readme_fetch_count: int, candidate_names: Iterable[str],
 ) -> dict[str, Any]:
+    """Record the base retrieval resources a sidecar phase must not change."""
     return {
-        "query_fingerprints": list(query_fingerprints),
-        "candidate_names": sorted(name.casefold() for name in candidate_names),
-        "readme_names": sorted(name.casefold() for name in readme_names),
-        "shortlist_names": [name.casefold() for name in shortlist_names],
-        "lane_counts": dict(lane_counts),
-        "recalled_mechanisms": sorted(name.casefold() for name in recalled_mechanisms),
-        "presented_mechanisms": sorted(name.casefold() for name in presented_mechanisms),
-        "explored_directions": sorted(name.casefold() for name in explored_directions),
+        "stage": str(stage),
+        "iteration": int(iteration),
+        "queries": [
+            {
+                "fingerprint": str(item.get("fingerprint") or ""),
+                "result_count": int(item.get("result_count") or 0),
+            }
+            for item in queries
+        ],
+        "readme_fetch_count": int(readme_fetch_count),
+        "candidate_keys": sorted(str(name).casefold() for name in candidate_names),
     }
 
 
-def compare_base_artifacts(left: dict[str, Any], right: dict[str, Any]) -> list[str]:
+def compare_base_ledgers(
+    left: Iterable[dict[str, Any]], right: Iterable[dict[str, Any]],
+) -> list[str]:
+    """Return exact phase/field differences between two query-and-budget ledgers."""
     diffs: list[str] = []
-    for key in (
-        "query_fingerprints", "candidate_names", "readme_names", "shortlist_names",
-        "lane_counts", "recalled_mechanisms", "presented_mechanisms", "explored_directions",
-    ):
-        if left.get(key) != right.get(key):
-            diffs.append(key)
+    left_items = list(left)
+    right_items = list(right)
+    if len(left_items) != len(right_items):
+        diffs.append("phase_count")
+    for index, (left_item, right_item) in enumerate(zip(left_items, right_items)):
+        for key in ("stage", "iteration", "queries", "readme_fetch_count", "candidate_keys"):
+            if left_item.get(key) != right_item.get(key):
+                diffs.append(f"phases[{index}].{key}")
     return diffs
 
 

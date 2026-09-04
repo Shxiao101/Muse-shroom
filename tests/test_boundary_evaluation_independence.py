@@ -9,14 +9,14 @@ from unittest.mock import patch
 
 from evaluation.check_boundary_leakage import cross_mechanism_terms, find_leaks, find_skill_leaks
 from evaluation.version_worker import deterministic_hypothesis
-from muse_shroom.boundary import DISCOVERY_PHRASE_HINTS
+from muse_shroom.boundary import PACKAGING_PHRASES
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class BoundaryEvaluationIndependenceTests(unittest.TestCase):
-    def test_holdout_expected_terms_and_aliases_are_not_phrase_hints(self):
+    def test_holdout_expected_terms_and_aliases_are_not_packaging_hints(self):
         self.assertEqual(find_leaks(), [])
 
     def test_skill_text_does_not_contain_cross_mechanism_answers(self):
@@ -30,7 +30,7 @@ class BoundaryEvaluationIndependenceTests(unittest.TestCase):
         self.assertEqual(find_skill_leaks(expected), [])
 
     def test_leakage_checker_rejects_normalized_holdout_alias(self):
-        leaked = sorted(DISCOVERY_PHRASE_HINTS)[0]
+        leaked = sorted(PACKAGING_PHRASES)[0]
         payload = {
             "schema_version": 2,
             "cases": [{

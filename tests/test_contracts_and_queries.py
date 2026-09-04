@@ -2,7 +2,7 @@ import unittest
 
 from muse_shroom.analyze import github_links, make_evidence, readme_signals, safe_readme
 from muse_shroom.models import (
-    Assessment, ContractError, Refinement, SearchHypothesis, SearchRequest,
+    ContractError, Refinement, SearchHypothesis, SearchRequest, Selection,
 )
 from muse_shroom.queries import build_queries, code_filename_query, refinement_queries
 
@@ -233,64 +233,53 @@ class ContractAndQueryTests(unittest.TestCase):
             }, strict=True)
         self.assertIn("source_iteration", str(raised.exception))
 
-    def test_strict_assessment_rejects_missing_and_unknown_fields(self):
-        evidence = {"repo:owner/tool:readme:overview": "readme_excerpt"}
+    def test_strict_selection_rejects_missing_and_unknown_fields(self):
         complete = {
             "repo": "owner/tool",
-            "relevance": 80,
-            "uniqueness": 70,
-            "usability": 75,
-            "difficulty": "unknown",
-            "use_case": "unknown",
-            "category": "focus",
-            "artifact_type": "application",
-            "reasons": [{"text": "documented", "evidence_ids": ["repo:owner/tool:readme:overview"]}],
-            "risks": [],
+            "rationale": "Useful transfer",
+            "mechanism_label": "attention feedback",
+            "source_term": "feedback loop",
+            "quote": "A feedback loop changes the display.",
+            "evidence_ids": ["repo:owner/tool:readme:overview"],
+            "boundary_role": "edge",
         }
-        parsed = Assessment.from_dict(complete, evidence, strict=True)
-        self.assertEqual(parsed.use_case, "unknown")
-        self.assertEqual(parsed.risks, [])
+        parsed = Selection.from_dict(complete, strict=True)
+        self.assertEqual(parsed.mechanism_label, "attention feedback")
         missing = dict(complete)
-        del missing["use_case"]
+        del missing["quote"]
         with self.assertRaises(ContractError) as raised:
-            Assessment.from_dict(missing, evidence, strict=True)
-        self.assertIn("use_case", str(raised.exception))
+            Selection.from_dict(missing, strict=True)
+        self.assertIn("quote", str(raised.exception))
         with self.assertRaises(ContractError) as raised:
-            Assessment.from_dict({**complete, "fit": 9, "caveats": "x"}, evidence, strict=True)
+            Selection.from_dict({**complete, "fit": 9}, strict=True)
         self.assertIn("fit", str(raised.exception))
-        no_reasons = dict(complete)
-        no_reasons["reasons"] = []
+        no_evidence = dict(complete)
+        no_evidence["evidence_ids"] = []
         with self.assertRaises(ContractError) as raised:
-            Assessment.from_dict(no_reasons, evidence, strict=True)
-        self.assertIn("reasons", str(raised.exception))
+            Selection.from_dict(no_evidence, strict=True)
+        self.assertIn("evidence_ids", str(raised.exception))
 
-    def test_strict_assessment_matches_published_types_and_enums(self):
-        evidence = {"repo:owner/tool:metadata": "metadata"}
+    def test_strict_selection_matches_published_types_and_enums(self):
         complete = {
             "repo": "owner/tool",
-            "relevance": 80,
-            "uniqueness": 70,
-            "usability": 75,
-            "difficulty": "unknown",
-            "use_case": "unknown",
-            "category": "focus",
-            "artifact_type": "application",
-            "reasons": [{"text": "metadata", "evidence_ids": ["repo:owner/tool:metadata"]}],
-            "risks": [],
+            "rationale": "Useful transfer",
+            "mechanism_label": "attention feedback",
+            "source_term": "feedback loop",
+            "quote": "A feedback loop changes the display.",
+            "evidence_ids": ["repo:owner/tool:readme:overview"],
+            "boundary_role": "edge",
         }
         cases = [
-            ({"artifact_type": "banana"}, "artifact_type"),
-            ({"difficulty": "trivial"}, "difficulty"),
-            ({"relevance": "80"}, "relevance"),
-            ({"use_case": 123}, "use_case"),
-            ({"category": 123}, "category"),
-            ({"reasons": [{"text": "metadata", "evidence_ids": "repo:owner/tool:metadata"}]}, "evidence_ids"),
-            ({"reasons": [{"text": 123, "evidence_ids": ["repo:owner/tool:metadata"]}]}, "text"),
+            ({"boundary_role": "banana"}, "boundary_role"),
+            ({"rationale": 123}, "text fields"),
+            ({"evidence_ids": "repo:owner/tool:metadata"}, "evidence_ids"),
+            ({"evidence_ids": [123]}, "evidence_ids"),
+            ({"repo": "tool"}, "owner/name"),
         ]
         for patch, expected in cases:
             with self.subTest(expected=expected):
                 with self.assertRaises(ContractError) as raised:
-                    Assessment.from_dict({**complete, **patch}, evidence, strict=True)
+                    Selection.from_dict({**complete, **patch}, strict=True)
                 self.assertIn(expected, str(raised.exception))
 
     def test_concepts_cannot_inject_github_qualifiers(self):
@@ -351,6 +340,31 @@ class ContractAndQueryTests(unittest.TestCase):
         self.assertTrue(all(entry["facts"]["untrusted_source"] for entry in excerpts))
         self.assertTrue(all(entry["facts"]["sha"] == "abc123" for entry in excerpts))
         self.assertNotIn("ignore()", str(excerpts))
+
+    def test_stop_reason_carries_a_full_sentence_of_rationale(self):
+        # The Skill requires stop_reason to record the cross-domain decision, so it now
+        # shares the 500-character budget of `reason`. Verbatim from attempt-38, where a
+        # 209-character explanation discarded a whole iteration under the old 200 cap.
+        observed = (
+            "All requested mechanisms and the project-workflow direction are covered; "
+            "remaining discovered terms are generic agent/list drift, while the "
+            "gamification hypothesis did not yield a suitable presented candidate."
+        )
+        self.assertGreater(len(observed), 200)
+        hypothesis = SearchHypothesis.from_dict({
+            "decision": "stop", "stop_reason": observed,
+        }, strict=True)
+        self.assertEqual(hypothesis.stop_reason, observed)
+
+    def test_stop_reason_still_rejects_newlines_and_overlong_text(self):
+        with self.assertRaisesRegex(ContractError, "single-line"):
+            SearchHypothesis.from_dict(
+                {"decision": "stop", "stop_reason": "a" * 501}, strict=True,
+            )
+        with self.assertRaisesRegex(ContractError, "single-line"):
+            SearchHypothesis.from_dict(
+                {"decision": "stop", "stop_reason": "two" + chr(10) + "lines"}, strict=True,
+            )
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from contextlib import redirect_stdout
 from muse_shroom.boundary import annotate_candidate_mechanisms
 from muse_shroom.cli import main
 from muse_shroom.models import ContractError, SearchRequest
-from muse_shroom.ranking import _percentiles, rank_search
+from muse_shroom.ranking import rank_search
 from muse_shroom.search import SearchEngine
 from muse_shroom.selection import balanced_select, candidate_allowed
 from muse_shroom.storage import Store
@@ -200,9 +200,7 @@ class V03QualityTests(unittest.TestCase):
         persisted = {item["full_name"] for item in self.store.load_search(first["search_id"])["candidates"]}
         self.assertEqual(persisted, {"tools/useful"})
 
-    def test_popularity_uses_full_recalled_cohort_and_ties_share_percentile(self):
-        self.assertEqual(_percentiles([repo("a/one", 10), repo("b/two", 10)])["a/one"],
-                         _percentiles([repo("a/one", 10), repo("b/two", 10)])["b/two"])
+    def test_agent_order_is_not_changed_by_popularity(self):
         search_id = "cohort"
         self.store.create_search(search_id, {"request": "x", "core_concepts": ["x"]}, "quick")
         items = [repo("a/low", 10), repo("b/mid", 100), repo("c/high", 1000)]
@@ -212,20 +210,22 @@ class V03QualityTests(unittest.TestCase):
             item["selection_score_components"] = {"evidence_completeness": 80}
             item["evidence"] = [
                 {"id": f"repo:{item['full_name']}:metadata", "kind": "github_metadata", "facts": {"license": "MIT"}},
-                {"id": f"repo:{item['full_name']}:readme", "kind": "readme", "facts": {"has_install": True, "has_usage": True}},
-                {"id": f"repo:{item['full_name']}:readme:overview", "kind": "readme_excerpt", "facts": {"text": "Useful tool"}},
+                {"id": f"repo:{item['full_name']}:readme", "kind": "readme", "facts": {"has_install": True, "has_usage": True, "sha": "abc"}},
+                {"id": f"repo:{item['full_name']}:readme:overview", "kind": "readme_excerpt", "facts": {"text": "Useful tool", "sha": "abc"}},
             ]
             self.store.save_candidate(search_id, item)
-        assessment = {
-            "repo": "b/mid", "relevance": 90, "uniqueness": 80, "usability": 80,
-            "difficulty": "easy", "use_case": "Useful tool", "category": "tool", "artifact_type": "application",
-            "reasons": [{"text": "Useful tool", "evidence_ids": ["repo:b/mid:readme:overview"]}],
-            "risks": [{"text": "Check setup", "evidence_ids": ["repo:b/mid:metadata"]}],
-        }
-        result = rank_search(self.store, search_id, [assessment])
-        returned = [item for bucket in result["buckets"].values() for item in bucket]
+        selection = [
+            {
+                "repo": name, "rationale": "Agent order", "mechanism_label": name,
+                "source_term": "Useful", "quote": "Useful tool",
+                "evidence_ids": [f"repo:{name}:readme:overview"], "boundary_role": "edge",
+            }
+            for name in ("c/high", "a/low", "b/mid")
+        ]
+        result = rank_search(self.store, search_id, selection)
         self.assertEqual(result["coverage"]["recalled"], 3)
-        self.assertEqual(returned[0]["scores"]["components"]["popularity_percentile"], 50.0)
+        self.assertEqual(result["display_order"], ["c/high", "a/low", "b/mid"])
+        self.assertTrue(all("scores" not in item for item in result["items"]))
 
     def test_verified_use_case_requires_readme_excerpt(self):
         search_id = "no-readme"
@@ -233,14 +233,14 @@ class V03QualityTests(unittest.TestCase):
         item = repo("owner/no-readme", 1)
         item["evidence"] = [{"id": "repo:owner/no-readme:metadata", "kind": "github_metadata", "facts": {}}]
         self.store.save_candidate(search_id, item)
-        assessment = {
-            "repo": "owner/no-readme", "relevance": 80, "uniqueness": 80, "usability": 70,
-            "difficulty": "unknown", "use_case": "Verified feature", "category": "x", "artifact_type": "unknown",
-            "reasons": [{"text": "Feature", "evidence_ids": ["repo:owner/no-readme:metadata"]}],
-            "risks": [{"text": "Unknown", "evidence_ids": ["repo:owner/no-readme:metadata"]}],
+        selection = {
+            "repo": "owner/no-readme", "rationale": "Claim", "mechanism_label": "feature",
+            "source_term": "Feature", "quote": "Verified feature",
+            "evidence_ids": ["repo:owner/no-readme:metadata"], "boundary_role": "edge",
         }
-        with self.assertRaises(ContractError):
-            rank_search(self.store, search_id, [assessment])
+        result = rank_search(self.store, search_id, [selection])
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["rejected_items"][0]["reasons"], ["quote_not_verbatim_at_recorded_sha"])
 
     def test_candidates_and_inspect_never_return_raw_readme(self):
         search_id = "cli-view"

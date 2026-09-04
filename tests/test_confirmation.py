@@ -35,7 +35,7 @@ def source(repo_name: str, *, stage: str = "discovery", anchored: bool = True,
 
 
 class ConfirmationTests(unittest.TestCase):
-    def test_medium_candidate_enters_queue_while_high_candidate_direct_promotes(self):
+    def test_source_terms_are_exposed_without_code_promotion_or_confirmation_queue(self):
         request = SearchRequest.from_dict({
             "request": "improve meeting efficiency",
             "problem_concepts": ["meeting efficiency"],
@@ -61,18 +61,11 @@ class ConfirmationTests(unittest.TestCase):
             item["term"]: item for item in boundary["discovered_term_evidence"]
         }
 
-        self.assertEqual(by_term["decision monitoring"]["disposition"], "direct_promote")
-        self.assertTrue(by_term["decision monitoring"]["promotable"])
-        self.assertEqual(by_term["decision log"]["disposition"], "needs_confirmation")
-        self.assertFalse(by_term["decision log"]["promotable"])
-        queued = next(
-            item for item in boundary["confirmation_queue"]
-            if item["candidate"] == "decision log"
-        )
-        self.assertGreater(queued["confirmation_priority_score"], 0)
-        self.assertGreater(queued["confirmability_score"], 0)
-        self.assertGreater(queued["novelty_score"], 0)
-        self.assertTrue(queued["confirmation_priority_reason"])
+        self.assertEqual(by_term["decision monitoring"]["kind"], "source_term")
+        self.assertEqual(by_term["decision log"]["kind"], "source_term")
+        self.assertNotIn("promotable", by_term["decision monitoring"])
+        self.assertNotIn("disposition", by_term["decision log"])
+        self.assertEqual(boundary["confirmation_queue"], [])
 
     def test_explicit_incidental_evidence_is_rejected_before_confirmation(self):
         request = SearchRequest.from_dict({
@@ -94,7 +87,9 @@ class ConfirmationTests(unittest.TestCase):
             if value["term"] == "browser automation"
         )
 
-        self.assertEqual(item["disposition"], "reject")
+        self.assertEqual(item["kind"], "source_term")
+        self.assertFalse(item["request_anchored"])
+        self.assertNotIn("disposition", item)
         self.assertNotIn(
             "browser automation",
             {value["candidate"] for value in boundary["confirmation_queue"]},
@@ -347,7 +342,7 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(diagnostics["confirmation_confirmed_count"], 1)
         self.assertEqual(confirmation_metrics(state["confirmation_records"])["confirmation_executed_count"], 1)
 
-    def test_confirmed_candidate_is_promoted_with_separate_trace(self):
+    def test_search_does_not_promote_or_confirm_source_terms_in_code(self):
         discovery = repo(
             "one/meeting", 20,
             description="Meeting efficiency helper",
@@ -391,18 +386,14 @@ class ConfirmationTests(unittest.TestCase):
             finally:
                 store.close()
 
-        records = result["boundary"]["mechanism_confirmations"]
-        decision = next(item for item in records if item["candidate"] == "decision log")
-        self.assertEqual(decision["confirmation_status"], "confirmed")
-        self.assertTrue(decision["discovery_evidence"])
-        self.assertTrue(decision["confirmation_evidence"])
-        self.assertIn("decision log", result["boundary"]["recalled_mechanisms"])
-        self.assertIn("decision log", result["boundary_delta"]["new_mechanisms"])
+        self.assertEqual(result["boundary"]["mechanism_confirmations"], [])
+        self.assertIn("decision log", result["boundary"]["discovered_terms"])
+        self.assertNotIn("decision log", result["boundary"]["recalled_mechanisms"])
+        self.assertNotIn("decision log", result["boundary_delta"]["new_mechanisms"])
         self.assertEqual(diagnostics["executed_iteration_count"], 1)
-        self.assertGreater(diagnostics["confirmation_query_count"], 0)
-        self.assertEqual(len(decision["confirmation_queries"]), 1)
+        self.assertEqual(diagnostics["confirmation_query_count"], 0)
 
-    def test_second_query_runs_only_after_first_is_unresolved(self):
+    def test_no_confirmation_queries_run_for_raw_source_terms(self):
         discovery = repo("one/meeting", 20, description="Meeting efficiency helper")
         confirmation = repo(
             "two/meeting", 10, description="Decision log for meeting efficiency",
@@ -440,12 +431,8 @@ class ConfirmationTests(unittest.TestCase):
             finally:
                 store.close()
 
-        decision = next(
-            item for item in result["boundary"]["mechanism_confirmations"]
-            if item["candidate"] == "decision log"
-        )
-        self.assertEqual(decision["confirmation_status"], "confirmed")
-        self.assertEqual(len(decision["confirmation_queries"]), 2)
+        self.assertEqual(result["boundary"]["mechanism_confirmations"], [])
+        self.assertEqual(result["boundary"]["confirmation_queue"], [])
 
     def test_confirmation_candidates_are_ordered_and_skipped_by_budget(self):
         boundary = {"confirmation_queue": [
@@ -469,7 +456,7 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(skipped[0]["candidate"], "weak category")
         self.assertEqual(skipped[0]["confirmation_status"], "skipped_budget")
 
-    def test_typed_mechanism_preempts_higher_scoring_provisional_category(self):
+    def test_confirmation_fixture_order_uses_only_explicit_priority(self):
         boundary = {"confirmation_queue": [
             {"candidate": "music notation", "specificity_tier": "provisional_category",
              "confirmation_priority_score": 99, "confirmability_score": 99},
@@ -481,8 +468,8 @@ class ConfirmationTests(unittest.TestCase):
             boundary, limit=1, attempt_budget=1,
         )
 
-        self.assertEqual([item["candidate"] for item in selected], ["image recognition"])
-        self.assertEqual([item["candidate"] for item in skipped], ["music notation"])
+        self.assertEqual([item["candidate"] for item in selected], ["music notation"])
+        self.assertEqual([item["candidate"] for item in skipped], ["image recognition"])
 
     def test_packaging_and_morphological_mechanism_typing(self):
         for term in ("chrome extension", "brave extension", "browser extension"):
@@ -491,7 +478,7 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(mechanism_specificity("estimated remaining"), "mechanism")
         self.assertEqual(mechanism_specificity("integrated timeboxing"), "mechanism")
 
-    def test_packaging_term_never_enters_confirmation_queue(self):
+    def test_packaging_term_is_raw_observation_and_never_enters_a_code_queue(self):
         request = SearchRequest.from_dict({
             "request": "improve focus",
             "problem_concepts": ["focus"],
@@ -511,8 +498,9 @@ class ConfirmationTests(unittest.TestCase):
             item for item in boundary["discovered_term_evidence"]
             if item["term"] == "chrome extension"
         )
-        self.assertEqual(evidence["mechanism_specificity"], "packaging")
-        self.assertEqual(evidence["disposition"], "reject")
+        self.assertEqual(evidence["kind"], "source_term")
+        self.assertNotIn("mechanism_specificity", evidence)
+        self.assertNotIn("disposition", evidence)
         self.assertNotIn(
             "chrome extension",
             {item["candidate"] for item in boundary["confirmation_queue"]},

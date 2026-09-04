@@ -64,10 +64,6 @@ class Store:
                 full_name TEXT NOT NULL, captured_at TEXT NOT NULL, stars INTEGER NOT NULL,
                 PRIMARY KEY(full_name, captured_at)
             );
-            CREATE TABLE IF NOT EXISTS assessments (
-                search_id TEXT NOT NULL, full_name TEXT NOT NULL, assessment_json TEXT NOT NULL,
-                PRIMARY KEY(search_id, full_name)
-            );
             CREATE TABLE IF NOT EXISTS rankings (
                 search_id TEXT PRIMARY KEY, ranking_json TEXT NOT NULL, created_at TEXT NOT NULL
             );
@@ -418,13 +414,6 @@ class Store:
         else:
             row = self.db.execute("SELECT snapshot_json FROM repositories WHERE full_name=?", (full_name.lower(),)).fetchone()
         return json.loads(row[0]) if row else None
-
-    def save_assessment(self, search_id: str, full_name: str, assessment: dict[str, Any]) -> None:
-        self.db.execute(
-            "INSERT OR REPLACE INTO assessments VALUES (?, ?, ?)",
-            (search_id, full_name.lower(), json.dumps(assessment, ensure_ascii=False)),
-        )
-        self.db.commit()
 
     def save_ranking(self, search_id: str, ranking: dict[str, Any]) -> None:
         self.db.execute(

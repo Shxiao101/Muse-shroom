@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from .boundary import (
-    PROMOTABLE_SPECIFICITIES, _canonical_token_key, _normalized, _token_overlap,
-)
+from .boundary import _canonical_token_key, _normalized, _token_overlap
 
 
 COMPLETED_STATUSES = {
@@ -135,10 +133,6 @@ def plan_confirmation_candidates(boundary: dict[str, Any],
         )
     ]
     queue.sort(key=lambda item: (
-        0 if (
-            item.get("specificity_tier") == "mechanism"
-            or item.get("mechanism_specificity") in PROMOTABLE_SPECIFICITIES
-        ) else 1,
         -int(item.get("confirmation_priority_score") or 0),
         -int(item.get("confirmability_score") or 0),
         -int(item.get("novelty_score") or 0),

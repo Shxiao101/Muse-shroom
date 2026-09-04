@@ -95,8 +95,7 @@ def iteration_stop_reasons(*, hard_reason: str | None, delta: dict[str, Any],
     if skipped_all and not executed and hard_reason not in {
         "agent_stop", "max_iterations", "query_budget_exhausted", "consecutive_no_gain",
     }:
-        if "duplicate_queries" not in hard:
-            hard.append("duplicate_queries")
+        signals.append("duplicate_queries")
     if executed and not (delta.get("new_mechanisms") or []):
         signals.append("no_new_mechanism")
     if executed and not meaningful_gain(delta, previous_origins, current_origins):
@@ -316,11 +315,6 @@ def validate_hypothesis_evidence(hypothesis: SearchHypothesis, request: SearchRe
         str(term).casefold() for term in boundary.get("discovered_terms") or []
         if str(term).strip()
     }
-    promotable_names = {
-        str(item.get("term") or "").casefold()
-        for item in boundary.get("discovered_term_evidence") or []
-        if str(item.get("term") or "").strip() and item.get("promotable") is not False
-    }
     term_evidence_ids: dict[str, set[str]] = {}
     for item in boundary.get("discovered_term_evidence") or []:
         term_key = str(item.get("term") or "").casefold()
@@ -343,7 +337,7 @@ def validate_hypothesis_evidence(hypothesis: SearchHypothesis, request: SearchRe
             continue
         if addition.evidence == "user_request":
             continue
-        if addition.evidence == "discovered_term" and key in promotable_names:
+        if addition.evidence == "discovered_term" and key in discovered_names:
             continue
         if (
             addition.evidence
@@ -358,15 +352,15 @@ def validate_hypothesis_evidence(hypothesis: SearchHypothesis, request: SearchRe
         )
     for term in hypothesis.promote_discovered_terms:
         key = term.casefold()
-        if key not in discovered or key not in discovered_names or key not in promotable_names:
+        if key not in discovered or key not in discovered_names:
             raise ContractError(
-                f"promote_discovered_terms entry {term!r} is not a promotable, "
-                "evidence-backed term from the latest observation"
+                f"promote_discovered_terms entry {term!r} is not an evidence-backed "
+                "source term from the latest observation"
             )
     if hypothesis.target_direction:
         key = hypothesis.target_direction.casefold()
         allowed = (
-            requested_directions | promotable_names | addition_terms
+            requested_directions | discovered_names | addition_terms
             | {term.casefold() for term in hypothesis.promote_discovered_terms}
         )
         if key not in allowed:

@@ -6,6 +6,10 @@ dist/
 .pytest_cache/
 evaluation/cassettes/
 evaluation/results/
+evaluation/host-*-bundle/
+evaluation/host-*-bundle.case-map.json
+evaluation/host-*-bundle.leakage.json
 blackbox-*/
 chat*.md
 muse-shroom-v0.4.7-three-run-raw-data.json
+evaluation/host-*-bundle.superseded-*/
