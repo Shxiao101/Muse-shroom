@@ -1,9 +1,9 @@
 ---
-name: github-inspiration-discovery
-description: Discover evidence-backed GitHub projects across the user's current solution boundary, including anchors, edges, leaps, and transferable wildcards, for a fuzzy problem, tool, plugin, mod, MCP, or agent skill. Do not use it for known-repository code search or automatic installation.
+name: muse-shroom
+description: Use ONLY when the user explicitly asks for Muse-shroom or for boundary discovery by name — for example "use Muse-shroom", "使用 Muse-shroom", "search with Muse-shroom", "muse-shroom 搜一下", or "run boundary discovery". When they do: discover evidence-backed GitHub projects across the user's current solution boundary, including anchors, edges, leaps, and transferable wildcards, for a fuzzy problem, tool, plugin, mod, MCP, or agent skill. Do NOT use it when the user merely asks to find, recommend, or compare GitHub projects, libraries, or tools without naming Muse-shroom; for known-repository code search; or for automatic installation.
 ---
 
-# GitHub Inspiration Discovery
+# Muse-shroom: GitHub boundary discovery
 
 Turn a fuzzy request into an evidence-backed shortlist with Muse-shroom. You interpret the need, decide whether to continue searching, and own the final selection, order, mechanism labels, roles, and rationales. Muse-shroom owns queries and budgets, records raw facts, and mechanically validates candidate/evidence ownership and exact quoted text.
 
@@ -13,11 +13,17 @@ Prefer Muse-shroom MCP over the CLI. MCP tools may be deferred and absent from t
 
 Use the CLI only after deferred-tool discovery explicitly returns no Muse-shroom tools, the host has no discovery mechanism and exposes no Muse-shroom tools, or loading/starting the discovered MCP server fails. The initial visible tool list alone is not evidence that MCP is unavailable. When falling back, briefly tell the user the concrete reason. Optional `muse_inspect` is debug-only. Do not change the search strategy for MCP vs CLI. When using the CLI, write JSON as UTF-8 files; on Windows, never pipe `Get-Content` into Muse-shroom.
 
-When the user explicitly says to use Muse-shroom (“使用 Muse-shroom”, “use Muse-shroom”, “search with Muse-shroom”), use Muse-shroom as the primary retrieval path. Do not start with generic Web search instead. After a successful Muse-shroom flow, do not repeat the same search through Web unless you have a separate verification reason. Web may still be used later for explicit verification. This is Muse-shroom-first, not a ban on Web.
+Once the user has asked for Muse-shroom (“使用 Muse-shroom”, “use Muse-shroom”, “search with Muse-shroom”), use it as the primary retrieval path for that request. Do not start with generic Web search instead. After a successful Muse-shroom flow, do not repeat the same search through Web unless you have a separate verification reason. Web may still be used later for explicit verification. This is Muse-shroom-first, not a ban on Web.
 
-## 1. Purpose
+## 1. Purpose and when to use
 
-Find reliable anchors, nearby mechanism changes, cross-mechanism leaps, and transferable wildcards. Do not use this Skill for known-repo code search or automatic installation.
+Find reliable anchors, nearby mechanism changes, cross-mechanism leaps, and transferable wildcards.
+
+**This Skill is opt-in.** Run it only when the user has named Muse-shroom or asked for boundary discovery explicitly. A request to find, recommend, or compare GitHub projects is not by itself a request for this Skill: answer it however you normally would. If you think this Skill would serve the user better, offer it in one line and wait for them to say yes rather than starting a search.
+
+Being loaded is not the same as being asked for. If this Skill is already in context and the user has not named it, do not call `muse_search`.
+
+Do not use this Skill for known-repo code search or automatic installation.
 
 ## 2. Interpret intent
 

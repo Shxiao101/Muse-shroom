@@ -3,13 +3,25 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / "skills" / "github-inspiration-discovery" / "SKILL.md"
-REFERENCES = ROOT / "skills" / "github-inspiration-discovery" / "references"
+SKILL = ROOT / "skills" / "muse-shroom" / "SKILL.md"
+REFERENCES = ROOT / "skills" / "muse-shroom" / "references"
 
 
 class SkillInterfaceTests(unittest.TestCase):
     def setUp(self):
         self.skill = SKILL.read_text(encoding="utf-8")
+
+    def test_skill_is_opt_in_and_does_not_auto_trigger(self):
+        # The frontmatter description is the trigger surface a host matches against, so
+        # the gate has to live there, not only in the body.
+        head = self.skill.split("---")[1]
+        self.assertIn("description:", head)
+        self.assertIn("Use ONLY when the user explicitly asks", head)
+        self.assertIn("Do NOT use it when the user merely asks to find", head)
+        # A general request for GitHub projects must not read as a request for this Skill.
+        self.assertIn("This Skill is opt-in", self.skill)
+        self.assertIn("is not by itself a request for this Skill", self.skill)
+        self.assertIn("Being loaded is not the same as being asked for", self.skill)
 
     def test_skill_uses_split_contracts_and_iterate_not_expand(self):
         for name in (

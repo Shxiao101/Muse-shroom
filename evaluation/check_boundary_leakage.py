@@ -11,7 +11,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_HOLDOUT = ROOT / "evaluation" / "holdout" / "boundary-golden-cases.json"
 DEFAULT_DEVELOPMENT = ROOT / "evaluation" / "boundary-golden-cases.json"
-SKILL_ROOT = ROOT / "skills" / "github-inspiration-discovery"
+SKILL_ROOT = ROOT / "skills" / "muse-shroom"
 TOKEN_RE = re.compile(r"[A-Za-z0-9_+#]+|[\u3400-\u9fff]+")
 
 

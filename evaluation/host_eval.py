@@ -567,7 +567,7 @@ def prepare(
         "Use only the generated Muse-shroom evaluation MCP server. Process every case in "
         "`cases.json` exactly once. For each case, call `muse_search` with the request object "
         "unchanged and `mode=deep`, then follow `next_action` through observe/iterate/rank. "
-        "Use the production Skill in `skills/github-inspiration-discovery/`; do not invent "
+        "Use the production Skill in `skills/muse-shroom/`; do not invent "
         "repository queries or inspect files outside this bundle. Finish one case before "
         "starting the next. Golden answers are intentionally unavailable.\n"
     )
