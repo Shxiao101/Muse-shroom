@@ -381,6 +381,53 @@ class ConceptBridgeTests(unittest.TestCase):
         self.assertTrue(all(item.get("full_name") and item.get("evidence") for item in candidates))
         self.assertTrue(all("selection_reason" not in item for item in candidates))
 
+    def test_compact_output_trims_to_cite_and_quote_instead_of_raising(self):
+        # A cap-sized sidecar round can overflow even the assessment-minimal rung;
+        # the ladder must trim to cite-and-quote fields rather than lose the round.
+        candidates = []
+        for index in range(40):
+            candidates.append({
+                "full_name": f"labs/pacing-{index}",
+                "html_url": f"https://github.com/labs/pacing-{index}",
+                "mechanisms": [{
+                    "name": "physiological pacing",
+                    "matched_terms": [f"term-{value}-" + "x" * 80 for value in range(4)],
+                    "sources": ["description", "readme"] * 4,
+                    "evidence_ids": [f"repo:labs/pacing-{index}:semantic:h1:{value}" for value in range(4)],
+                    "hypothesis_id": "h1:1:physiological-pacing",
+                    "semantic_origin": True,
+                }],
+                "evidence": [{
+                    "id": f"repo:labs/pacing-{index}:semantic:h1:1:physiological-pacing",
+                    "kind": "mechanism_match",
+                    "facts": {"mechanisms": [{
+                        "mechanism": "physiological pacing", "source_field": "description",
+                        "matched_term": "physiological pacing",
+                        "text": "physiological pacing " + "wearable telemetry data " * 14,
+                        "hypothesis_id": "h1:1:physiological-pacing",
+                        "semantic_origin": True,
+                    }], "untrusted_source": True},
+                }],
+            })
+        output = {"coverage": {}, "candidates": candidates}
+
+        _compact_search_output(output)
+
+        encoded = json.dumps(output, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.assertLessEqual(len(encoded), 30_000)
+        self.assertEqual(output["coverage"]["output_bytes"], len(encoded))
+        self.assertEqual(output["coverage"]["output_truncation_level"], "quote_grade")
+        self.assertTrue(output["coverage"]["candidate_details_truncated"])
+        self.assertEqual(len(candidates), 40)
+        for item in candidates:
+            self.assertTrue(item.get("full_name"))
+            self.assertTrue(item.get("html_url"))
+            evidence = item.get("evidence") or []
+            self.assertEqual(evidence[0]["kind"], "mechanism_match")
+            quote = evidence[0]["facts"]["mechanisms"][0]["text"]
+            self.assertTrue(quote)
+            self.assertLessEqual(len(quote), 100)
+
     def test_badge_only_overview_is_not_used_as_concept_evidence(self):
         item = repo("owner/badges", 12, description="self-control trainer")
         readme, truncated = safe_readme(

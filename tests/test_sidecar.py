@@ -8,10 +8,12 @@ from muse_shroom.iteration import validate_hypothesis_evidence
 from muse_shroom.models import ContractError, SearchHypothesis, SearchRequest
 from muse_shroom.queries import hypothesis_queries
 from muse_shroom.ranking import rank_search
-from muse_shroom.search import SearchEngine
+from muse_shroom.search import SEARCH_OUTPUT_MAX_BYTES, SearchEngine, _wire_size
+from muse_shroom.selection import SHORTLIST_LIMIT
 from muse_shroom.sidecar import (
-    compare_base_ledgers, match_hypothesized_term, plan_sidecar_queries,
-    public_hypothesis, split_additions, validate_host_hypotheses,
+    SEMANTIC_CANDIDATE_CAP, compare_base_ledgers, match_hypothesized_term,
+    plan_sidecar_queries, public_hypothesis, split_additions,
+    validate_host_hypotheses,
 )
 from muse_shroom.storage import Store
 
@@ -215,22 +217,22 @@ class SidecarSearchTests(unittest.TestCase):
             ))
 
     def test_sidecar_does_not_change_regular_shortlist_or_base_queries(self):
-        pacing = repo(
-            "labs/pacing", 12,
-            description="physiological pacing sensor",
-            topics=["wellbeing"],
-        )
+        pacing_repos = [
+            repo(
+                f"labs/pacing-{index}", 12 - index,
+                description=f"physiological pacing sensor {index}",
+                topics=["wellbeing"],
+            )
+            for index in range(6)
+        ]
         timer = repo("tools/timer", 400, description="pomodoro timer for focus")
         github = FrozenGitHub(
             [
                 ("focus", [timer]),
                 ("pomodoro", [timer]),
-                ("physiological pacing", [pacing]),
+                ("physiological pacing", pacing_repos),
             ],
-            readmes={
-                "tools/timer": "# Timer\nA pomodoro timer.\n## Usage\nStart it.",
-                "labs/pacing": "# Pacing\nphysiological pacing.\n## Usage\nInstall.",
-            },
+            readmes={"tools/timer": "# Timer\nA pomodoro timer.\n## Usage\nStart it."},
         )
         request = SearchRequest.from_dict(REQUEST)
         enabled, store_a = self._engine(github)
@@ -254,11 +256,163 @@ class SidecarSearchTests(unittest.TestCase):
             self.assertNotIn("base_ledger", output.get("sidecar_metrics") or {})
         left_regular = [
             item["full_name"] for item in enabled_iter["candidates"]
-            if item.get("full_name") != "labs/pacing"
+            if not item["full_name"].startswith("labs/pacing")
         ]
         right_regular = [item["full_name"] for item in disabled_iter["candidates"]]
         self.assertEqual(left_regular, right_regular)
+        # Many sidecar matches must leave the base query count and README budget alone.
+        self.assertEqual(
+            store_a.normal_query_count(left["search_id"]),
+            store_b.normal_query_count(right["search_id"]),
+        )
+        sidecar = store_a.get_session_state(left["search_id"])["semantic_sidecar"]
+        self.assertEqual(sidecar["metrics"]["semantic_assessment_count"], len(pacing_repos))
         self.assertLessEqual(len(enabled_iter["candidates"]), 14)
+
+    def test_every_semantic_match_is_offered_not_just_one(self):
+        pacing = repo("labs/pacing", 40, description="physiological pacing wearable", topics=["sensor"])
+        stride = repo("labs/stride", 30, description="physiological pacing coach", topics=["sensor"])
+        timer = repo("tools/timer", 300, description="pomodoro timer")
+        github = FrozenGitHub(
+            [("focus", [timer]), ("physiological pacing", [pacing, stride])],
+            readmes={
+                "tools/timer": "# Timer\nA pomodoro timer.\n## Usage\nStart.",
+                "labs/pacing": "# Pacing\nphysiological pacing for runners.\n## Usage\nWear.",
+                "labs/stride": "# Stride\nphysiological pacing for walkers.\n## Usage\nWear.",
+            },
+        )
+        engine, store = self._engine(github)
+        search = engine.search(SearchRequest.from_dict(REQUEST), "deep")
+        iterated = engine.iterate(search["search_id"], _hypothesis(("physiological pacing", "focus")))
+        public = {item["full_name"]: item for item in iterated["candidates"]}
+        self.assertIn("labs/pacing", public)
+        self.assertIn("labs/stride", public)
+        for name in ("labs/pacing", "labs/stride"):
+            evidence = [
+                item for item in public[name].get("evidence") or []
+                if item.get("kind") == "mechanism_match"
+            ]
+            self.assertTrue(evidence)
+            self.assertTrue(evidence[0]["facts"]["mechanisms"][0]["text"])
+        sidecar = store.get_session_state(search["search_id"])["semantic_sidecar"]
+        flagged = {
+            item["full_name"] for item in sidecar["candidates"]
+            if item.get("selected_for_assessment")
+        }
+        self.assertEqual(flagged, {"labs/pacing", "labs/stride"})
+        self.assertEqual(sidecar["metrics"]["semantic_assessment_count"], 2)
+        record = next(
+            item for item in sidecar["hypotheses"]
+            if item["term"] == "physiological pacing"
+        )
+        self.assertIsNone(record["assessment_repo"])
+
+    def test_unselected_semantic_candidate_stays_out_of_the_ranking(self):
+        pacing = repo("labs/pacing", 40, description="physiological pacing wearable")
+        stride = repo("labs/stride", 30, description="physiological pacing coach")
+        timer = repo("tools/timer", 300, description="pomodoro timer")
+        github = FrozenGitHub(
+            [("focus", [timer]), ("physiological pacing", [pacing, stride])],
+            readmes={
+                "tools/timer": "# Timer\nA pomodoro timer.\n## Usage\nStart.",
+                "labs/pacing": "# Pacing\nphysiological pacing for runners.\n## Usage\nWear.",
+                "labs/stride": "# Stride\nphysiological pacing for walkers.\n## Usage\nWear.",
+            },
+        )
+        engine, store = self._engine(github)
+        search = engine.search(SearchRequest.from_dict(REQUEST), "deep")
+        iterated = engine.iterate(search["search_id"], _hypothesis(("physiological pacing", "focus")))
+        public = {item["full_name"]: item for item in iterated["candidates"]}
+        pacing_evidence = next(
+            item["id"] for item in public["labs/pacing"]["evidence"]
+            if item.get("kind") == "mechanism_match"
+        )
+        ranking = rank_search(store, search["search_id"], [
+            _selection(public["labs/pacing"], "physiological pacing", pacing_evidence),
+        ])
+        self.assertEqual(ranking["next_action"], "done")
+        self.assertEqual([item["repo"] for item in ranking["items"]], ["labs/pacing"])
+        self.assertNotIn("labs/stride", [item["repo"] for item in ranking["items"]])
+        self.assertEqual(ranking["rejected_items"], [])
+
+    def test_worst_case_sidecar_round_stays_within_the_output_limit(self):
+        # A full base shortlist plus a cap-sized set of sidecar matches is the heaviest
+        # round the Agent can be handed; the compaction ladder must absorb it.
+        request = SearchRequest.from_dict({
+            **REQUEST,
+            "mechanisms": ["pomodoro", "distraction blocking", "timeboxing", "body doubling"],
+        })
+        groups = {
+            "pomodoro": "pomodoro timer for deep work",
+            "distraction blocking": "website blocker for distraction blocking",
+            "timeboxing": "timeboxing planner for focused sprints",
+            "body doubling": "body doubling session partner",
+        }
+        base = []
+        readmes = {}
+        searches = []
+        counter = 0
+        for needle, description in groups.items():
+            items = []
+            for index in range(10):
+                item = repo(
+                    f"owner{counter}/tool-{index}", 500 - counter * 10 - index,
+                    description=f"{description} number {index}", topics=["focus"],
+                )
+                counter += 1
+                items.append(item)
+                readmes[item["full_name"]] = (
+                    f"# Tool\n{description} number {index}.\n## Usage\nRun {index}."
+                )
+            searches.append((needle, items))
+
+        def semantic(prefix, needle):
+            return [
+                repo(
+                    f"labs{counter}/{prefix}-{index}", 90 - index,
+                    description=f"{needle} " + "wearable telemetry data for athletes " * 7,
+                )
+                for index in range(10)
+            ]
+
+        # FrozenGitHub serves at most 10 items per query, so the worst case needs both
+        # queries of both hypotheses to return disjoint repositories.
+        for needle in groups:
+            for term in ("physiological pacing", "attention pacing"):
+                if needle in term or term in needle:
+                    raise AssertionError("fixture needles must not shadow each other")
+        pacing_pure = semantic("pacing-a", "physiological pacing")
+        pacing_bridge = semantic("pacing-b", "physiological pacing")
+        attention_pure = semantic("attention-a", "attention pacing")
+        attention_bridge = semantic("attention-b", "attention pacing")
+        searches.extend([
+            ('"physiological pacing" "focus"', pacing_bridge),
+            ('"physiological pacing"', pacing_pure),
+            ('"attention pacing" "focus"', attention_bridge),
+            ('"attention pacing"', attention_pure),
+        ])
+        github = FrozenGitHub(searches, readmes=readmes)
+        engine, _store = self._engine(github)
+        search = engine.search(request, "deep")
+        iterated = engine.iterate(search["search_id"], _hypothesis(
+            ("physiological pacing", "focus"), ("attention pacing", "focus"),
+        ))
+        offered = {item["full_name"] for item in (
+            pacing_pure + pacing_bridge + attention_pure + attention_bridge
+        )}
+        names = {item["full_name"] for item in iterated["candidates"]}
+        base_shortlisted = {
+            item["full_name"] for item in iterated["candidates"]
+            if item["full_name"].startswith("owner")
+        }
+        self.assertGreaterEqual(len(base_shortlisted), SHORTLIST_LIMIT - 1)
+        self.assertEqual(len(offered), SEMANTIC_CANDIDATE_CAP)
+        self.assertTrue(offered.issubset(names))
+        for item in iterated["candidates"]:
+            if item["full_name"] in offered:
+                self.assertTrue(item.get("evidence"))
+        self.assertLessEqual(_wire_size(iterated), SEARCH_OUTPUT_MAX_BYTES)
+        self.assertEqual(iterated["coverage"]["output_bytes"], _wire_size(iterated))
 
     def test_sidecar_only_evidence_reaches_assessment_without_original_problem_words(self):
         pacing = repo(

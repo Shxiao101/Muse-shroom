@@ -281,10 +281,13 @@ def rank_search(
         "mechanisms_shown": _unique_labels([*presented_before, *selected_labels]),
         "new_mechanisms_introduced": introduced,
     }
-    # A selection where every item failed verification is not a finished search. Saving
-    # it and reporting "done" would strand the Agent: the Skill treats rank-with-done as
-    # terminal, so it could never resubmit corrected quotes.
-    recoverable = not items and bool(rejected)
+    # Any rejection means the rank is not final. Saving it and reporting "done" would
+    # strand the Agent: the Skill treats rank-with-done as terminal, so it could never
+    # resubmit corrected quotes and the rejected repositories would be lost. The escape
+    # from a quote the Agent cannot fix is to resubmit only the passing items, which
+    # produces zero rejections and terminates; a re-rank is free because rank_search
+    # performs no network calls.
+    recoverable = bool(rejected)
     result = {
         "schema_version": 3,
         "search_id": search_id,

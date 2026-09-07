@@ -136,15 +136,31 @@ class RankingTests(unittest.TestCase):
         self.assertEqual(corrected["display_order"], ["owner/first"])
         self.assertIsNotNone(self.store.get_ranking(self.search_id))
 
-    def test_one_accepted_item_is_terminal_and_saved(self):
+    def test_partially_rejected_rank_is_not_terminal(self):
         result = rank_search(self.store, self.search_id, [
             selected(self.first, label="commitment device"),
             selected(self.second, label="ambient feedback", quote="Absent from the snapshot"),
         ])
 
-        self.assertEqual(result["next_action"], "done")
+        self.assertEqual(result["next_action"], "rank")
         self.assertEqual(result["display_order"], ["owner/first"])
+        self.assertEqual([item["repo"] for item in result["items"]], ["owner/first"])
         self.assertEqual(len(result["rejected_items"]), 1)
+        self.assertIsNone(self.store.get_ranking(self.search_id))
+
+    def test_resubmitting_only_the_passing_item_terminates_and_saves(self):
+        partial = rank_search(self.store, self.search_id, [
+            selected(self.first, label="commitment device"),
+            selected(self.second, label="ambient feedback", quote="Absent from the snapshot"),
+        ])
+        self.assertEqual(partial["next_action"], "rank")
+        self.assertIsNone(self.store.get_ranking(self.search_id))
+
+        final = rank_search(self.store, self.search_id, [
+            selected(self.first, label="commitment device"),
+        ])
+        self.assertEqual(final["next_action"], "done")
+        self.assertEqual(final["display_order"], ["owner/first"])
         self.assertIsNotNone(self.store.get_ranking(self.search_id))
 
     def test_single_line_quote_verifies_against_wrapped_recorded_text(self):
