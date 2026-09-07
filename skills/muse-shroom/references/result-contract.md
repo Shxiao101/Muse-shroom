@@ -43,7 +43,7 @@ Boundary roles are Agent assignments:
 
 Read `next_action` after rank. `done` means the rank is terminal. Do not call search, observe, inspect, or diagnostics afterward. Present accepted items in `display_order` and explain any rejected items when relevant.
 
-`rank` means every item failed mechanical verification, nothing was saved, and the session is still open. Read each `rejected_items` entry — `reasons` says what failed and `evidence_ids_checked` says which evidence was examined, which distinguishes citing the wrong evidence from quoting it wrongly. Fix the selection and call `muse_rank` again. Do not search again.
+`rank` means at least one item failed mechanical verification, so the rank is not final: accepted items are returned but nothing was saved, and the session is still open. Read each `rejected_items` entry — `reasons` says what failed and `evidence_ids_checked` says which evidence was examined, which distinguishes citing the wrong evidence from quoting it wrongly. Fix the selection and call `muse_rank` again. Do not search again. When a quote cannot be corrected, resubmit only the passing items: a submission with zero rejections returns `done` and saves the ranking.
 
 Do not append a second priority, recommendation, or best-first order.
 
