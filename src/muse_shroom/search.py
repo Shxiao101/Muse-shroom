@@ -36,7 +36,7 @@ from .sidecar import (
     SEMANTIC_README_PER_HYPOTHESIS, SEMANTIC_RELEASE_LIMIT,
     apply_semantic_mechanism, base_ledger_entry, empty_sidecar_state,
     hypothesis_record, plan_sidecar_queries, public_hypothesis, refresh_statuses,
-    select_assessment_candidate, select_enrichment_targets, sidecar_used_query_budget,
+    select_enrichment_targets, sidecar_used_query_budget,
     split_additions, validate_host_hypotheses,
 )
 from .queries import (
@@ -391,6 +391,18 @@ def _compact_search_output(output: dict[str, Any], limit: int = SEARCH_OUTPUT_MA
     output["coverage"]["candidate_details_truncated"] = True
     output["coverage"]["output_truncation_level"] = "assessment_minimal"
     if _sync_output_bytes(output) > limit:
+        # A mechanism-rich sidecar round can offer every recalled candidate at once;
+        # trim to cite-and-quote fields rather than raise, because a dropped round
+        # loses the iterations that produced it.
+        for item in candidates:
+            quote_grade = _quote_grade_candidate(item)
+            item.clear()
+            item.update(quote_grade)
+        # observation already carries both; the top-level copies are pure repetition.
+        output.pop("semantic_hypotheses", None)
+        output.pop("sidecar_metrics", None)
+        output["coverage"]["output_truncation_level"] = "quote_grade"
+    if _sync_output_bytes(output) > limit:
         observation = output.get("observation") or {}
         for key in (
             "discovered_term_evidence", "confirmation_queue", "mechanism_confirmations",
@@ -462,6 +474,83 @@ def public_candidate(candidate: dict[str, Any], *, detailed: bool = False) -> di
             candidate, {str(item.get("name") or "").casefold() for item in mechanisms},
         )
     return result
+
+
+def _public_semantic_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Cite-and-quote projection of a selectable semantic candidate.
+
+    Every candidate whose recorded text matches the hypothesis is offered, so the
+    wire round carries only what the Agent needs to cite the evidence and copy the
+    quote. Full facts stay in session state, where rank-time verification reads
+    them, and `_compact_search_output` trims further instead of dropping rows.
+    """
+    evidence = []
+    for item in candidate.get("evidence") or []:
+        if item.get("kind") != "mechanism_match":
+            continue
+        matches = []
+        for match in (item.get("facts") or {}).get("mechanisms") or []:
+            text = " ".join(str(match.get("text") or "").split())[:MECHANISM_EVIDENCE_CHARS]
+            if not text:
+                continue
+            # hypothesis_id is already embedded in the evidence id and in
+            # semantic_hypotheses.evidence_repos; the quote is what must be copied.
+            trimmed = {
+                key: match[key]
+                for key in ("mechanism", "source_field")
+                if match.get(key) is not None
+            }
+            matches.append({**trimmed, "text": text})
+        if matches:
+            evidence.append({
+                "id": item.get("id"), "kind": "mechanism_match",
+                "facts": {"mechanisms": matches, "untrusted_source": True},
+            })
+    return {
+        "full_name": candidate.get("full_name"),
+        "html_url": candidate.get("html_url"),
+        "evidence": evidence,
+    }
+
+
+def _quote_grade_candidate(item: dict[str, Any]) -> dict[str, Any]:
+    """Last compaction rung: reduce a candidate to its cite-and-quote core.
+
+    Trimming detail is recoverable for the Agent; exhausting the ladder raises and
+    costs the whole round, so this exists to keep every offered candidate visible.
+    """
+    keep: list[dict[str, Any]] = []
+    for entry in item.get("evidence") or []:
+        if entry.get("kind") == "mechanism_match":
+            matches = []
+            for match in (entry.get("facts") or {}).get("mechanisms") or []:
+                text = " ".join(str(match.get("text") or "").split())[:100]
+                if not text:
+                    continue
+                # Provenance is a luxury at the last rung: keep the term and the quote.
+                matches.append({
+                    "mechanism": match.get("mechanism"), "text": text,
+                })
+                break
+            if matches:
+                keep.append({
+                    "id": entry.get("id"), "kind": "mechanism_match",
+                    "facts": {"mechanisms": matches, "untrusted_source": True},
+                })
+        elif entry.get("kind") == "readme_excerpt":
+            keep.append(_compact_excerpt(entry, 100))
+        if len(keep) >= 2:
+            break
+    minimal = {
+        "full_name": item.get("full_name"),
+        "html_url": item.get("html_url"),
+    }
+    description = " ".join(str(item.get("description") or "").split())
+    if description:
+        minimal["description"] = description[:96]
+    if keep:
+        minimal["evidence"] = keep
+    return minimal
 
 
 class SearchEngine:
@@ -1572,6 +1661,12 @@ class SearchEngine:
         metrics["semantic_queries_executed"] = int(metrics.get("semantic_queries_executed") or 0) + len(executed)
         metrics["sidecar_api_calls"] = int(metrics.get("sidecar_api_calls") or 0) + len(executed)
 
+        published = {
+            repo_key(item): item
+            for item in output.get("candidates") or []
+            if repo_key(item)
+        }
+        offered = 0
         for record in new_records:
             recalled = [
                 item for item in sink.values()
@@ -1607,48 +1702,47 @@ class SearchEngine:
                     continue
                 apply_semantic_mechanism(candidate, record["term"], record["id"])
             for candidate in recalled:
-                if apply_semantic_mechanism(candidate, record["term"], record["id"]):
-                    repo = str(candidate.get("full_name") or "")
-                    if repo and repo not in record["evidence_repos"]:
-                        record["evidence_repos"].append(repo)
-                    if repo_key(candidate) in base_candidates:
-                        if repo not in record["overlap_repos"]:
-                            record["overlap_repos"].append(repo)
-            regular_names = [
-                str(item.get("full_name") or "") for item in (output.get("candidates") or [])
-            ]
-            chosen = select_assessment_candidate(
-                recalled, term=record["term"], regular_shortlist=regular_names,
-            )
-            if chosen is not None:
-                record["assessment_repo"] = chosen.get("full_name")
-                chosen["semantic_assessment"] = True
-                chosen["selected_for_assessment"] = True
-                metrics["semantic_assessment_count"] = int(
-                    metrics.get("semantic_assessment_count") or 0
-                ) + 1
-                if repo_key(chosen) not in base_candidates:
-                    output.setdefault("candidates", []).append(public_candidate(chosen))
-                    coverage = output.setdefault("coverage", {})
-                    coverage["assessment_candidate_count"] = len(output["candidates"])
+                if not apply_semantic_mechanism(candidate, record["term"], record["id"]):
+                    continue
+                repo = str(candidate.get("full_name") or "")
+                if repo and repo not in record["evidence_repos"]:
+                    record["evidence_repos"].append(repo)
+                if repo_key(candidate) in base_candidates and repo not in record["overlap_repos"]:
+                    record["overlap_repos"].append(repo)
+                # Every match is selectable and visible; code picks no assessment
+                # candidate. ranking._mark_sidecar_selection derives assessment_repo
+                # from what the Agent actually submits at rank time.
+                if not candidate.get("semantic_assessment"):
+                    candidate["semantic_assessment"] = True
+                    candidate["selected_for_assessment"] = True
+                    offered += 1
+                existing = published.get(repo_key(candidate))
+                if existing is not None:
+                    named = {
+                        str(m.get("name") or "").casefold()
+                        for m in existing.get("mechanisms") or []
+                    }
+                    for mechanism in candidate.get("mechanisms") or []:
+                        label = str(mechanism.get("name") or "").casefold()
+                        if label and label not in named:
+                            existing.setdefault("mechanisms", []).append(mechanism)
+                            named.add(label)
+                    existing.setdefault("evidence", [])
+                    seen_ids = {str(ev.get("id")) for ev in existing["evidence"]}
+                    for evidence in candidate.get("evidence") or []:
+                        if str(evidence.get("id")) not in seen_ids:
+                            existing["evidence"].append(evidence)
+                            seen_ids.add(str(evidence.get("id")))
                 else:
-                    for item in output.get("candidates") or []:
-                        if repo_key(item) == repo_key(chosen):
-                            existing = {str(m.get("name") or "").casefold() for m in item.get("mechanisms") or []}
-                            for mechanism in chosen.get("mechanisms") or []:
-                                if str(mechanism.get("name") or "").casefold() not in existing:
-                                    item.setdefault("mechanisms", []).append(mechanism)
-                            item.setdefault("evidence", [])
-                            seen_ids = {str(ev.get("id")) for ev in item["evidence"]}
-                            for evidence in chosen.get("evidence") or []:
-                                if str(evidence.get("id")) not in seen_ids:
-                                    item["evidence"].append(evidence)
+                    public_item = _public_semantic_candidate(candidate)
+                    output.setdefault("candidates", []).append(public_item)
+                    published[repo_key(candidate)] = public_item
                 if (
-                    repo_key(chosen) not in base_candidates
+                    repo_key(candidate) not in base_candidates
                     and metrics.get("semantic_release_lookups", 0) < SEMANTIC_RELEASE_LIMIT
                 ):
                     try:
-                        self._enrich_releases([chosen])
+                        self._enrich_releases([candidate])
                         metrics["semantic_release_lookups"] = int(
                             metrics.get("semantic_release_lookups") or 0
                         ) + 1
@@ -1658,6 +1752,12 @@ class SearchEngine:
             if recall_failed:
                 record["failed"] = True
 
+        metrics["semantic_assessment_count"] = int(
+            metrics.get("semantic_assessment_count") or 0
+        ) + offered
+        output.setdefault("coverage", {})["assessment_candidate_count"] = len(
+            output.get("candidates") or []
+        )
         refresh_statuses(new_records)
         sidecar["hypotheses"] = records + new_records
         sidecar["candidates"] = list(sink.values())[:SEMANTIC_CANDIDATE_CAP]

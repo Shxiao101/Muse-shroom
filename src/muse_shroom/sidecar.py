@@ -21,7 +21,6 @@ SEMANTIC_QUERY_BUDGET = 4
 SEMANTIC_HYPOTHESIS_LIMIT = 2
 SEMANTIC_CANDIDATE_CAP = 40
 SEMANTIC_README_PER_HYPOTHESIS = 2
-SEMANTIC_ASSESSMENT_PER_HYPOTHESIS = 1
 SEMANTIC_RELEASE_LIMIT = 2
 SEMANTIC_QUERIES_PER_HYPOTHESIS = 2
 HOST_HYPOTHESIS_WINDOW = (1, 2)
@@ -348,36 +347,6 @@ def select_enrichment_targets(
         str(item.get("full_name") or "").lower(),
     ))
     return pending[: max(0, limit)]
-
-
-def select_assessment_candidate(
-    recalled: list[dict[str, Any]],
-    *,
-    term: str,
-    regular_shortlist: Iterable[str],
-) -> dict[str, Any] | None:
-    shortlist = {name.casefold() for name in regular_shortlist if str(name).strip()}
-    evidenced = [
-        item for item in recalled
-        if any(
-            str(mechanism.get("name") or "").casefold() == term.casefold()
-            and mechanism.get("semantic_origin")
-            for mechanism in item.get("mechanisms") or []
-        )
-    ]
-    if not evidenced:
-        return None
-    overlap = [
-        item for item in evidenced
-        if str(item.get("full_name") or "").casefold() in shortlist
-    ]
-    pool = overlap or evidenced
-    pool.sort(key=lambda item: (
-        0 if str(item.get("full_name") or "").casefold() in shortlist else 1,
-        -int(item.get("stargazers_count") or 0),
-        str(item.get("full_name") or "").lower(),
-    ))
-    return pool[0]
 
 
 def derive_hypothesis_status(record: dict[str, Any]) -> str:

@@ -102,7 +102,7 @@ If `stop.should_stop` is true, stop iterating. `stop.signals` (`no_new_mechanism
 
 Hard stops recorded in `stop.reasons`: `agent_stop`, `max_iterations`, `query_budget_exhausted`, `duplicate_queries`, `consecutive_no_gain`.
 
-Default deep-mode budget: 3 iterations after the initial search, 6 keyword queries per iteration, 30 session search queries, 15 README enrichments per iteration, a 250-candidate pool. The semantic sidecar is extra: up to 2 host hypotheses, 2 queries each, 4 README enrichments, and up to 2 extra assessment candidates. Quick mode stays at 100 candidates and does not iterate or invoke the sidecar.
+Default deep-mode budget: 3 iterations after the initial search, 6 keyword queries per iteration, 30 session search queries, 15 README enrichments per iteration, a 250-candidate pool. The semantic sidecar is extra: up to 2 host hypotheses, 2 queries each, 4 README enrichments. Every recalled candidate whose recorded text matches the hypothesis term is offered in the same response as a selectable assessment candidate carrying its `mechanism_match` evidence; code picks none of them, and the round stays within the output cap by publishing those candidates in a lean cite-and-quote form. Quick mode stays at 100 candidates and does not iterate or invoke the sidecar.
 
 Follow `next_action` from the CLI: after deep `search` it is `iterate`; after iterate it is `iterate` or `rank`.
 
