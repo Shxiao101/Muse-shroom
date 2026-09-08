@@ -12,7 +12,7 @@ from typing import Any, Iterable
 from .models import (
     ContractError, ExplorationAddition, SearchHypothesis, SearchRequest, repo_key,
 )
-from .queries import _qualifiers, _quote, query_fingerprint, term_blocked_by_negative
+from .queries import qualifiers, quote_term, query_fingerprint, term_blocked_by_negative
 from .text import contains, normalize, normalized_lines, readme_match
 
 
@@ -185,18 +185,18 @@ def plan_sidecar_queries(
     remaining_budget: int = SEMANTIC_QUERY_BUDGET,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Emit separately quoted pure and bridge queries. Never one combined phrase."""
-    suffix = _qualifiers(request)
+    suffix = qualifiers(request)
     known = set(known_fingerprints)
     planned: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     remaining = max(0, remaining_budget)
 
     def make(term: str, kind: str, record: dict[str, Any], extra: str | None = None) -> dict[str, Any] | None:
-        quoted = _quote(term)
+        quoted = quote_term(term)
         if not quoted:
             return None
         if extra:
-            extra_quoted = _quote(extra)
+            extra_quoted = quote_term(extra)
             if not extra_quoted:
                 return None
             query = f"{quoted} {extra_quoted} in:name,description,topics,readme {suffix}"

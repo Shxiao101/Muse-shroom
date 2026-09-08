@@ -153,7 +153,7 @@ CONFIRMATION_SOURCE_SCORES = {
 }
 
 
-def _canonical_token_key(value: str) -> str:
+def canonical_token_key(value: str) -> str:
     return " ".join(
         MECHANISM_TOKEN_EQUIVALENTS.get(token, token)
         for token in normalize(value).split()
@@ -545,7 +545,7 @@ def normalize_mechanism_surfaces(
     normalized_surfaces = {normalize(value): value for value in surfaces}
     equivalent_surfaces: dict[str, str] = {}
     for value in surfaces:
-        equivalent_surfaces.setdefault(_canonical_token_key(value), value)
+        equivalent_surfaces.setdefault(canonical_token_key(value), value)
     canonical_values: list[str] = []
     mappings: list[dict[str, str]] = []
     for surface in surfaces:
@@ -557,7 +557,7 @@ def normalize_mechanism_surfaces(
             tokens = tokens[1:]
             canonical_key = " ".join(tokens)
             reason = "fragment_prefix"
-        equivalent_key = _canonical_token_key(canonical_key)
+        equivalent_key = canonical_token_key(canonical_key)
         equivalent = equivalent_surfaces.get(equivalent_key)
         if reason == "identity" and equivalent and normalize(equivalent) != key:
             canonical_key = normalize(equivalent)
@@ -1105,10 +1105,10 @@ def boundary_delta(current: dict[str, Any], previous: dict[str, Any] | None) -> 
     def canonical_new(current_values: list[str], previous_values: list[str],
                       excluded_values: Iterable[str] = ()) -> list[str]:
         old = {
-            _canonical_token_key(value)
+            canonical_token_key(value)
             for value in (*previous_values, *excluded_values)
         }
-        return [value for value in current_values if _canonical_token_key(value) not in old]
+        return [value for value in current_values if canonical_token_key(value) not in old]
 
     return BoundaryDelta(
         new_mechanisms=canonical_new(

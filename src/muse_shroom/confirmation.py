@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from .boundary import _canonical_token_key
+from .boundary import canonical_token_key
 from .text import normalize, token_overlap
 
 
@@ -118,7 +118,7 @@ def plan_confirmation_candidates(boundary: dict[str, Any],
         if str(item.get("confirmation_status") or "") in COMPLETED_STATUSES
     }
     confirmed_keys = [
-        _canonical_token_key(str(item.get("candidate") or ""))
+        canonical_token_key(str(item.get("candidate") or ""))
         for item in existing
         if item.get("confirmation_status") == "confirmed"
     ]
@@ -126,10 +126,10 @@ def plan_confirmation_candidates(boundary: dict[str, Any],
         dict(item) for item in boundary.get("confirmation_queue") or []
         if normalize(str(item.get("candidate") or "")) not in completed
         and not any(
-            set(_canonical_token_key(str(item.get("candidate") or "")).split())
+            set(canonical_token_key(str(item.get("candidate") or "")).split())
             <= set(previous.split())
             or set(previous.split())
-            <= set(_canonical_token_key(str(item.get("candidate") or "")).split())
+            <= set(canonical_token_key(str(item.get("candidate") or "")).split())
             for previous in confirmed_keys if previous
         )
     ]
@@ -141,14 +141,14 @@ def plan_confirmation_candidates(boundary: dict[str, Any],
     ))
     unique: list[dict[str, Any]] = []
     seen = [
-        (_canonical_token_key(str(item.get("candidate") or "")), item)
+        (canonical_token_key(str(item.get("candidate") or "")), item)
         for item in existing
         if item.get("confirmation_status") == "confirmed"
-        and _canonical_token_key(str(item.get("candidate") or ""))
+        and canonical_token_key(str(item.get("candidate") or ""))
     ]
     skipped: list[dict[str, Any]] = []
     for item in queue:
-        key = _canonical_token_key(str(item.get("candidate") or ""))
+        key = canonical_token_key(str(item.get("candidate") or ""))
         if not key:
             continue
         if any(
