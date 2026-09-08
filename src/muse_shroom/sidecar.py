@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from .boundary import _contains, _normalized, _readme_match
 from .models import (
     ContractError, ExplorationAddition, SearchHypothesis, SearchRequest, repo_key,
 )
-from .queries import _qualifiers, _quote, query_fingerprint, term_blocked_by_negative
+from .queries import qualifiers, quote_term, query_fingerprint, term_blocked_by_negative
+from .text import contains, normalize, normalized_lines, readme_match
 
 
 HOST_HYPOTHESIS = "host_hypothesis"
@@ -81,14 +81,14 @@ def problem_anchor_map(request: SearchRequest) -> dict[str, str]:
     mapping: dict[str, str] = {}
     for concept in request.problem_concepts:
         for term in concept.terms():
-            key = _normalized(term)
+            key = normalize(term)
             if key:
                 mapping.setdefault(key, term)
     return mapping
 
 
 def _host_term_set(additions: Iterable[ExplorationAddition]) -> set[str]:
-    return {_normalized(item.term) for item in additions if item.term.strip()}
+    return {normalize(item.term) for item in additions if item.term.strip()}
 
 
 def validate_host_hypotheses(
@@ -113,9 +113,9 @@ def validate_host_hypotheses(
             f"at most {SEMANTIC_HYPOTHESIS_LIMIT} host_hypothesis additions are allowed per session"
         )
     anchors = problem_anchor_map(request)
-    exclusions = {_normalized(value) for value in request.exclusions if _normalized(value)}
-    blocked = {_normalized(value) for value in negatives if _normalized(value)}
-    seen_existing = {_normalized(item.get("term")) for item in existing}
+    exclusions = {normalize(value) for value in request.exclusions if normalize(value)}
+    blocked = {normalize(value) for value in negatives if normalize(value)}
+    seen_existing = {normalize(item.get("term")) for item in existing}
     seen_round: set[str] = set()
     host_keys = _host_term_set(host)
     ordinary_fields = [
@@ -124,13 +124,13 @@ def validate_host_hypotheses(
         *hypothesis.promote_discovered_terms,
     ]
     for value in ordinary_fields:
-        if _normalized(value) in host_keys:
+        if normalize(value) in host_keys:
             raise ContractError(
                 "host hypothesis terms must not be repeated in ordinary hypothesis fields; "
                 "the sidecar routes them"
             )
     for addition in host:
-        term_key = _normalized(addition.term)
+        term_key = normalize(addition.term)
         if not term_key:
             raise ContractError("host_hypothesis term is required")
         if term_key in seen_existing or term_key in seen_round:
@@ -147,7 +147,7 @@ def validate_host_hypotheses(
         anchor = str(addition.request_anchor or "").strip()
         if not anchor:
             raise ContractError("host_hypothesis requires request_anchor matching a problem concept or alias")
-        if _normalized(anchor) not in anchors:
+        if normalize(anchor) not in anchors:
             raise ContractError(
                 "host_hypothesis request_anchor must match an original problem_concepts term or alias"
             )
@@ -159,7 +159,7 @@ def validate_host_hypotheses(
 def hypothesis_record(
     addition: ExplorationAddition, *, iteration: int, index: int,
 ) -> dict[str, Any]:
-    hypothesis_id = f"h{iteration}:{index}:{_normalized(addition.term).replace(' ', '-')}"
+    hypothesis_id = f"h{iteration}:{index}:{normalize(addition.term).replace(' ', '-')}"
     return {
         "id": hypothesis_id,
         "term": addition.term,
@@ -185,18 +185,18 @@ def plan_sidecar_queries(
     remaining_budget: int = SEMANTIC_QUERY_BUDGET,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Emit separately quoted pure and bridge queries. Never one combined phrase."""
-    suffix = _qualifiers(request)
+    suffix = qualifiers(request)
     known = set(known_fingerprints)
     planned: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     remaining = max(0, remaining_budget)
 
     def make(term: str, kind: str, record: dict[str, Any], extra: str | None = None) -> dict[str, Any] | None:
-        quoted = _quote(term)
+        quoted = quote_term(term)
         if not quoted:
             return None
         if extra:
-            extra_quoted = _quote(extra)
+            extra_quoted = quote_term(extra)
             if not extra_quoted:
                 return None
             query = f"{quoted} {extra_quoted} in:name,description,topics,readme {suffix}"
@@ -246,23 +246,20 @@ def match_hypothesized_term(candidate: dict[str, Any], term: str) -> list[dict[s
     description = str(candidate.get("description") or "")
     topics = [str(value) for value in candidate.get("topics") or []]
     readme = str(candidate.get("readme") or "")
-    readme_lines = [
-        (index, line, _normalized(line))
-        for index, line in enumerate(readme.splitlines(), 1)
-    ]
+    readme_lines = normalized_lines(readme)
     matches: list[dict[str, Any]] = []
-    readme_hit = _readme_match(readme_lines, term)
+    readme_hit = readme_match(readme_lines, term)
     if readme_hit:
         text, line = readme_hit
         matches.append({
             "source": "readme", "matched_term": term, "text": text, "line_start": line,
         })
-    if _contains(description, term):
+    if contains(description, term):
         matches.append({
             "source": "description", "matched_term": term,
             "text": " ".join(description.split())[:220],
         })
-    topic = next((value for value in topics if _contains(value.replace("-", " "), term)), None)
+    topic = next((value for value in topics if contains(value.replace("-", " "), term)), None)
     if topic is not None:
         matches.append({"source": "topics", "matched_term": term, "text": topic})
     unique: list[dict[str, Any]] = []

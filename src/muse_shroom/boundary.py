@@ -5,9 +5,12 @@ from collections import Counter
 from typing import Any, Iterable
 
 from .models import BoundaryDelta, Concept, SearchBoundary, SearchRequest
+from .text import (
+    TOKEN_RE, contains, contains_normalized, normalize, normalized_lines,
+    readme_match, token_overlap,
+)
 
 
-TOKEN_RE = re.compile(r"[A-Za-z0-9_+#]+|[\u3400-\u9fff]+")
 SEGMENT_RE = re.compile(
     r"(?:[.!?;,|:\r\n]+|\s[-–—]\s|[\U0001F000-\U0001FAFF]|(?=\s/[a-z][\w-]+\s))"
 )
@@ -150,32 +153,10 @@ CONFIRMATION_SOURCE_SCORES = {
 }
 
 
-def _normalized(value: str) -> str:
-    return " ".join(TOKEN_RE.findall(value.casefold().replace("_", " ")))
-
-
-def _contains_normalized(haystack: str, needle: str) -> bool:
-    if not needle or not haystack:
-        return False
-    if re.search(r"[\u3400-\u9fff]", needle):
-        return needle.replace(" ", "") in haystack.replace(" ", "")
-    return f" {needle} " in f" {haystack} "
-
-
-def _contains(surface: str, term: str) -> bool:
-    return _contains_normalized(_normalized(surface), _normalized(term))
-
-
-def _token_overlap(left: str, right: str) -> float:
-    left_tokens = set(_normalized(left).split())
-    right_tokens = set(_normalized(right).split())
-    return len(left_tokens & right_tokens) / max(1, len(left_tokens | right_tokens))
-
-
-def _canonical_token_key(value: str) -> str:
+def canonical_token_key(value: str) -> str:
     return " ".join(
         MECHANISM_TOKEN_EQUIVALENTS.get(token, token)
-        for token in _normalized(value).split()
+        for token in normalize(value).split()
     )
 
 
@@ -212,7 +193,7 @@ def _confirmation_priority(item: dict[str, Any], known_terms: Iterable[str]) -> 
         + (5 if transfer_plausible else 0)
     )))
     overlap = max(
-        (_token_overlap(candidate, str(term)) for term in known_terms if str(term).strip()),
+        (token_overlap(candidate, str(term)) for term in known_terms if str(term).strip()),
         default=0.0,
     )
     novelty = round(max(0, 100 * (1 - overlap)))
@@ -246,7 +227,7 @@ def _confirmation_priority(item: dict[str, Any], known_terms: Iterable[str]) -> 
 
 def _request_relevance(text: str, concepts: Iterable[Concept]) -> tuple[bool, bool]:
     """Return exact-phrase and informative-token request relevance signals."""
-    normalized = _normalized(text)
+    normalized = normalize(text)
     def token_key(token: str) -> str:
         return token[:-1] if len(token) > 4 and token.endswith("s") else token
 
@@ -255,10 +236,10 @@ def _request_relevance(text: str, concepts: Iterable[Concept]) -> tuple[bool, bo
     token_match = False
     for concept in concepts:
         for raw in concept.terms():
-            term = _normalized(raw)
+            term = normalize(raw)
             if not term:
                 continue
-            if _contains_normalized(normalized, term):
+            if contains_normalized(normalized, term):
                 exact = True
             informative = {
                 token_key(token) for token in term.split()
@@ -289,25 +270,25 @@ def _candidate_primary_text(candidate: dict[str, Any]) -> str:
 
 
 def _incidental_source(candidate: dict[str, Any], source_field: str, text: str) -> tuple[bool, str]:
-    normalized = _normalized(text)
-    primary = _normalized(_candidate_primary_text(candidate))
-    if any(_contains_normalized(normalized, _normalized(cue)) for cue in INCIDENTAL_CONTEXT_CUES):
+    normalized = normalize(text)
+    primary = normalize(_candidate_primary_text(candidate))
+    if any(contains_normalized(normalized, normalize(cue)) for cue in INCIDENTAL_CONTEXT_CUES):
         return True, "incidental_readme"
     if re.search(
         r"\bv?\d+\.\d+(?:\.\d+)?\b|\bpr\s*#\d+\b",
         str(text).casefold(),
     ):
         return True, "changelog_or_release"
-    if any(_contains_normalized(primary, _normalized(cue)) for cue in LIST_REPOSITORY_CUES):
+    if any(contains_normalized(primary, normalize(cue)) for cue in LIST_REPOSITORY_CUES):
         return True, "list_item"
     repo_name = str(candidate.get("full_name") or "").split("/")[-1].casefold()
     topic_keys = {
-        _normalized(str(value).replace("-", " "))
+        normalize(str(value).replace("-", " "))
         for value in candidate.get("topics") or []
     }
     if repo_name.startswith("awesome-") or {"awesome", "awesome list"} & topic_keys:
         return True, "list_item"
-    repo_tokens = set(_normalized(repo_name).split())
+    repo_tokens = set(normalize(repo_name).split())
     if repo_tokens & {"awesome", "catalog", "papers", "resources"}:
         return True, "list_item"
     if re.search(
@@ -322,12 +303,12 @@ def _incidental_source(candidate: dict[str, Any], source_field: str, text: str) 
 
 
 def _specificity_class(term: str) -> str:
-    tokens = _normalized(term).split()
+    tokens = normalize(term).split()
     if not tokens:
         return "project_category"
     if len(tokens) >= 2 and tokens[0] in GENERIC_MECHANISM_MODIFIERS:
         return "project_category"
-    if tokens[-1] in PACKAGING_HEADS or _normalized(term) in PACKAGING_PHRASES:
+    if tokens[-1] in PACKAGING_HEADS or normalize(term) in PACKAGING_PHRASES:
         return "packaging"
     if tokens[-1] in UMBRELLA_CATEGORY_TAILS and (
         len(tokens) == 1 or tokens[0] in BROAD_CATEGORY_HEADS
@@ -366,12 +347,12 @@ def _specificity_with_context(term: str, sources: Iterable[dict[str, Any]]) -> s
     specificity = _specificity_class(term)
     if specificity != "artifact":
         return specificity
-    context = _normalized(" ".join(
+    context = normalize(" ".join(
         str(source.get("full_evidence_text") or source.get("evidence_text") or "")
         for source in sources
     ))
     if any(
-        _contains_normalized(context, cue)
+        contains_normalized(context, cue)
         for cue in ("methodology", "workflow pattern", "intervention method")
     ):
         return "workflow_pattern"
@@ -384,8 +365,8 @@ def mechanism_specificity(term: str, sources: Iterable[dict[str, Any]] = ()) -> 
 
 
 def _term_distance(text: str, term: str, anchors: Iterable[str]) -> int:
-    tokens = _normalized(text).split()
-    needle = _normalized(term).split()
+    tokens = normalize(text).split()
+    needle = normalize(term).split()
     if not tokens or not needle:
         return 999
 
@@ -399,7 +380,7 @@ def _term_distance(text: str, term: str, anchors: Iterable[str]) -> int:
     anchor_starts = [
         (index, len(sequence))
         for anchor in anchors
-        if (sequence := _normalized(anchor).split())
+        if (sequence := normalize(anchor).split())
         for index in starts(sequence)
     ]
     if not term_starts or not anchor_starts:
@@ -412,11 +393,11 @@ def _term_distance(text: str, term: str, anchors: Iterable[str]) -> int:
 
 
 def _hint_present(segment: str, phrase: str) -> bool:
-    normalized = _normalized(segment)
-    if _contains_normalized(normalized, phrase):
+    normalized = normalize(segment)
+    if contains_normalized(normalized, phrase):
         return True
-    compact = _normalized(re.sub(r"(?<=\w)-(?=\w)", "", segment))
-    return compact != normalized and _contains_normalized(compact, phrase)
+    compact = normalize(re.sub(r"(?<=\w)-(?=\w)", "", segment))
+    return compact != normalized and contains_normalized(compact, phrase)
 
 
 def _mechanism_window(tokens: list[str], end: int) -> str | None:
@@ -443,7 +424,7 @@ def _structured_phrases(text: Any) -> list[str]:
     """Extract short mechanism phrases without crossing prose boundaries."""
     phrases: set[str] = set()
     for segment in SEGMENT_RE.split(str(text or "")):
-        normalized = _normalized(segment)
+        normalized = normalize(segment)
         tokens = normalized.split()
         if not tokens:
             continue
@@ -466,7 +447,7 @@ def _structured_phrases(text: Any) -> list[str]:
 
 
 def _looks_mechanistic(term: str) -> bool:
-    tokens = _normalized(term).split()
+    tokens = normalize(term).split()
     return bool(tokens) and tokens[-1] not in NON_MECHANISM_ENDINGS and (
         bool(set(tokens) & MECHANISM_HINTS)
         or tokens[-1] in GENERIC_MECHANISM_SUFFIXES
@@ -506,11 +487,11 @@ def _evidence_excerpt(text: str, term: str, limit: int = 240) -> str:
 
 
 def _local_evidence_text(text: str, term: str) -> str:
-    key = _normalized(term)
+    key = normalize(term)
     return next(
         (
             segment for segment in SEGMENT_RE.split(str(text))
-            if _contains_normalized(_normalized(segment), key)
+            if contains_normalized(normalize(segment), key)
         ),
         str(text),
     )
@@ -518,7 +499,7 @@ def _local_evidence_text(text: str, term: str) -> str:
 
 def _source_mechanism_signal(source: dict[str, Any], term: str) -> bool:
     text = str(source.get("full_evidence_text") or source.get("evidence_text") or "")
-    tokens = _normalized(term).split()
+    tokens = normalize(term).split()
     if not tokens:
         return False
     if tokens[-1] in GENERIC_MECHANISM_SUFFIXES or set(tokens) & MECHANISM_HINTS:
@@ -542,12 +523,12 @@ def _overview_structure_signal(source: dict[str, Any], term: str) -> bool:
     if source.get("source_field") != "readme_overview":
         return False
     text = str(source.get("full_evidence_text") or source.get("evidence_text") or "")
-    normalized = _normalized(text)
+    normalized = normalize(text)
     cue = "table of contents"
-    key = _normalized(term)
+    key = normalize(term)
     return (
-        _contains_normalized(normalized, cue)
-        and _contains_normalized(normalized, key)
+        contains_normalized(normalized, cue)
+        and contains_normalized(normalized, key)
         and _term_distance(text, term, [cue]) <= 30
     )
 
@@ -558,17 +539,17 @@ def normalize_mechanism_surfaces(
     """Return stable canonical identities plus traceable surface mappings."""
     surfaces = list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
     evidence_by_term = {
-        _normalized(item.get("term")): item
-        for item in evidence if _normalized(item.get("term"))
+        normalize(item.get("term")): item
+        for item in evidence if normalize(item.get("term"))
     }
-    normalized_surfaces = {_normalized(value): value for value in surfaces}
+    normalized_surfaces = {normalize(value): value for value in surfaces}
     equivalent_surfaces: dict[str, str] = {}
     for value in surfaces:
-        equivalent_surfaces.setdefault(_canonical_token_key(value), value)
+        equivalent_surfaces.setdefault(canonical_token_key(value), value)
     canonical_values: list[str] = []
     mappings: list[dict[str, str]] = []
     for surface in surfaces:
-        key = _normalized(surface)
+        key = normalize(surface)
         tokens = key.split()
         canonical_key = key
         reason = "identity"
@@ -576,10 +557,10 @@ def normalize_mechanism_surfaces(
             tokens = tokens[1:]
             canonical_key = " ".join(tokens)
             reason = "fragment_prefix"
-        equivalent_key = _canonical_token_key(canonical_key)
+        equivalent_key = canonical_token_key(canonical_key)
         equivalent = equivalent_surfaces.get(equivalent_key)
-        if reason == "identity" and equivalent and _normalized(equivalent) != key:
-            canonical_key = _normalized(equivalent)
+        if reason == "identity" and equivalent and normalize(equivalent) != key:
+            canonical_key = normalize(equivalent)
             reason = "token_equivalence"
         if reason == "identity" and len(tokens) >= 3:
             shorter_terms = sorted(
@@ -600,9 +581,9 @@ def normalize_mechanism_surfaces(
                     reason = "shared_evidence_containment"
                     break
         canonical = normalized_surfaces.get(canonical_key, canonical_key)
-        if _normalized(canonical) not in {_normalized(value) for value in canonical_values}:
+        if normalize(canonical) not in {normalize(value) for value in canonical_values}:
             canonical_values.append(canonical)
-        if key != _normalized(canonical):
+        if key != normalize(canonical):
             mappings.append({
                 "surface_term": surface,
                 "canonical_term": canonical,
@@ -627,25 +608,12 @@ def _mechanism_concepts(request: SearchRequest) -> list[tuple[str, Concept, str]
     return result
 
 
-def _readme_match(lines: list[tuple[int, str, str]], term: str) -> tuple[str, int] | None:
-    needle = _normalized(term)
-    for index, line, normalized in lines:
-        if _contains_normalized(normalized, needle):
-            text = " ".join(line.strip().split())[:220]
-            if text:
-                return text, index
-    return None
-
-
 def annotate_candidate_mechanisms(candidate: dict[str, Any], request: SearchRequest) -> None:
     """Attach only mechanism labels supported by description, topics, or README text."""
     description = str(candidate.get("description") or "")
     topics = [str(value) for value in candidate.get("topics") or []]
     readme = str(candidate.get("readme") or "")
-    readme_lines = [
-        (index, line, _normalized(line))
-        for index, line in enumerate(readme.splitlines(), 1)
-    ]
+    readme_lines = normalized_lines(readme)
     full_name = str(candidate.get("full_name") or "").lower()
     mechanisms: list[dict[str, Any]] = []
     evidence_by_id = {
@@ -657,19 +625,19 @@ def annotate_candidate_mechanisms(candidate: dict[str, Any], request: SearchRequ
     for name, concept, role in _mechanism_concepts(request):
         matches: list[dict[str, Any]] = []
         for term in concept.terms():
-            readme_hit = _readme_match(readme_lines, term)
+            readme_hit = readme_match(readme_lines, term)
             if readme_hit:
                 text, line = readme_hit
                 matches.append({
                     "source": "readme", "matched_term": term, "text": text,
                     "line_start": line,
                 })
-            if _contains(description, term):
+            if contains(description, term):
                 matches.append({
                     "source": "description", "matched_term": term,
                     "text": " ".join(description.split())[:220],
                 })
-            topic = next((value for value in topics if _contains(value.replace("-", " "), term)), None)
+            topic = next((value for value in topics if contains(value.replace("-", " "), term)), None)
             if topic is not None:
                 matches.append({"source": "topics", "matched_term": term, "text": topic})
         unique_matches: list[dict[str, Any]] = []
@@ -748,29 +716,29 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
     """Return deterministic, source-backed terms that may expand the boundary."""
     candidate_list = list(candidates)
     known = {
-        _normalized(term)
+        normalize(term)
         for concept in (
             request.problem_concepts + request.mechanisms + request.exploration_directions
         )
         for term in concept.terms()
     }
     mechanism_known = {
-        _normalized(term)
+        normalize(term)
         for concept in request.mechanisms
         for term in concept.terms()
     }
     direction_known = {
-        _normalized(term)
+        normalize(term)
         for concept in request.problem_concepts + request.exploration_directions
         for term in concept.terms()
     }
     problem_known = {
-        _normalized(term)
+        normalize(term)
         for concept in request.problem_concepts
         for term in concept.terms()
     }
     exclusions = {
-        _normalized(value) for value in request.exclusions if _normalized(value)
+        normalize(value) for value in request.exclusions if normalize(value)
     }
     support_repos: dict[str, set[str]] = {}
     display: dict[str, str] = {}
@@ -780,19 +748,19 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
                    evidence_id: str, evidence_text: str, confidence: float,
                    relationship_backed: bool = False) -> None:
         value = " ".join(str(raw).replace("-", " ").split()).strip()
-        key = _normalized(value)
+        key = normalize(value)
         tokens = key.split()
         if (
             not key or key in known or key in GENERIC_DISCOVERED_TERMS
             or key in TECHNOLOGY_DISCOVERED_TERMS or len(key) < 3 or len(key) > 80
             or any("#" in token or any(character.isdigit() for character in token) for token in tokens)
             or (tokens and tokens[0] in PHRASE_BOUNDARY_TOKENS | VERB_BOUNDARY_TOKENS)
-            or any(_contains_normalized(key, exclusion) for exclusion in exclusions)
+            or any(contains_normalized(key, exclusion) for exclusion in exclusions)
             or any(
-                _contains_normalized(known_term, key) or _contains_normalized(key, known_term)
+                contains_normalized(known_term, key) or contains_normalized(key, known_term)
                 for known_term in known
             )
-            or any(_token_overlap(key, known_term) >= 0.3 for known_term in mechanism_known)
+            or any(token_overlap(key, known_term) >= 0.3 for known_term in mechanism_known)
         ):
             return
         repo = str(candidate.get("full_name") or "").strip()
@@ -813,11 +781,11 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
             "relevance_distance": 999,
         }
         local_evidence = _local_evidence_text(evidence_text, value)
-        evidence_normalized = _normalized(local_evidence)
+        evidence_normalized = normalize(local_evidence)
         path_terms = {
-            _normalized(str(path.get("term") or ""))
+            normalize(str(path.get("term") or ""))
             for path in candidate.get("discovery_paths") or []
-            if _normalized(str(path.get("term") or ""))
+            if normalize(str(path.get("term") or ""))
         }
         confirmation_backed = any(
             path.get("kind") == "query"
@@ -914,13 +882,13 @@ def discovered_term_evidence(candidates: Iterable[dict[str, Any]], request: Sear
         source["retrieval_stage"] = "confirmation" if confirmation_backed else "discovery"
         if (
             mechanism_distance <= 12
-            and any(_contains_normalized(evidence_normalized, term) for term in mechanism_known)
+            and any(contains_normalized(evidence_normalized, term) for term in mechanism_known)
         ):
             source["relevance_rank"] = 0
             source["relevance_distance"] = mechanism_distance
         elif (
             direction_distance <= 12
-            and any(_contains_normalized(evidence_normalized, term) for term in direction_known)
+            and any(contains_normalized(evidence_normalized, term) for term in direction_known)
         ):
             source["relevance_rank"] = 1
             source["relevance_distance"] = direction_distance
@@ -1137,10 +1105,10 @@ def boundary_delta(current: dict[str, Any], previous: dict[str, Any] | None) -> 
     def canonical_new(current_values: list[str], previous_values: list[str],
                       excluded_values: Iterable[str] = ()) -> list[str]:
         old = {
-            _canonical_token_key(value)
+            canonical_token_key(value)
             for value in (*previous_values, *excluded_values)
         }
-        return [value for value in current_values if _canonical_token_key(value) not in old]
+        return [value for value in current_values if canonical_token_key(value) not in old]
 
     return BoundaryDelta(
         new_mechanisms=canonical_new(

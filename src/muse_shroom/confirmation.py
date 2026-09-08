@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from .boundary import _canonical_token_key, _normalized, _token_overlap
+from .boundary import canonical_token_key
+from .text import normalize, token_overlap
 
 
 COMPLETED_STATUSES = {
@@ -17,7 +18,7 @@ def _overlaps(left: str, right: str) -> bool:
     right_tokens = set(right.split())
     return (
         left == right
-        or _token_overlap(left, right) >= (2 / 3)
+        or token_overlap(left, right) >= (2 / 3)
         or left_tokens <= right_tokens
         or right_tokens <= left_tokens
     )
@@ -32,7 +33,7 @@ def _evidence_repos(item: dict[str, Any]) -> set[str]:
 
 
 def _support_text(source: dict[str, Any]) -> str:
-    return _normalized(str(
+    return normalize(str(
         source.get("full_evidence_text") or source.get("evidence_text") or ""
     ))
 
@@ -44,7 +45,7 @@ def _near_duplicate_support(left: dict[str, Any], right: dict[str, Any]) -> bool
     right_text = _support_text(right)
     return bool(
         left_text and right_text
-        and (left_text == right_text or _token_overlap(left_text, right_text) >= (2 / 3))
+        and (left_text == right_text or token_overlap(left_text, right_text) >= (2 / 3))
     )
 
 
@@ -112,23 +113,23 @@ def plan_confirmation_candidates(boundary: dict[str, Any],
     """Order, deduplicate, and budget candidates without consulting Golden data."""
     existing = list(existing_records)
     completed = {
-        _normalized(str(item.get("candidate") or ""))
+        normalize(str(item.get("candidate") or ""))
         for item in existing
         if str(item.get("confirmation_status") or "") in COMPLETED_STATUSES
     }
     confirmed_keys = [
-        _canonical_token_key(str(item.get("candidate") or ""))
+        canonical_token_key(str(item.get("candidate") or ""))
         for item in existing
         if item.get("confirmation_status") == "confirmed"
     ]
     queue = [
         dict(item) for item in boundary.get("confirmation_queue") or []
-        if _normalized(str(item.get("candidate") or "")) not in completed
+        if normalize(str(item.get("candidate") or "")) not in completed
         and not any(
-            set(_canonical_token_key(str(item.get("candidate") or "")).split())
+            set(canonical_token_key(str(item.get("candidate") or "")).split())
             <= set(previous.split())
             or set(previous.split())
-            <= set(_canonical_token_key(str(item.get("candidate") or "")).split())
+            <= set(canonical_token_key(str(item.get("candidate") or "")).split())
             for previous in confirmed_keys if previous
         )
     ]
@@ -140,14 +141,14 @@ def plan_confirmation_candidates(boundary: dict[str, Any],
     ))
     unique: list[dict[str, Any]] = []
     seen = [
-        (_canonical_token_key(str(item.get("candidate") or "")), item)
+        (canonical_token_key(str(item.get("candidate") or "")), item)
         for item in existing
         if item.get("confirmation_status") == "confirmed"
-        and _canonical_token_key(str(item.get("candidate") or ""))
+        and canonical_token_key(str(item.get("candidate") or ""))
     ]
     skipped: list[dict[str, Any]] = []
     for item in queue:
-        key = _canonical_token_key(str(item.get("candidate") or ""))
+        key = canonical_token_key(str(item.get("candidate") or ""))
         if not key:
             continue
         if any(
