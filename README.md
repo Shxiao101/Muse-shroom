@@ -89,9 +89,17 @@ Cursor（`.cursor/mcp.json`）：
 
 - 快搜一次 `search` 后 `rank`（`next_action` 为 `rank` 再为 `done`）；深搜在中间按 `observation` 做有限次 `iterate`。
 - 深搜会按 novelty、confirmability 和 evidence priority 选择少量中等置信度新机制进入独立 confirmation stage，并按 problem、observed anchor、seed 顺序逐条查询和及时停止；只有新的 core-use-case、多仓库一致支持或明确跨域迁移证据才会提升。`confirmation_queue`、`mechanism_confirmations` 及 attempted/skipped/yield 统计与普通 iteration 分开记录。
-- rank 由一个 Boundary-first composer 直接生成 `items` + `display_order`，共同优化 Anchor、Edge、Leap、Wildcard、新机制覆盖与重复控制。`popular` / `gems` / `adjacent` 只是在主列表确定后生成的兼容投影，不参与排序。
+- `rank` 接收宿主 Agent 提交的有序 `selection`，只校验证据归属和原文引用、记录选择并生成 `items` + `display_order`；代码不会重新排序或按通道改写 Agent 的顺序。`popular` / `gems` / `adjacent` 只是在主列表确定后生成的兼容投影，不参与排序。
 - 评估必须引用候选上的 evidence ID；功能结论必须引用 README 片段。
 - 实现细节见 [`docs/search-internals.md`](docs/search-internals.md)。
+
+### 职责边界
+
+- **GitHub 内核**负责查询、去重、缓存、README 和元数据获取、关系扩散、证据记录以及预算控制。
+- **Boundary 分析**提供机制、相关性、新颖性和覆盖等信号，帮助宿主 Agent 判断，不直接决定最终推荐顺序或语义结论。
+- **宿主 Agent**负责理解用户目标、提出搜索方向、选择候选、安排展示顺序，并解释跨域迁移。
+
+`candidate_count` 表示完整召回池的数量，`candidates` 是供评估的 shortlist，可能不包含召回池中的每个结果。需要继续判断时，宿主 Agent 可以在 `rank` 前通过 `candidates --scope all` 或 `inspect` 获取未进入 shortlist 的候选及其证据。`selection` 是 Agent 提交的有序选择；通过校验后，`items` 和 `display_order` 保留该顺序展示。
 
 ## 开发验证
 

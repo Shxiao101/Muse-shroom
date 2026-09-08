@@ -7,7 +7,7 @@ This audit follows the runtime path:
 ```text
 SearchRequest → query construction → GitHub recall/enrichment
 → mechanism annotation → boundary snapshot/observation
-→ evidence-gated hypothesis → iterate → boundary-first ranking
+→ evidence-gated hypothesis → iterate → Agent-owned ranking
 → Boundary Role presentation
 ```
 
@@ -21,7 +21,7 @@ SearchRequest → query construction → GitHub recall/enrichment
 | Boundary | Recalled and presented mechanisms are distinct; rejected and negative directions are session state. | Search and session state are serialized together, so ownership was hard to read. | Treat boundary snapshots as search facts and session state as decisions/budgets; expose a trace rather than duplicating fields again. |
 | Iterate | Duplicate queries and bounded stopping already work. | Promotion did not prove that the term came from search evidence. | Reject unsupported promotions and high-priority new directions. |
 | Ranking | Relevance/type gates, novelty, transferability, redundancy, and deterministic MMR already exist. | Historical positive feedback could boost same-topic repositories. | Limit feedback adjustment to exact-repository rejection/difficulty signals. |
-| Presentation | Items have Anchor/Edge/Leap/Wildcard, new mechanisms, and transferability. | Compatibility buckets previously fed display composition. | Compose `items` directly from Boundary objectives; derive buckets afterward for compatibility. |
+| Presentation | Items have Anchor/Edge/Leap/Wildcard, new mechanisms, and transferability. | Compatibility buckets could be mistaken for the primary order. | Preserve the Agent's validated selection order in `items` / `display_order`; derive buckets afterward for compatibility. |
 | Evaluation | All requested diagnostics existed, but were diagnostic-only. | No formal agentic-loop verdict or fixed mechanism-space cases. | Add a boundary evaluator and eight golden mechanism-space cases. |
 | Explorer | Boundary, iterations, queries, roles, and results were available. | The source of a newly proposed direction was not visible. | Show discovered-term evidence and per-iteration queries/evidence sources. |
 

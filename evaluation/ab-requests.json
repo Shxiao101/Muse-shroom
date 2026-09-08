@@ -1,6 +1,47 @@
 {
   "schema_version": 2,
-  "collection_status": "awaiting_real_maintainer_needs",
+  "collection_status": "ready_for_evaluation",
   "note": "Verbatim maintainer needs only. No problem_concepts, mechanisms, or category: any structure here is interpretation applied before either arm runs.",
-  "requests": []
+  "requests": [
+    {
+      "id": "need-01",
+      "captured_at": "2026-09-08",
+      "text": "我想找能提高专注力的工具"
+    },
+    {
+      "id": "need-02",
+      "captured_at": "2026-09-08",
+      "text": "我想找ai在音乐识谱上的工具"
+    },
+    {
+      "id": "need-03",
+      "captured_at": "2026-09-08",
+      "text": "我想找能减少codex过度思考和测试的工具"
+    },
+    {
+      "id": "need-04",
+      "captured_at": "2026-09-08",
+      "text": "我想找能让agent之间相互通信的工具"
+    },
+    {
+      "id": "need-05",
+      "captured_at": "2026-09-08",
+      "text": "我想找能对话的ai桌宠/ai主播开源项目"
+    },
+    {
+      "id": "need-06",
+      "captured_at": "2026-09-08",
+      "text": "我想找辅助图文配合的skill"
+    },
+    {
+      "id": "need-07",
+      "captured_at": "2026-09-08",
+      "text": "我想找创意图片生成的skill"
+    },
+    {
+      "id": "need-08",
+      "captured_at": "2026-09-08",
+      "text": "我想找能帮助人从大量资料中发现意外关联和新想法的工具"
+    }
+  ]
 }
