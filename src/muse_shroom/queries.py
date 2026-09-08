@@ -4,6 +4,7 @@ import re
 from typing import Any, Iterable
 
 from .models import Concept, Refinement, SearchHypothesis, SearchRequest
+from .text import contains_normalized, normalize
 
 
 TYPE_TERMS = {
@@ -315,18 +316,16 @@ def query_fingerprint(query: str) -> str:
 
 
 def term_blocked_by_negative(term: str, negatives: Iterable[str]) -> bool:
-    from .boundary import _contains_normalized, _normalized
-
-    needle = _normalized(term)
+    needle = normalize(term)
     if not needle:
         return True
     for raw in negatives:
-        negative = _normalized(str(raw))
+        negative = normalize(str(raw))
         if not negative:
             continue
         if needle == negative:
             return True
-        if _contains_normalized(negative, needle) or _contains_normalized(needle, negative):
+        if contains_normalized(negative, needle) or contains_normalized(needle, negative):
             return True
     return False
 

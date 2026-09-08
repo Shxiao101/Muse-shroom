@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Iterable
 
-from .boundary import _normalized, mechanism_distribution
+from .boundary import mechanism_distribution
 from .confirmation import confirmation_metrics
 from .selection import concept_coverage
 from .models import (
@@ -19,6 +19,7 @@ from .models import (
     SearchRequest,
 )
 from .sidecar import empty_sidecar_state, public_hypothesis
+from .text import normalize
 
 
 def default_session_state() -> dict[str, Any]:
@@ -156,7 +157,7 @@ def ambiguity_signals(candidates: Iterable[dict[str, Any]], selected: Iterable[d
         })
 
     known = {
-        _normalized(term)
+        normalize(term)
         for concept in (
             request.problem_concepts + request.mechanisms + request.exploration_directions
         )
@@ -167,7 +168,7 @@ def ambiguity_signals(candidates: Iterable[dict[str, Any]], selected: Iterable[d
     for item in items:
         for raw in item.get("topics") or []:
             value = " ".join(str(raw).replace("-", " ").split()).strip()
-            key = _normalized(value)
+            key = normalize(value)
             if not key or key in known:
                 continue
             topic_counts[key] += 1
