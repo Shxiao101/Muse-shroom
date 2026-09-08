@@ -124,7 +124,7 @@ def _rrf_raw(candidate: dict[str, Any]) -> float:
     return score
 
 
-def _normalized(values: dict[str, float]) -> dict[str, float]:
+def _normalized_scores(values: dict[str, float]) -> dict[str, float]:
     maximum = max(values.values(), default=0.0)
     return {key: (value / maximum * 100 if maximum else 0.0) for key, value in values.items()}
 
@@ -294,7 +294,7 @@ def score_candidates(candidates: Iterable[dict[str, Any]], request: SearchReques
                      *, enriched: bool, mode: str = "deep",
                      reference_time: str | datetime | None = None) -> list[dict[str, Any]]:
     items = list(candidates)
-    rrf = _normalized({repo_key(item): _rrf_raw(item) for item in items})
+    rrf = _normalized_scores({repo_key(item): _rrf_raw(item) for item in items})
     popularity = _percentiles(items)
     for item in items:
         key = repo_key(item)
