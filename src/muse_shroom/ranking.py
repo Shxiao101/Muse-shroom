@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import asdict
 from typing import Any, Iterable
 
+from .boundary import boundary_delta as compute_boundary_delta
 from .models import ContractError, RANK_PAYLOAD_FIELDS, Selection, reject_unknown_fields, repo_key
 from .sidecar import (
     derive_hypothesis_status, merge_candidate_view, public_hypothesis,
@@ -250,15 +251,18 @@ def rank_search(
         ))
 
     display_order = [str(item["repo"]) for item in items]
-    _mark_sidecar_selection(sidecar_records, items, by_name)
-    sidecar_state["hypotheses"] = sidecar_records
-    metrics = sidecar_state.setdefault("metrics", {})
+    # Build the post-selection view in memory first. A recoverable rank with
+    # rejected items must not persist a partial decision; the Agent can resubmit
+    # corrected input against the same pre-rank state.
+    proposed_records = deepcopy(sidecar_records)
+    _mark_sidecar_selection(proposed_records, items, by_name)
+    proposed_sidecar_state = deepcopy(sidecar_state)
+    proposed_sidecar_state["hypotheses"] = proposed_records
+    metrics = proposed_sidecar_state.setdefault("metrics", {})
     metrics["validated_presented"] = sum(
-        1 for record in sidecar_records if record.get("presented")
+        1 for record in proposed_records if record.get("presented")
     )
     metrics["agent_selected"] = len(items)
-    session_state["semantic_sidecar"] = sidecar_state
-    store.save_session_state(search_id, session_state)
 
     selected_labels = [item["mechanism_label"] for item in items]
     boundary["presented_mechanisms"] = _unique_labels([*presented_before, *selected_labels])
@@ -268,10 +272,8 @@ def rank_search(
     origins = dict(boundary.get("mechanism_origins") or {})
     origins["agent_selection"] = _unique_labels(selected_labels)
     boundary["mechanism_origins"] = origins
-    delta = store.save_boundary_snapshot(
-        search_id, "rank", boundary,
-        visible_repos={"assessment_repos": display_order, "pool_repos": list(by_name)},
-    )
+    previous_boundary = previous_snapshot.get("boundary") if previous_snapshot else None
+    delta = compute_boundary_delta(boundary, previous_boundary).to_dict()
     role_counts = {
         role: sum(item["boundary_role"] == role for item in items)
         for role in ("anchor", "edge", "leap", "wildcard")
@@ -301,7 +303,7 @@ def rank_search(
         "boundary_delta": delta,
         "boundary_summary": summary,
         "newly_presented_mechanisms": introduced,
-        "semantic_hypotheses": [public_hypothesis(item) for item in sidecar_records],
+        "semantic_hypotheses": [public_hypothesis(item) for item in proposed_records],
         "sidecar_metrics": {
             **dict(metrics),
             "base_ledger": list(sidecar_state.get("base_ledger") or []),
@@ -317,5 +319,11 @@ def rank_search(
         },
     }
     if not recoverable:
+        session_state["semantic_sidecar"] = proposed_sidecar_state
+        store.save_session_state(search_id, session_state)
+        store.save_boundary_snapshot(
+            search_id, "rank", boundary,
+            visible_repos={"assessment_repos": display_order, "pool_repos": list(by_name)},
+        )
         store.save_ranking(search_id, result)
     return result
