@@ -136,6 +136,30 @@ class SkillInterfaceTests(unittest.TestCase):
             self.assertIn("boundary.unexplored_directions", text)
             self.assertIn("boundary.presented_mechanisms", text)
 
+    def test_documented_order_and_responsibilities_match_agent_owned_rank(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        internals = (ROOT / "docs" / "search-internals.md").read_text(encoding="utf-8")
+        result_contract = (REFERENCES / "result-contract.md").read_text(encoding="utf-8")
+        ranking = (ROOT / "src" / "muse_shroom" / "ranking.py").read_text(encoding="utf-8")
+        for text in (readme, internals, result_contract):
+            self.assertIn("selection", text)
+            self.assertIn("display_order", text)
+            self.assertIn("popular", text)
+            self.assertIn("gems", text)
+            self.assertIn("adjacent", text)
+        self.assertIn("保留该顺序", readme)
+        self.assertIn("preserve that order", internals)
+        self.assertIn("preserve that order", result_contract)
+        self.assertNotIn("Boundary-first composer", readme)
+        self.assertNotIn("Boundary-first composition", internals)
+        self.assertIn("GitHub 内核", readme)
+        self.assertIn("Boundary 分析", readme)
+        self.assertIn("宿主 Agent", readme)
+        self.assertIn("may omit recalled", internals)
+        self.assertIn("may omit recalled", result_contract)
+        self.assertIn("Validate and record an Agent-owned ordered repository selection", ranking)
+        self.assertIn("`selection` is the ordered list", result_contract)
+
     def test_readme_documents_mcp_test_install_and_command(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")

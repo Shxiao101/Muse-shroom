@@ -137,6 +137,8 @@ class RankingTests(unittest.TestCase):
         self.assertIsNotNone(self.store.get_ranking(self.search_id))
 
     def test_partially_rejected_rank_is_not_terminal(self):
+        before_state = self.store.get_session_state(self.search_id)
+        before_snapshots = self.store.boundary_snapshots(self.search_id)
         result = rank_search(self.store, self.search_id, [
             selected(self.first, label="commitment device"),
             selected(self.second, label="ambient feedback", quote="Absent from the snapshot"),
@@ -147,6 +149,8 @@ class RankingTests(unittest.TestCase):
         self.assertEqual([item["repo"] for item in result["items"]], ["owner/first"])
         self.assertEqual(len(result["rejected_items"]), 1)
         self.assertIsNone(self.store.get_ranking(self.search_id))
+        self.assertEqual(self.store.get_session_state(self.search_id), before_state)
+        self.assertEqual(self.store.boundary_snapshots(self.search_id), before_snapshots)
 
     def test_resubmitting_only_the_passing_item_terminates_and_saves(self):
         partial = rank_search(self.store, self.search_id, [
