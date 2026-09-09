@@ -17,6 +17,19 @@ Send the Agent's ordered selection to MCP `muse_rank` or
 ]
 ```
 
+If every candidate is omitted, do not skip rank. Submit an empty selection with a reason:
+
+```json
+{
+  "selection": [],
+  "no_recommendation": {
+    "reason": "None of the recalled candidates matched the requested mechanism with verifiable evidence."
+  }
+}
+```
+
+`reason` is a single-line string up to 500 characters, the same spec as hypothesis `reason` / `stop_reason`. An empty `selection` without that reason is a contract error. `no_recommendation` is valid only with an empty `selection`.
+
 The array order is the display order. You own that order, the rationale, the
 `mechanism_label`, and the `boundary_role`. Code never scores or reorders them.
 

@@ -32,7 +32,8 @@ SELECTION_FIELDS = frozenset({
     "repo", "rationale", "mechanism_label", "source_term", "quote",
     "evidence_ids", "boundary_role",
 })
-RANK_PAYLOAD_FIELDS = frozenset({"selection"})
+RANK_PAYLOAD_FIELDS = frozenset({"selection", "no_recommendation"})
+NO_RECOMMENDATION_FIELDS = frozenset({"reason"})
 BOUNDARY_ROLES = ("anchor", "edge", "leap", "wildcard")
 SEARCH_ARTIFACT_TYPES = (
     "application", "mcp", "skill", "mod", "plugin", "library",
@@ -56,6 +57,16 @@ def reject_unknown_fields(
     if extra_hint:
         message = f"{message} {extra_hint}"
     raise ContractError(message)
+
+
+def require_single_line(value: Any, *, where: str, limit: int) -> str:
+    """Require a non-empty single-line string, matching hypothesis reason / stop_reason."""
+    if not isinstance(value, str):
+        raise ContractError(f"{where} must be a string")
+    text = value.strip()
+    if not text or "\n" in text or "\r" in text or len(text) > limit:
+        raise ContractError(f"{where} must be a single-line string up to {limit} characters")
+    return text
 
 
 def require_fields(

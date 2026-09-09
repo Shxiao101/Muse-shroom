@@ -340,6 +340,43 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(after_rank["can_iterate"])
         self.assertEqual(continued["search_id"], search_id)
 
+    async def test_empty_selection_with_reason_is_a_done_terminal(self):
+        github = _github()
+        with tempfile.TemporaryDirectory() as directory:
+            mcp = create_server(data_dir=directory, github=github, log_level="ERROR")
+            async with Client(mcp) as client:
+                searched = _payload(await client.call_tool("muse_search", {
+                    "request": REQUEST, "mode": "quick",
+                }))
+                search_id = searched["search_id"]
+                missing = await client.call_tool("muse_rank", {
+                    "search_id": search_id, "selection": [],
+                })
+                ranked = _payload(await client.call_tool("muse_rank", {
+                    "search_id": search_id,
+                    "selection": [],
+                    "no_recommendation": {
+                        "reason": "None of the candidates transferred the requested mechanism.",
+                    },
+                }))
+                store = Store(directory)
+                try:
+                    saved = store.get_ranking(search_id)
+                finally:
+                    store.close()
+        self.assertTrue(missing.is_error)
+        self.assertIn("no_recommendation", _error_text(missing))
+        self.assertEqual(ranked["next_action"], "done")
+        self.assertEqual(ranked["items"], [])
+        self.assertEqual(ranked["display_order"], [])
+        self.assertEqual(
+            ranked["no_recommendation"]["reason"],
+            "None of the candidates transferred the requested mechanism.",
+        )
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved["items"], [])
+        self.assertEqual(saved["next_action"], "done")
+
     async def test_contract_errors_are_tool_errors_and_do_not_create_sessions(self):
         github = _github()
         with tempfile.TemporaryDirectory() as directory:
@@ -451,10 +488,15 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
         hypothesis = _tool_schema(listed, "muse_iterate")["properties"]["hypothesis"]
         self.assertIn("decision", hypothesis.get("required", []))
         self.assertEqual(hypothesis["properties"]["decision"].get("enum"), ["continue", "stop"])
-        assessment_schema = _tool_schema(listed, "muse_rank")["properties"]["selection"]
+        rank_properties = _tool_schema(listed, "muse_rank")["properties"]
+        assessment_schema = rank_properties["selection"]
         assessment_blob = _dump(assessment_schema)
         self.assertIn("mechanism_label", assessment_blob)
         self.assertIn("evidence_ids", assessment_blob)
+        self.assertEqual(assessment_schema.get("minItems"), 0)
+        no_recommendation = rank_properties["no_recommendation"]
+        self.assertEqual(no_recommendation.get("required"), ["reason"])
+        self.assertIn("reason", no_recommendation.get("properties", {}))
         descriptions = " ".join(
             getattr(_named_tool(listed, name), "description", "") or ""
             for name in ("muse_search", "muse_iterate", "muse_rank")

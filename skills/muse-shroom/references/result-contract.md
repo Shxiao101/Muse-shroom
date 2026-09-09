@@ -9,6 +9,7 @@ Read the primary interface:
 items
 display_order
 rejected_items
+no_recommendation
 boundary_role
 mechanism_label
 new_mechanisms
@@ -49,9 +50,9 @@ Boundary roles are Agent assignments:
 - `leap`: steps off the main solution path
 - `wildcard`: not obviously on-topic, but the mechanism can transfer
 
-Read `next_action` after rank. `done` means the rank is terminal. Do not call search, observe, inspect, or diagnostics afterward. Present accepted items in `display_order` and explain any rejected items when relevant.
+Read `next_action` after rank. `done` means the rank is terminal. Do not call search, observe, inspect, or diagnostics afterward. Present accepted items in `display_order` and explain any rejected items when relevant. When `items` is empty, `next_action` is `done`, and `no_recommendation.reason` is present, present that reason: the Agent judged that no candidate was worth recommending, and the ranking was saved. That is not a crash and is not the same as every submitted item failing verification.
 
-`rank` means at least one item failed mechanical verification, so the rank is not final: accepted items are returned but nothing was saved, and the session is still open. Read each `rejected_items` entry — `reasons` says what failed and `evidence_ids_checked` says which evidence was examined, which distinguishes citing the wrong evidence from quoting it wrongly. Fix the selection and call `muse_rank` again. Do not search again. When a quote cannot be corrected, resubmit only the passing items: a submission with zero rejections returns `done` and saves the ranking.
+`rank` means at least one item failed mechanical verification, so the rank is not final: accepted items are returned but nothing was saved, and the session is still open. Read each `rejected_items` entry — `reasons` says what failed and `evidence_ids_checked` says which evidence was examined, which distinguishes citing the wrong evidence from quoting it wrongly. Fix the selection and call `muse_rank` again. Do not search again. When a quote cannot be corrected, resubmit only the passing items: a submission with zero rejections returns `done` and saves the ranking. An empty `selection` with `no_recommendation.reason` also returns `done` and saves `items=[]`. An empty `selection` without that reason is a contract error.
 
 Do not append a second priority, recommendation, or best-first order.
 

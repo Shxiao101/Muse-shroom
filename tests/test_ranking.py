@@ -207,6 +207,62 @@ class RankingTests(unittest.TestCase):
                 strict=True,
             )
 
+    def test_empty_selection_with_reason_is_a_saved_done_terminal(self):
+        result = rank_search(self.store, self.search_id, {
+            "selection": [],
+            "no_recommendation": {
+                "reason": "None of the candidates transferred the requested mechanism.",
+            },
+        })
+
+        self.assertEqual(result["next_action"], "done")
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["display_order"], [])
+        self.assertEqual(result["rejected_items"], [])
+        self.assertEqual(
+            result["no_recommendation"]["reason"],
+            "None of the candidates transferred the requested mechanism.",
+        )
+        saved = self.store.get_ranking(self.search_id)
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved["items"], [])
+        self.assertEqual(saved["next_action"], "done")
+        self.assertEqual(
+            saved["no_recommendation"]["reason"],
+            "None of the candidates transferred the requested mechanism.",
+        )
+
+    def test_empty_selection_without_reason_is_a_contract_error(self):
+        for payload in ([], {"selection": []}, {"selection": [], "no_recommendation": {}}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ContractError) as raised:
+                    rank_search(self.store, self.search_id, payload, strict=True)
+                message = str(raised.exception)
+                self.assertIn("no_recommendation", message)
+                self.assertIn("reason", message)
+                self.assertIsNone(self.store.get_ranking(self.search_id))
+
+    def test_no_recommendation_reason_must_be_a_single_line_up_to_500(self):
+        too_long = "x" * 501
+        for reason in (too_long, "first line\nsecond line", "first line\rsecond"):
+            with self.subTest(reason=reason):
+                with self.assertRaises(ContractError) as raised:
+                    rank_search(self.store, self.search_id, {
+                        "selection": [],
+                        "no_recommendation": {"reason": reason},
+                    }, strict=True)
+                self.assertIn("single-line", str(raised.exception))
+                self.assertIsNone(self.store.get_ranking(self.search_id))
+
+    def test_no_recommendation_is_rejected_alongside_a_non_empty_selection(self):
+        with self.assertRaises(ContractError) as raised:
+            rank_search(self.store, self.search_id, {
+                "selection": [selected(self.first, label="commitment device")],
+                "no_recommendation": {"reason": "should not accompany items"},
+            }, strict=True)
+        self.assertIn("empty selection", str(raised.exception))
+        self.assertIsNone(self.store.get_ranking(self.search_id))
+
 
 if __name__ == "__main__":
     unittest.main()

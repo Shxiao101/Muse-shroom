@@ -359,7 +359,8 @@ class HostPrepareTests(unittest.TestCase):
             }},
         ]
         outcome = _rank_outcome(events)
-        self.assertTrue(outcome["ended_with_empty_selection"])
+        self.assertTrue(outcome["ended_with_all_rejected"])
+        self.assertFalse(outcome["ended_with_no_recommendation"])
         self.assertEqual(outcome["selection_accepted"], 0)
         self.assertEqual(outcome["selection_rejected"], 2)
         self.assertEqual(outcome["rejection_reasons"], {
@@ -378,9 +379,36 @@ class HostPrepareTests(unittest.TestCase):
         outcome = _rank_outcome(events)
         self.assertEqual(outcome["rank_calls"], 2)
         self.assertEqual(outcome["selection_accepted"], 1)
-        self.assertFalse(outcome["ended_with_empty_selection"])
+        self.assertFalse(outcome["ended_with_all_rejected"])
+        self.assertFalse(outcome["ended_with_no_recommendation"])
         # Reasons accumulate across attempts so a recovered case still shows what failed.
         self.assertEqual(outcome["rejection_reasons"], {"quote_not_verbatim_at_recorded_sha": 1})
+
+    def test_rank_outcome_separates_no_recommendation_from_all_rejected(self):
+        from evaluation.host_eval import _rank_outcome
+
+        honest = _rank_outcome([
+            {"tool": "muse_rank", "output": {
+                "items": [],
+                "rejected_items": [],
+                "next_action": "done",
+                "no_recommendation": {"reason": "no candidate transferred the mechanism"},
+            }},
+        ])
+        self.assertTrue(honest["ended_with_no_recommendation"])
+        self.assertFalse(honest["ended_with_all_rejected"])
+        self.assertEqual(honest["selection_accepted"], 0)
+        self.assertEqual(honest["selection_rejected"], 0)
+
+        rejected = _rank_outcome([
+            {"tool": "muse_rank", "output": {
+                "items": [],
+                "rejected_items": [{"reasons": ["quote_not_verbatim_at_recorded_sha"]}],
+                "next_action": "rank",
+            }},
+        ])
+        self.assertFalse(rejected["ended_with_no_recommendation"])
+        self.assertTrue(rejected["ended_with_all_rejected"])
 
     def test_change_set_b_evidence_paths_remain_trackable(self):
         evidence = "evaluation/evidence/host-v0.7.0/example/attempt-01"
@@ -780,7 +808,8 @@ class RecordingProxyTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(summary["host_hypotheses_proposed"], 1)
             # The retry is visible in the shakedown telemetry rather than hidden.
             self.assertEqual(summary["selection"]["rank_calls"], 2)
-            self.assertEqual(summary["selection"]["cases_ending_empty"], 0)
+            self.assertEqual(summary["selection"]["cases_ending_no_recommendation"], 0)
+            self.assertEqual(summary["selection"]["cases_ending_all_rejected"], 0)
             self.assertEqual(
                 summary["selection"]["rejection_reasons"],
                 {"quote_not_verbatim_at_recorded_sha": len(selection)},
