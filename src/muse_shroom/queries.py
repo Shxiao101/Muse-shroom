@@ -40,6 +40,25 @@ def is_generic_term(term: str) -> bool:
     return bool(tokens) and all(token in GENERIC_TYPE_TOKENS for token in tokens)
 
 
+def _github_hit_term(terms: list[str]) -> str:
+    """Pick the term more likely to hit GitHub text.
+
+    Switch from the primary to the first non-CJK alias only when the primary is a
+    long CJK phrase (CJK character count > 8). Contract examples such as 正文配图 /
+    文章配图 / 专注管理 / 自控训练 are four characters and must keep matching GitHub
+    text; the observed need-08 failure is a twelve-character CJK sentence. Eight is
+    twice the contract examples and still blocks that failure shape.
+    """
+    if not terms:
+        return ""
+    primary = terms[0]
+    if len(CJK_RE.findall(primary)) > 8:
+        for term in terms[1:]:
+            if not CJK_RE.search(term):
+                return term
+    return primary
+
+
 def _search_terms(concept: Concept, *, allow_generic: bool = False) -> list[str]:
     values = []
     for term in concept.terms():
@@ -258,11 +277,18 @@ def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, Any
                 ))
         return values
 
-    problem = bucket(problem_groups, "problem", aliases=False)
+    problem_primary = bucket(problem_groups, "problem", aliases=False)
+    problem_aliases: list[tuple[str, str, str, str, str]] = []
+    for concept_id, _concept, terms in problem_groups:
+        for term in terms[1:]:
+            problem_aliases.append((
+                f"{quote_term(term)} in:name,description,topics,readme {suffix}",
+                "problem", "stars", concept_id, term,
+            ))
     mechanisms = bucket(mechanism_groups, "mechanism", aliases=True)
     exploration = bucket(exploration_groups, "exploration", aliases=True)
 
-    primary_term = problem_groups[0][2][0] if problem_groups else ""
+    primary_term = _github_hit_term(problem_groups[0][2]) if problem_groups else ""
     primary_id = problem_groups[0][0] if problem_groups else ""
     gem = []
     if primary_term:
@@ -277,12 +303,13 @@ def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, Any
     typed: list[tuple[str, str, str, str, str]] = []
     left_groups = problem_groups[:2] + mechanism_groups[:2]
     for concept_id, _concept, terms in left_groups:
+        hit = _github_hit_term(terms)
         for right in (type_terms[:2] or ["tool"]):
-            if _typed_redundant(terms[0], right):
+            if _typed_redundant(hit, right):
                 continue
             typed.append((
-                f"{quote_term(terms[0])} {quote_term(right)} in:name,description,topics,readme {suffix}",
-                "typed", "stars", concept_id, terms[0],
+                f"{quote_term(hit)} {quote_term(right)} in:name,description,topics,readme {suffix}",
+                "typed", "stars", concept_id, hit,
             ))
 
     seen: set[str] = set()
@@ -298,15 +325,16 @@ def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, Any
         for item in result[before:]:
             item["lane_kind"] = lane_by_kind[item["kind"]]
 
-    # Reserve distinct sources first; remaining slots admit all mechanism aliases.
-    take(problem, min(3, len(problem)))
+    # Reserve one primary problem query per concept first; aliases compete later.
+    take(problem_primary, min(3, len(problem_groups)))
     take(mechanisms, min(4, len(mechanisms)))
     take(exploration, min(3, len(exploration)))
     take(gem, min(2, len(gem)))
     take(typed)
     take(mechanisms)
     take(exploration)
-    take(problem)
+    take(problem_aliases)
+    take(problem_primary)
     return result
 
 

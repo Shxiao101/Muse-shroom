@@ -89,8 +89,15 @@ def create_server(*, data_dir: str | None = None, github: Any | None = None, log
         return invoke(lambda: core.iterate(search_id, hypothesis))
 
     @mcp.tool(annotations=local_write, description=MUSE_RANK_DESCRIPTION)
-    def muse_rank(search_id: str, selection: list[dict[str, Any]]) -> dict[str, Any]:
-        return invoke(lambda: core.rank(search_id, selection))
+    def muse_rank(
+        search_id: str,
+        selection: list[dict[str, Any]],
+        no_recommendation: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"selection": selection}
+        if no_recommendation is not None:
+            payload["no_recommendation"] = no_recommendation
+        return invoke(lambda: core.rank(search_id, payload))
 
     @mcp.tool(annotations=read_only)
     def muse_inspect(repo: str, search_id: str | None = None) -> dict[str, Any]:

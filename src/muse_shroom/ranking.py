@@ -5,7 +5,10 @@ from dataclasses import asdict
 from typing import Any, Iterable
 
 from .boundary import boundary_delta as compute_boundary_delta
-from .models import ContractError, RANK_PAYLOAD_FIELDS, Selection, reject_unknown_fields, repo_key
+from .models import (
+    ContractError, NO_RECOMMENDATION_FIELDS, RANK_PAYLOAD_FIELDS, Selection,
+    reject_unknown_fields, require_single_line, repo_key,
+)
 from .sidecar import (
     derive_hypothesis_status, merge_candidate_view, public_hypothesis,
 )
@@ -135,20 +138,49 @@ def _raw_item(
     }
 
 
-def _selection_payload(payload: Any, *, strict: bool) -> list[Selection]:
+_EMPTY_SELECTION_HINT = (
+    "empty selection requires no_recommendation.reason "
+    "(a single-line string up to 500 characters). "
+    'Submit {"selection": [], "no_recommendation": {"reason": "..."}} '
+    "to record that no repository is worth recommending."
+)
+
+
+def _no_recommendation_reason(payload: dict[str, Any], *, strict: bool) -> str:
+    raw = payload.get("no_recommendation")
+    if raw is None:
+        raise ContractError(_EMPTY_SELECTION_HINT)
+    if not isinstance(raw, dict):
+        raise ContractError("no_recommendation must be an object with reason")
+    if strict:
+        reject_unknown_fields(raw, NO_RECOMMENDATION_FIELDS, where="no_recommendation")
+    if "reason" not in raw:
+        raise ContractError("no_recommendation.reason is required when selection is empty")
+    return require_single_line(raw["reason"], where="no_recommendation.reason", limit=500)
+
+
+def _selection_payload(payload: Any, *, strict: bool) -> tuple[list[Selection], str | None]:
+    extra = None
     if isinstance(payload, dict):
         if strict:
             reject_unknown_fields(payload, RANK_PAYLOAD_FIELDS, where="muse_rank payload")
         raw = payload.get("selection")
+        extra = payload.get("no_recommendation")
     else:
         raw = payload
-    if not isinstance(raw, list) or not raw:
-        raise ContractError("selection must be a non-empty ordered list")
+    if not isinstance(raw, list):
+        raise ContractError("selection must be an ordered list")
+    if extra is not None and raw:
+        raise ContractError("no_recommendation is only valid with an empty selection")
+    if not raw:
+        if not isinstance(payload, dict):
+            raise ContractError(_EMPTY_SELECTION_HINT)
+        return [], _no_recommendation_reason(payload, strict=strict)
     parsed = [Selection.from_dict(item, strict=strict) for item in raw]
     repos = [item.repo for item in parsed]
     if len(repos) != len(set(repos)):
         raise ContractError("selection must not contain the same repository twice")
-    return parsed
+    return parsed, None
 
 
 def _mark_sidecar_selection(
@@ -213,7 +245,9 @@ def rank_search(
             continue
         by_name[key] = merge_candidate_view(by_name[key], candidate) if key in by_name else candidate
 
-    selections = _selection_payload(selection_payload, strict=strict)
+    selections, no_recommendation_reason = _selection_payload(
+        selection_payload, strict=strict,
+    )
     previous_snapshot = store.latest_boundary_snapshot(
         search_id, ("search", "expand", "iterate")
     ) or {}
@@ -318,6 +352,8 @@ def rank_search(
             **{f"{role}_count": count for role, count in role_counts.items()},
         },
     }
+    if no_recommendation_reason:
+        result["no_recommendation"] = {"reason": no_recommendation_reason}
     if not recoverable:
         session_state["semantic_sidecar"] = proposed_sidecar_state
         store.save_session_state(search_id, session_state)

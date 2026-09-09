@@ -1048,12 +1048,24 @@ def _rank_outcome(events: list[dict[str, Any]]) -> dict[str, Any]:
                 key = str(reason).split(":", 1)[0]
                 reasons[key] = reasons.get(key, 0) + 1
     final = (ranks[-1].get("output") or {}) if ranks else {}
+    final_empty = bool(ranks) and not (final.get("items") or [])
+    all_rejected = final_empty and bool(final.get("rejected_items") or [])
+    no_recommendation = (
+        final_empty
+        and not all_rejected
+        and (
+            final.get("next_action") == "done"
+            or bool(final.get("no_recommendation"))
+        )
+    )
     return {
         "rank_calls": len(ranks),
         "selection_accepted": len(final.get("items") or []),
         "selection_rejected": len(final.get("rejected_items") or []),
-        # True when the Agent stopped on a rank that accepted nothing.
-        "ended_with_empty_selection": bool(ranks) and not (final.get("items") or []),
+        # Honest empty close-out (reason recorded, session saved) vs every
+        # submitted item failing verification (session stays open).
+        "ended_with_no_recommendation": no_recommendation,
+        "ended_with_all_rejected": all_rejected,
         "rejection_reasons": reasons,
     }
 
@@ -1428,8 +1440,11 @@ def summarize_attempt(attempt: Path, *, mapping_path: Path, suite: str) -> dict[
             "accepted": sum(int(item["selection_accepted"]) for item in case_rows),
             "rejected": sum(int(item["selection_rejected"]) for item in case_rows),
             "rank_calls": sum(int(item["rank_calls"]) for item in case_rows),
-            "cases_ending_empty": sum(
-                bool(item["ended_with_empty_selection"]) for item in case_rows
+            "cases_ending_no_recommendation": sum(
+                bool(item["ended_with_no_recommendation"]) for item in case_rows
+            ),
+            "cases_ending_all_rejected": sum(
+                bool(item["ended_with_all_rejected"]) for item in case_rows
             ),
             "rejection_reasons": _merge_counts(
                 item["rejection_reasons"] for item in case_rows

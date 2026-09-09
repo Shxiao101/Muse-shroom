@@ -128,6 +128,12 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn("call `muse_rank` again", result_contract)
         self.assertIn("Do not issue no-op shell commands", self.skill)
         self.assertIn("only before rank", self.skill)
+        for text in (self.skill, result_contract):
+            self.assertIn("no_recommendation", text)
+        self.assertIn("no_recommendation.reason", self.skill)
+        assessment = (REFERENCES / "assessment-contract.md").read_text(encoding="utf-8")
+        self.assertIn("no_recommendation", assessment)
+        self.assertIn('"selection": []', assessment)
 
     def test_result_keeps_one_order_and_discloses_coverage_gaps(self):
         result_contract = (REFERENCES / "result-contract.md").read_text(encoding="utf-8")
