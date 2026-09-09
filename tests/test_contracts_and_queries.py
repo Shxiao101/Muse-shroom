@@ -166,6 +166,73 @@ class ContractAndQueryTests(unittest.TestCase):
         self.assertEqual(len({item["concept_id"] for item in problem[:3]}), 3)
         self.assertTrue(any(item.get("term") == "focus management" for item in problem[3:]))
 
+    def test_first_problem_alias_is_reserved_when_mechanisms_fill_the_budget(self):
+        request = SearchRequest.from_dict({
+            "request": "focus tools",
+            "problem_concepts": [
+                {"term": "专注管理", "aliases": ["focus management", "deep work"]},
+                {"term": "自控训练", "aliases": ["self-control", "self regulation"]},
+            ],
+            "mechanisms": [
+                {"term": "番茄钟", "aliases": ["pomodoro", "focus timer"]},
+                {"term": "网站屏蔽", "aliases": ["website blocker", "app blocker"]},
+            ],
+            "artifact_types": ["application"],
+        })
+        queries = build_queries(request)
+        terms = [item.get("term") for item in queries]
+        self.assertLessEqual(len(queries), 12)
+        self.assertIn("focus management", terms)
+        self.assertIn("self-control", terms)
+        self.assertTrue(any(
+            item["kind"] == "problem" and item.get("term") == "focus management"
+            for item in queries
+        ))
+        self.assertTrue(any(
+            item["kind"] == "problem" and item.get("term") == "self-control"
+            for item in queries
+        ))
+
+    def test_a_primary_term_is_used_at_most_once_as_problem_plus_two_gems(self):
+        request = SearchRequest.from_dict({
+            "request": "focus tools",
+            "problem_concepts": [
+                {"term": "专注管理", "aliases": ["focus management"]},
+                {"term": "自控训练", "aliases": ["self-control"]},
+            ],
+            "mechanisms": [
+                {"term": "番茄钟", "aliases": ["pomodoro", "focus timer"]},
+                {"term": "网站屏蔽", "aliases": ["website blocker", "app blocker"]},
+            ],
+            "artifact_types": ["application"],
+        })
+        queries = build_queries(request)
+        self.assertLessEqual(len(queries), 12)
+        for concept in request.problem_concepts:
+            uses = [
+                item for item in queries
+                if item.get("term") == concept.term and item["kind"] in {"problem", "gem"}
+            ]
+            self.assertLessEqual(len(uses), 3, concept.term)
+
+    def test_three_problem_concepts_keep_one_primary_each_in_the_first_three(self):
+        request = SearchRequest.from_dict({
+            "request": "focus",
+            "problem_concepts": [
+                {"term": "专注管理", "aliases": ["focus management"]},
+                {"term": "自控训练", "aliases": ["self-control"]},
+                {"term": "减少分心", "aliases": ["distraction blocking"]},
+            ],
+        })
+        queries = build_queries(request)
+        problem = [item for item in queries if item["kind"] == "problem"]
+        self.assertLessEqual(len(queries), 12)
+        self.assertEqual(
+            [item["term"] for item in problem[:3]],
+            ["专注管理", "自控训练", "减少分心"],
+        )
+        self.assertEqual(len({item["concept_id"] for item in problem[:3]}), 3)
+
     def test_long_cjk_primary_uses_english_alias_for_gem_and_typed(self):
         request = SearchRequest.from_dict({
             "request": "discover unexpected connections",
