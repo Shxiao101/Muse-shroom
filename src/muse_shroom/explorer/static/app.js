@@ -41,6 +41,7 @@ const STRINGS = {
     graphTitle: "探索图谱",
 
     resultsTitle: "结果", resultsEmpty: "尚未 rank。Agent 完成评估后再看最终推荐。",
+    resultsNone: "这次评估没有推荐仓库。",
     resultsSub: "每张卡片是一个仓库。点开可以看它为什么不同，以及支持这个判断的证据。",
     historicalNotice: "正在查看历史快照，这一轮还没有最终排名。",
     backToFinal: "回到最终结果",
@@ -100,6 +101,7 @@ const STRINGS = {
     graphTitle: "Exploration graph",
 
     resultsTitle: "Results", resultsEmpty: "Not ranked yet. Come back once the Agent finishes its assessment.",
+    resultsNone: "The Agent recommended no repositories.",
     resultsSub: "Each card is one repository. Open it to see why it is different and the evidence behind that claim.",
     historicalNotice: "You are viewing an earlier snapshot. This round had no final ranking yet.",
     backToFinal: "Back to final results",
@@ -517,8 +519,15 @@ async function renderResults(searchId, role) {
     return;
   }
   const all = result.items || [];
-  if (!result.ranked || !all.length) {
+  if (!result.ranked) {
     main.innerHTML = `${header}<p class="sub">${esc(t("resultsEmpty"))}</p>`;
+    return;
+  }
+  if (!all.length) {
+    const reason = String((result.no_recommendation && result.no_recommendation.reason) || "").trim();
+    main.innerHTML = `${header}
+      <p class="sub">${esc(t("resultsNone"))}</p>
+      ${reason ? `<p class="reason">${esc(reason)}</p>` : ""}`;
     return;
   }
   const shown = role ? all.filter((item) => item.boundary_role === role) : all;

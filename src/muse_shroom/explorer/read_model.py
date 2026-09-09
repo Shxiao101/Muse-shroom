@@ -840,6 +840,11 @@ class ExplorerReadModel:
                 "newly_presented_mechanisms": list(ranking.get("newly_presented_mechanisms") or []),
                 "next_action": ranking.get("next_action") or "done",
             }
+            raw = ranking.get("no_recommendation")
+            if isinstance(raw, dict):
+                reason = str(raw.get("reason") or "").strip()
+                if reason:
+                    payload["no_recommendation"] = {"reason": reason}
             if debug:
                 payload["coverage"] = ranking.get("coverage")
                 payload["rejected_items"] = list(ranking.get("rejected_items") or [])

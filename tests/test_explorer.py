@@ -188,6 +188,7 @@ class ExplorerReadModelTests(unittest.TestCase):
                 ranking["display_order"],
             )
             self.assertNotIn("selection_order", view)
+            self.assertNotIn("no_recommendation", view)
             dumped = json.dumps(view)
             self.assertNotIn("MMR", dumped)
             self.assertNotIn("selection penalty", dumped)
@@ -225,6 +226,37 @@ class ExplorerReadModelTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('if (current.searchId !== searchId) current.at = "final";', frontend)
         self.assertIn('id="ranked-results" ${current.at === "final" ? "" : "hidden"}', frontend)
+
+    def test_result_view_exposes_no_recommendation_reason(self):
+        reason = "None of the candidates transferred the requested mechanism."
+        with tempfile.TemporaryDirectory() as directory:
+            store, _github, search_id = _session(directory)
+            rank_search(store, search_id, {
+                "selection": [],
+                "no_recommendation": {"reason": reason},
+            })
+            try:
+                model = ExplorerReadModel(data_dir=directory)
+                view = model.result_view(search_id)
+                historical = model.result_view(search_id, at="initial")
+                listed = model.list_searches()["searches"][0]
+            finally:
+                store.close()
+            self.assertTrue(view["ranked"])
+            self.assertEqual(view["items"], [])
+            self.assertEqual(view["display_order"], [])
+            self.assertEqual(view["no_recommendation"], {"reason": reason})
+            self.assertFalse(historical["ranked"])
+            self.assertNotIn("no_recommendation", historical)
+            self.assertEqual(listed["status"], "ranked")
+            self.assertEqual(listed["result_count"], 0)
+        frontend = (
+            Path(__file__).resolve().parents[1] / "src" / "muse_shroom" / "explorer" / "static" / "app.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("no_recommendation", frontend)
+        self.assertIn("resultsNone", frontend)
+        self.assertIn("if (!result.ranked)", frontend)
+        self.assertNotIn("if (!result.ranked || !all.length)", frontend)
 
     def test_explorer_views_are_read_only(self):
         with tempfile.TemporaryDirectory() as directory:
