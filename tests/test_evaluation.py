@@ -691,6 +691,62 @@ class MatchedABContractTests(unittest.TestCase):
         )
         self.assertEqual(failures["good/repo"], [])
 
+    def test_claim_checker_accepts_quotes_split_by_readme_wrapping(self):
+        arm = {
+            "arm": "muse-shroom",
+            "results": [{
+                "prompt_id": "need-1",
+                "candidates": [{
+                    "repo": "good/repo",
+                    "source_term": "exact phrase",
+                    "quote": "exact quote across wrap",
+                }],
+            }],
+        }
+        facts = {
+            "good/repo": {
+                "exists": True, "archived": False,
+                "sources": [{
+                    "sha": "abc",
+                    "text": "an exact phrase with exact\nquote across wrap in the readme",
+                }],
+            },
+        }
+
+        checked = check_claim_traceability(arm, facts)
+
+        self.assertEqual(checked["passed"], 1)
+        self.assertEqual(checked["failed"], 0)
+        self.assertEqual(checked["repositories"][0]["failures"], [])
+
+    def test_claim_checker_still_rejects_case_and_punctuation_mismatch(self):
+        arm = {
+            "arm": "muse-shroom",
+            "results": [{
+                "prompt_id": "need-1",
+                "candidates": [
+                    {"repo": "case/repo", "source_term": "Device", "quote": "Exact Quote"},
+                    {"repo": "punct/repo", "source_term": "device", "quote": "exact quote."},
+                ],
+            }],
+        }
+        facts = {
+            "case/repo": {
+                "exists": True, "archived": False,
+                "sources": [{"sha": "abc", "text": "a device with exact quote"}],
+            },
+            "punct/repo": {
+                "exists": True, "archived": False,
+                "sources": [{"sha": "def", "text": "a device with exact quote"}],
+            },
+        }
+
+        checked = check_claim_traceability(arm, facts)
+
+        failures = {item["repo"]: item["failures"] for item in checked["repositories"]}
+        self.assertEqual(failures["case/repo"], ["quote_not_verbatim_at_recorded_sha"])
+        self.assertEqual(failures["punct/repo"], ["quote_not_verbatim_at_recorded_sha"])
+
 
 class MatchedScoreTests(unittest.TestCase):
     @staticmethod

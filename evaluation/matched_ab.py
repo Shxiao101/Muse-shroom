@@ -23,6 +23,7 @@ if str(ROOT / "src") not in sys.path:
 
 from evaluation.host_eval import _component_digest  # noqa: E402
 from muse_shroom.github import GitHubClient, GitHubNotFoundError  # noqa: E402
+from muse_shroom.ranking import _collapsed  # noqa: E402
 from muse_shroom.storage import Store  # noqa: E402
 
 REQUESTS_PATH = ROOT / "evaluation" / "ab-requests.json"
@@ -157,7 +158,12 @@ def adapt_direct_arm(
 def check_claim_traceability(
     arm_payload: dict[str, Any], repository_facts: dict[str, Any],
 ) -> dict[str, Any]:
-    """Check existence, archive state, and exact quoted text without judging claims."""
+    """Check existence, archive state, and exact quoted text without judging claims.
+
+    Quote matching folds whitespace only, via ranking._collapsed, because README
+    line wrapping is a rendering artifact. Case, punctuation, and word forms must
+    still match exactly; both checkers share quote_not_verbatim_at_recorded_sha.
+    """
     rows: list[dict[str, Any]] = []
     for result in arm_payload.get("results") or []:
         for candidate in result.get("candidates") or []:
@@ -168,16 +174,16 @@ def check_claim_traceability(
                 failures.append("repository_not_found")
             elif facts.get("archived"):
                 failures.append("repository_archived")
-            quote = str(candidate.get("quote") or "")
-            source_term = str(candidate.get("source_term") or "")
+            quote = _collapsed(candidate.get("quote") or "")
+            source_term = _collapsed(candidate.get("source_term") or "")
             if quote:
                 sources = [
                     source for source in facts.get("sources") or []
                     if isinstance(source, dict) and source.get("sha")
                 ]
                 if not any(
-                    quote in str(source.get("text") or "")
-                    and (not source_term or source_term in str(source.get("text") or ""))
+                    quote in _collapsed(source.get("text") or "")
+                    and (not source_term or source_term in _collapsed(source.get("text") or ""))
                     for source in sources
                 ):
                     failures.append("quote_not_verbatim_at_recorded_sha")

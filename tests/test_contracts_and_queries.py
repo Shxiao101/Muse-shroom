@@ -127,6 +127,84 @@ class ContractAndQueryTests(unittest.TestCase):
         self.assertLessEqual(len(queries), 12)
         self.assertTrue(all(item.get("concept_id") for item in queries))
 
+    def test_problem_aliases_enter_the_query_plan(self):
+        request = SearchRequest.from_dict({
+            "request": "discover unexpected connections",
+            "problem_concepts": [{
+                "term": "从大量资料中发现意外关联",
+                "aliases": ["knowledge discovery", "serendipitous discovery"],
+            }],
+            "artifact_types": ["application"],
+        })
+        queries = build_queries(request)
+        terms = [item.get("term") for item in queries]
+        self.assertLessEqual(len(queries), 12)
+        self.assertIn("knowledge discovery", terms)
+        self.assertTrue(any(
+            item["kind"] == "problem" and item.get("term") == "knowledge discovery"
+            for item in queries
+        ))
+
+    def test_problem_query_reserve_keeps_one_primary_per_concept(self):
+        request = SearchRequest.from_dict({
+            "request": "focus",
+            "problem_concepts": [
+                {"term": "专注管理", "aliases": ["focus management", "deep work"]},
+                {"term": "自控训练", "aliases": ["self-control", "self regulation"]},
+                {"term": "减少分心", "aliases": ["distraction blocking", "focus mode"]},
+            ],
+            "artifact_types": ["application"],
+        })
+        queries = build_queries(request)
+        problem = [item for item in queries if item["kind"] == "problem"]
+        self.assertLessEqual(len(queries), 12)
+        self.assertGreaterEqual(len(problem), 3)
+        self.assertEqual(
+            [item["term"] for item in problem[:3]],
+            ["专注管理", "自控训练", "减少分心"],
+        )
+        self.assertEqual(len({item["concept_id"] for item in problem[:3]}), 3)
+        self.assertTrue(any(item.get("term") == "focus management" for item in problem[3:]))
+
+    def test_long_cjk_primary_uses_english_alias_for_gem_and_typed(self):
+        request = SearchRequest.from_dict({
+            "request": "discover unexpected connections",
+            "problem_concepts": [{
+                "term": "从大量资料中发现意外关联",
+                "aliases": ["knowledge discovery"],
+            }],
+            "artifact_types": ["application"],
+        })
+        queries = build_queries(request)
+        gem = [item for item in queries if item["kind"] == "gem"]
+        typed = [item for item in queries if item["kind"] == "typed"]
+        self.assertTrue(gem)
+        self.assertTrue(typed)
+        self.assertTrue(all(item["term"] == "knowledge discovery" for item in gem))
+        self.assertTrue(all(item["term"] == "knowledge discovery" for item in typed))
+        self.assertTrue(any('"knowledge discovery"' in item["query"] for item in gem))
+        self.assertTrue(any('"knowledge discovery" "app"' in item["query"] for item in typed))
+        self.assertFalse(any("从大量资料中发现意外关联" in item["query"] for item in gem + typed))
+
+    def test_short_cjk_primary_keeps_gem_and_typed_on_the_primary(self):
+        request = SearchRequest.from_dict({
+            "request": "focus",
+            "problem_concepts": [
+                {"term": "自控", "aliases": ["self-control"]},
+                {"term": "专注管理", "aliases": ["focus management"]},
+            ],
+            "artifact_types": ["application"],
+        })
+        queries = build_queries(request)
+        gem = [item for item in queries if item["kind"] == "gem"]
+        self.assertTrue(gem)
+        self.assertTrue(all(item["term"] == "自控" for item in gem))
+        self.assertTrue(any('"自控" "app"' in item["query"] for item in queries))
+        self.assertTrue(any(
+            item["kind"] == "typed" and item.get("term") == "专注管理"
+            for item in queries
+        ))
+
     def test_request_rejects_missing_core_concepts(self):
         with self.assertRaises(ContractError):
             SearchRequest.from_dict({"request": "anything"})
