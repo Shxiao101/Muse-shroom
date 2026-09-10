@@ -1,12 +1,12 @@
 # Muse-shroom 0.7.2
 
-Muse-shroom 是一个“让当前 Agent 帮你打破 GitHub 信息茧房”的本地搜索内核。它把可复现的 GitHub API 调用、SQLite 缓存、关系扩散和确定性排名放进 Python CLI，把自然语言理解和语义评价留给 Codex、Claude、Cursor 等宿主 Agent。
+本地 GitHub 搜索内核：CLI 负责可复现的 API 调用、SQLite 缓存和机械校验；需求理解和最终选择留给宿主 Agent（Codex、Claude、Cursor 等）。
 
-它不会克隆或运行候选仓库，也不会把 GitHub Token 写入数据库或日志。默认使用系统凭据存储保存 Token。
+不克隆、不运行候选仓库。Token 不写入数据库或日志，默认存进系统凭据存储。
 
 ## 安装
 
-需要 Python 3.10+。安装后运行一次交互式登录：
+Python 3.10+：
 
 ```console
 pipx install .
@@ -14,14 +14,9 @@ muse-shroom auth login
 muse-shroom doctor
 ```
 
-`auth login` 会打开 GitHub Fine-grained Token 创建页，在终端中隐藏读取 Token，验证成功后保存到 Windows Credential Manager、macOS Keychain 或 Linux Secret Service。可用以下命令管理：
+`auth login` 打开 GitHub Fine-grained Token 页，验证后写入 Windows Credential Manager、macOS Keychain 或 Linux Secret Service。`auth status` / `auth logout` 查看或删除。自动化环境可用 `GITHUB_TOKEN`，优先级更高。
 
-```console
-muse-shroom auth status
-muse-shroom auth logout
-```
-
-自动化环境仍可设置 `GITHUB_TOKEN`；它的优先级高于系统凭据存储。开发态可运行：
+开发安装：
 
 ```console
 python -m pip install -e .
@@ -29,15 +24,11 @@ python -m pip install -e ".[mcp]"
 muse-shroom --help
 ```
 
-MCP 是可选 extra。安装 `[mcp]` 后可用 `muse-shroom-mcp` 或 `python -m muse_shroom.mcp_server` 以 stdio 启动。
+MCP 是可选 extra。安装后用 `muse-shroom-mcp` 或 `python -m muse_shroom.mcp_server` 以 stdio 启动。MCP 与 CLI 共用同一凭据和 SQLite 目录。
 
 ## 工作流
 
-宿主 Agent 使用 [`skills/muse-shroom`](skills/muse-shroom/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → `rank`。快搜是 `search` 然后 `rank`。MCP 可用时优先调用 `muse_search` / `muse_observe` / `muse_iterate` / `muse_rank`；否则走 CLI。策略相同。
-
-v0.4 请求把语义拆成 `problem_concepts`、`mechanisms`、`exploration_directions`。契约在 Skill 的 `references/` 下。
-
-v0.6.0 把宿主世界知识做成独立 sidecar：最多 2 条 `host_hypothesis`，每条 2 个查询，不占用原有 6/30 查询、15 README 和 12 人评估短名单。最终排名仍最多 10 条。Quick 模式不启用 sidecar。
+宿主 Agent 使用 [`skills/muse-shroom`](skills/muse-shroom/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → `rank`。快搜跳过 iterate。MCP 可用时优先 `muse_search` / `muse_observe` / `muse_iterate` / `muse_rank`，否则走 CLI，策略相同。契约在 Skill 的 `references/`。
 
 ```console
 muse-shroom search --request examples/music-ai.request.json --mode quick --output search.json
@@ -46,19 +37,17 @@ muse-shroom iterate --search-id SEARCH_ID --refinement examples/focus-tools.hypo
 muse-shroom rank --search-id SEARCH_ID --selection selection.json --output rank.json
 ```
 
-所有命令默认输出 JSON。JSON 输入请保存为 UTF-8 文件；Windows 不要使用 `Get-Content | muse-shroom`。`--output` 把完整 JSON 写到文件，控制台只打印回执。相同 request 和 mode 默认复用已完成的 `search_id`，需要新召回时加 `--refresh`。`--data-dir` 可覆盖平台数据目录。MCP 与 CLI 共用同一凭据存储和 SQLite 目录；多轮工具必须显式传 `search_id`。
+默认输出 JSON。输入请用 UTF-8 文件；Windows 不要 `Get-Content | muse-shroom`。`--output` 写完整 JSON，控制台只打回执。相同 request 和 mode 默认复用已完成的 `search_id`，新召回加 `--refresh`。`--data-dir` 覆盖数据目录。多轮必须显式传 `search_id`。
 
-本地只读 Explorer 浏览已有 session 的 Boundary、迭代和最终推荐，不发起 search / iterate / rank：
+只读浏览已有 session：
 
 ```console
 muse-shroom explorer
 ```
 
-默认打开 `http://127.0.0.1:8765/`，只绑定 loopback。Explorer 子命令支持 `--host`、`--port`、`--no-browser`；数据目录仍用全局 `--data-dir`（`muse-shroom --data-dir DIR explorer`）。绑定 `0.0.0.0` 等非本机地址必须显式加 `--allow-remote`（无认证，会暴露本地搜索数据）。`rank` 完成后会在后台启动一次 Explorer 并在结果里返回 `explorer_url`，由宿主 Agent 把链接交给你；它不会自动打开浏览器，服务器在闲置一段时间后自行退出。加 `--no-explore` 或设 `MUSE_SHROOM_NO_EXPLORER=1` 可关闭。Skill / MCP / CLI 在没有 Explorer 时功能不变，只是少这条链接。`?debug=1` 才显示 discovery paths、coverage 和 query history。
+默认 `http://127.0.0.1:8765/`，只绑 loopback。非本机地址必须加 `--allow-remote`（无认证）。`rank` 会后台启动 Explorer 并返回 `explorer_url`，不自动开浏览器；`--no-explore` 或 `MUSE_SHROOM_NO_EXPLORER=1` 可关。没有 Explorer 时 Skill / MCP / CLI 功能不变。
 
 ## MCP 宿主配置
-
-安装 `muse-shroom[mcp]` 后，本地 stdio 入口是 `muse-shroom-mcp`（或 `python -m muse_shroom.mcp_server`）。可选 `--data-dir`。进程只读取已有 GitHub 凭据，不返回 token。
 
 Codex（`~/.codex/config.toml`）：
 
@@ -87,54 +76,29 @@ Cursor（`.cursor/mcp.json`）：
 
 ## 结果
 
-- 快搜一次 `search` 后 `rank`（`next_action` 为 `rank` 再为 `done`）；深搜在中间按 `observation` 做有限次 `iterate`。
-- 深搜会按 novelty、confirmability 和 evidence priority 选择少量中等置信度新机制进入独立 confirmation stage，并按 problem、observed anchor、seed 顺序逐条查询和及时停止；只有新的 core-use-case、多仓库一致支持或明确跨域迁移证据才会提升。`confirmation_queue`、`mechanism_confirmations` 及 attempted/skipped/yield 统计与普通 iteration 分开记录。
-- `rank` 接收宿主 Agent 提交的有序 `selection`，只校验证据归属和原文引用、记录选择并生成 `items` + `display_order`；代码不会重新排序或按通道改写 Agent 的顺序。`popular` / `gems` / `adjacent` 只是在主列表确定后生成的兼容投影，不参与排序。
-- 评估必须引用候选上的 evidence ID；功能结论必须引用 README 片段。
-- 实现细节见 [`docs/search-internals.md`](docs/search-internals.md)。
+快搜：`search` 然后 `rank`。深搜中间按 `observation` 有限次 `iterate`。`rank` 接收宿主 Agent 的有序 `selection`，只校验证据归属和原文引用，生成 `items` 与 `display_order`，保留该顺序。代码不重排。`popular` / `gems` / `adjacent` 是主列表确定后的兼容投影。
+
+`candidate_count` 是完整召回池，`candidates` 是评估 shortlist，可能不含池中每一项。`rank` 前可用 `candidates --scope all` 或 `inspect` 看未进 shortlist 的证据。细节见 [`docs/search-internals.md`](docs/search-internals.md)。
 
 ### 职责边界
 
-- **GitHub 内核**负责查询、去重、缓存、README 和元数据获取、关系扩散、证据记录以及预算控制。
-- **Boundary 分析**提供机制、相关性、新颖性和覆盖等信号，帮助宿主 Agent 判断，不直接决定最终推荐顺序或语义结论。
-- **宿主 Agent**负责理解用户目标、提出搜索方向、选择候选、安排展示顺序，并解释跨域迁移。
-
-`candidate_count` 表示完整召回池的数量，`candidates` 是供评估的 shortlist，可能不包含召回池中的每个结果。需要继续判断时，宿主 Agent 可以在 `rank` 前通过 `candidates --scope all` 或 `inspect` 获取未进入 shortlist 的候选及其证据。`selection` 是 Agent 提交的有序选择；通过校验后，`items` 和 `display_order` 保留该顺序展示。
+- **GitHub 内核**：查询、去重、缓存、README 与元数据、关系扩散、证据记录、预算。
+- **Boundary 分析**：机制、相关性、新颖性、覆盖等信号；不决定最终顺序或语义结论。
+- **宿主 Agent**：理解目标、提出方向、选择候选、安排展示顺序、解释跨域迁移。
 
 ## 开发验证
 
-稳定测试使用冻结的 GitHub 响应和行为断言，不把特定仓库视为唯一正确答案。Core 测试不强制安装 MCP extra：
-
 ```console
 python -m unittest discover -s tests -v
-```
-
-MCP 是 CLI 用户的 optional extra。专项 MCP 测试必须先安装 extra；缺依赖或 SDK API 不兼容时应失败，而不是 skip：
-
-```console
 python -m pip install -e ".[mcp]"
 python -m unittest tests.test_mcp -v
+python -m pip install -e ".[test]"
 ```
 
-完整本地验证也可 `python -m pip install -e ".[test]"` 后再跑 `discover`。后续若增加 CI，MCP job 需要显式安装 `.[mcp]` 并运行 `python -m unittest tests.test_mcp -v`。
+Core 测试不强制 MCP extra。专项 MCP 测试缺依赖应失败而非 skip。`MUSE_SHROOM_LIVE_SMOKE=1` 才跑实时 API smoke。
 
-设置 `MUSE_SHROOM_LIVE_SMOKE=1` 后可选运行实时 API 认证/契约 smoke test；稳定测试不会执行它。
+人工盲测与 Boundary gate 在 `evaluation/`。`replay --ci` 用已提交的 synthetic fixture 离线回归。`discovery_verdict: not_measured` 与整体 `needs_review` 是确定性 harness 的设计结果，不是回退。发布判断见 `evaluation/ab-protocol.md`。
 
-人工盲测协议和 8 个模糊需求位于 `evaluation/`。运行 `python evaluation/run_ab.py capture` 可在隔离源码树中录制基线与当前版本的共同 GitHub 响应并生成匿名评审包，`replay` 可完全离线复跑。Boundary release gate 分开报告 8 个 development case 与 6 个 holdout case；`python evaluation/run_boundary_eval.py capture` 录制完整 agentic 流程，之后用 `replay` 离线重放并自动生成 verdict。Golden Cases 只参与结果评分，不会注入搜索策略，`python evaluation/check_boundary_leakage.py` 会阻止 holdout 答案进入生产 phrase hints；`replay --ci` 可在 fresh clone 中使用已提交的 synthetic fixture 离线回归。人工 A/B release gate 仍独立运行。
+## 范围
 
-### 如何读 release verdict
-
-Boundary release gate 把两类证据分开报告，不再合成一个数字：
-
-- **mechanics**（`mechanics_verdict`）—— evidence-backed promotion、duplicate query rate、query 演化、repetition、invalid gain。确定性 harness 能完整决定，必须 `pass`。
-- **discovery**（`discovery_verdict`）—— mainstream coverage、meaningful new mechanism、cross-domain transfer。需要真实宿主 Agent 参与判断。
-
-评测 harness 使用确定性 hypothesis 策略（`evaluation/version_worker.py`），该策略只能提升当前 observation 已给出的证据，**按构造无法产生跨域跳跃**。因此在这个 harness 下 `discovery_verdict` 恒为 `not_measured`，`cross_mechanism_status` 恒为 `not_measured`。
-
-**这是设计结果，不是缺陷。** 整体 verdict 因此长期停在 `needs_review`：两个 mechanics gate 都 `pass` 已经是当前确定性 harness 能给出的最强状态。host-in-the-loop 的真实 MCP 录制入口已经实现，但它只产出诊断，不构成发布结论：evaluation/ 下的所有 fixture 都是模型撰写的，与它们的一致程度无法授权发布。发布判断来自 `evaluation/ab-protocol.md` 里的配对盲评——同一个 Agent、同一套配置，在有无 Muse-shroom 两种情况下跑真实需求，阈值在读取任何结果之前就已登记。不要把 `not_measured` 或 `needs_review` 当成质量回归来排查。
-
-同理，confirmation 精度有多个分母不同的指标：`confirmation_precision` 只统计命中 Golden 答案的确认，`blind_precision` 只统计人工盲标为 meaningful 的确认。单看任何一个都会低估实际质量。
-
-## 首版边界
-
-没有远程 MCP 服务、独立模型 API、云端 Web UI、账号系统、后台监控、自动安装项目或全量 GitHub 索引。本地 `muse-shroom explorer` 只读浏览已有 session。`skills/muse-shroom` 可独立复制到支持 Skills 的宿主中。
+没有远程 MCP 服务、独立模型 API、云端 UI、账号或自动安装。`skills/muse-shroom` 可单独复制到支持 Skills 的宿主。
