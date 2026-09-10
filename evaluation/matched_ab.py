@@ -39,6 +39,11 @@ METADATA_FIELDS = (
     "model_id", "muse_shroom_revision", "skill_component_digest",
     "timestamp", "configuration",
 )
+# Reviewer-visible candidate fields. Anything else (stars, discovery_paths,
+# boundary_role, verification, …) would un-blind the pack by structure.
+BLIND_ENTRY_FIELDS = (
+    "repo", "url", "description", "rationale", "source_term", "quote",
+)
 
 
 def load_requests(path: Path | None = None) -> list[dict[str, Any]]:
@@ -118,6 +123,132 @@ def build_schedule(seed: str, reps: int, *, root: Path | None = None) -> dict[st
     return {"schema_version": 1, "seed": seed, "repetitions": reps, "runs": runs}
 
 
+def _repetition(item: dict[str, Any], *, label: str) -> int:
+    """Read a positive repetition, defaulting a missing field to 1.
+
+    Arm files from the 1-rep pilot omit the field; treating that as repetition 1
+    is the regression lock. Duplicate (need, 1) rows still fail uniqueness later.
+    """
+    if "repetition" not in item:
+        return 1
+    value = item.get("repetition")
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"{label} repetition must be a positive integer")
+    return value
+
+
+def _need_id(item: dict[str, Any], *, label: str) -> str:
+    need_id = str(item.get("prompt_id") or item.get("need_id") or "")
+    if not need_id:
+        raise ValueError(f"{label} need_id is required")
+    return need_id
+
+
+def _index_arm_results(payload: dict[str, Any], *, label: str) -> dict[tuple[str, int], dict[str, Any]]:
+    """Index `results[]` by (need_id, repetition); duplicates are a hard error."""
+    indexed: dict[tuple[str, int], dict[str, Any]] = {}
+    for item in payload.get("results") or []:
+        if not isinstance(item, dict):
+            raise ValueError(f"{label} results must be objects")
+        need_id = _need_id(item, label=label)
+        repetition = _repetition(item, label=f"{label} {need_id}")
+        key = (need_id, repetition)
+        if key in indexed:
+            raise ValueError(f"duplicate {label} result for {need_id} repetition {repetition}")
+        indexed[key] = item
+    return indexed
+
+
+def project_blind_entry(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Project a candidate onto the six fields the direct arm already emits."""
+    if not isinstance(candidate, dict):
+        raise ValueError("blind-pack candidates must be objects")
+    return {field: candidate.get(field) for field in BLIND_ENTRY_FIELDS}
+
+
+def _project_blind_list(candidates: Any) -> list[dict[str, Any]]:
+    return [project_blind_entry(item) for item in list(candidates or [])]
+
+
+def _nonempty_field(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    return True
+
+
+def blind_field_occupancy(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Present-and-nonempty rates of the six reviewer fields, per arm payload.
+
+    Structural blinding equalizes *which* fields appear. Occupancy is a data
+    fact (pilot `description` is already asymmetric) and is not a gate.
+    """
+    entries = [
+        project_blind_entry(candidate)
+        for result in payload.get("results") or []
+        for candidate in result.get("candidates") or []
+        if isinstance(candidate, dict)
+    ]
+    total = len(entries)
+    occupancy: dict[str, dict[str, Any]] = {}
+    for field in BLIND_ENTRY_FIELDS:
+        filled = sum(_nonempty_field(entry.get(field)) for entry in entries)
+        occupancy[field] = {
+            "filled": filled,
+            "total": total,
+            "rate": (filled / total) if total else 0.0,
+        }
+    return occupancy
+
+
+def assemble_arm(
+    run_records: list[dict[str, Any]], requests: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Fold per-run records into the `*.arm.json` envelope, carrying repetition."""
+    if not run_records:
+        raise ValueError("assemble_arm requires at least one run")
+    arms = {str(record.get("arm") or "") for record in run_records}
+    if len(arms) != 1 or "" in arms:
+        raise ValueError("runs must belong to a single named arm")
+    request_text = {str(item["id"]): item["text"] for item in requests}
+    results: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for record in run_records:
+        if not isinstance(record, dict):
+            raise ValueError("each run record must be an object")
+        need_id = str(record.get("need_id") or "")
+        repetition = _repetition(record, label=need_id or "run")
+        if not need_id:
+            raise ValueError("run need_id is required")
+        if need_id not in request_text:
+            raise ValueError(f"run need_id {need_id} is not in the request set")
+        key = (need_id, repetition)
+        if key in seen:
+            raise ValueError(f"duplicate run for {need_id} repetition {repetition}")
+        seen.add(key)
+        candidates = record.get("candidates")
+        if not isinstance(candidates, list):
+            raise ValueError(f"run candidates must be an array for {need_id} repetition {repetition}")
+        results.append({
+            "prompt_id": need_id,
+            "request": request_text[need_id],
+            "repetition": repetition,
+            "candidates": candidates,
+        })
+    metadata = run_records[0].get("metadata")
+    if not isinstance(metadata, dict) or not set(METADATA_FIELDS) <= set(metadata):
+        raise ValueError("run metadata is incomplete")
+    return {
+        "schema_version": 2,
+        "arm": next(iter(arms)),
+        "metadata": metadata,
+        "results": results,
+    }
+
+
 def adapt_direct_arm(
     requests_payload: dict[str, Any], direct_payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -126,25 +257,26 @@ def adapt_direct_arm(
         str(item.get("id") or ""): item
         for item in requests_payload.get("requests") or []
     }
-    direct = {
-        str(item.get("prompt_id") or ""): item
-        for item in direct_payload.get("results") or []
-    }
-    if not requests or "" in requests or set(requests) != set(direct):
+    rows = list(direct_payload.get("results") or [])
+    indexed = _index_arm_results({"results": rows}, label="direct arm")
+    prompt_ids = {need_id for need_id, _repetition in indexed}
+    if not requests or "" in requests or prompt_ids != set(requests):
         raise ValueError("direct arm prompt IDs must exactly match ab-requests.json")
     metadata = direct_payload.get("metadata")
     required_metadata = set(METADATA_FIELDS)
     if not isinstance(metadata, dict) or not required_metadata <= set(metadata):
         raise ValueError("direct arm metadata is incomplete")
     results: list[dict[str, Any]] = []
-    for prompt_id, need in requests.items():
-        item = direct[prompt_id]
+    for item in rows:
+        prompt_id = _need_id(item, label="direct arm")
+        repetition = _repetition(item, label=f"direct arm {prompt_id}")
         candidates = item.get("candidates")
         if not isinstance(candidates, list):
             raise ValueError(f"direct arm candidates must be an array for {prompt_id}")
         results.append({
             "prompt_id": prompt_id,
-            "request": need.get("text"),
+            "request": requests[prompt_id].get("text"),
+            "repetition": repetition,
             "candidates": candidates,
         })
     return {
@@ -207,43 +339,42 @@ def build_matched_blind_pack(
     mushroom_payload: dict[str, Any], direct_payload: dict[str, Any], *,
     blind_path: Path, key_path: Path, seed: str,
 ) -> None:
-    """Interleave the two matched arms per need behind A/B labels and write blind-key.json.
+    """Interleave the two matched arms per (need, repetition) behind A/B labels.
 
     Deliberately not a reuse of run_ab.build_blind_pack: that one is bound to the
     baseline/candidate naming and reads the categorized prompt schema, neither of
     which exists in this experiment.
+
+    Each (need_id, repetition) is shuffled independently so repeating a need
+    does not reuse an A/B mapping. Candidates are projected onto
+    BLIND_ENTRY_FIELDS before they enter the pack; the full payload stays on
+    the arm files that claim-traceability reads.
     """
-    arms = {
-        "muse-shroom": {
-            str(item.get("prompt_id") or ""): item
-            for item in mushroom_payload.get("results") or []
-        },
-        "direct": {
-            str(item.get("prompt_id") or ""): item
-            for item in direct_payload.get("results") or []
-        },
-    }
-    if (
-        not arms["muse-shroom"] or "" in arms["muse-shroom"]
-        or arms["muse-shroom"].keys() != arms["direct"].keys()
-    ):
-        raise ValueError("matched arms must cover exactly the same need IDs")
+    mushroom = _index_arm_results(mushroom_payload, label="muse-shroom")
+    direct = _index_arm_results(direct_payload, label="direct")
+    if not mushroom or mushroom.keys() != direct.keys():
+        raise ValueError("matched arms must cover exactly the same need IDs and repetitions")
     rng = random.Random(seed)
     cases: list[dict[str, Any]] = []
-    mappings: dict[str, dict[str, str]] = {}
-    for need_id, mushroom_item in arms["muse-shroom"].items():
+    mappings: dict[str, dict[str, dict[str, str]]] = {}
+    for (need_id, repetition), mushroom_item in mushroom.items():
         request = mushroom_item.get("request")
-        if arms["direct"][need_id].get("request") != request:
+        if direct[(need_id, repetition)].get("request") != request:
             raise ValueError(f"arms judged different request text for {need_id}")
         order = list(ARMS)
         rng.shuffle(order)
-        mappings[need_id] = {"A": order[0], "B": order[1]}
+        mappings.setdefault(need_id, {})[str(repetition)] = {"A": order[0], "B": order[1]}
+        by_arm = {
+            "muse-shroom": mushroom_item,
+            "direct": direct[(need_id, repetition)],
+        }
         cases.append({
             "need_id": need_id,
+            "repetition": repetition,
             "request": request,
             "lists": {
-                "A": list(arms[order[0]][need_id].get("candidates") or []),
-                "B": list(arms[order[1]][need_id].get("candidates") or []),
+                "A": _project_blind_list(by_arm[order[0]].get("candidates")),
+                "B": _project_blind_list(by_arm[order[1]].get("candidates")),
             },
         })
     blind_path.parent.mkdir(parents=True, exist_ok=True)
@@ -335,15 +466,31 @@ def _schedule_command(args: argparse.Namespace) -> None:
     }, ensure_ascii=False, indent=2))
 
 
+def _assemble_arm_command(args: argparse.Namespace) -> None:
+    run_records = [json.loads(path.read_text(encoding="utf-8")) for path in args.runs]
+    payload = assemble_arm(run_records, load_requests(args.requests))
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({
+        "ok": True, "arm": payload["arm"], "results": len(payload["results"]),
+        "output": str(args.output),
+    }, ensure_ascii=False, indent=2))
+
+
 def _blind_command(args: argparse.Namespace) -> None:
+    mushroom = json.loads(args.muse_shroom.read_text(encoding="utf-8"))
+    direct = json.loads(args.direct.read_text(encoding="utf-8"))
     build_matched_blind_pack(
-        json.loads(args.muse_shroom.read_text(encoding="utf-8")),
-        json.loads(args.direct.read_text(encoding="utf-8")),
+        mushroom, direct,
         blind_path=args.output, key_path=args.key, seed=args.seed,
     )
     print(json.dumps({
         "ok": True, "seed": args.seed,
         "blind_review": str(args.output), "blind_key": str(args.key),
+        "occupancy": {
+            "muse-shroom": blind_field_occupancy(mushroom),
+            "direct": blind_field_occupancy(direct),
+        },
     }, ensure_ascii=False, indent=2))
 
 
@@ -378,8 +525,16 @@ def _parser() -> argparse.ArgumentParser:
     facts.add_argument("--output", type=Path, required=True)
     facts.add_argument("--data-dir", type=Path, default=None)
     facts.set_defaults(handler=_collect_facts_command)
+    assemble = subparsers.add_parser(
+        "assemble-arm",
+        help="fold per-run JSON records into a *.arm.json envelope, carrying repetition",
+    )
+    assemble.add_argument("--runs", type=Path, nargs="+", required=True)
+    assemble.add_argument("--requests", type=Path, default=REQUESTS_PATH)
+    assemble.add_argument("--output", type=Path, required=True)
+    assemble.set_defaults(handler=_assemble_arm_command)
     blind = subparsers.add_parser(
-        "blind", help="interleave both arms per need behind A/B labels and write the key",
+        "blind", help="interleave both arms per need and repetition behind A/B labels and write the key",
     )
     blind.add_argument("--muse-shroom", type=Path, required=True)
     blind.add_argument("--direct", type=Path, required=True)

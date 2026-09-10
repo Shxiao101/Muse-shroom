@@ -25,6 +25,33 @@ RELEASE_MIN_NEEDS = 8
 RELEASE_MIN_WINS = 6
 
 
+def _mapping_for(
+    mappings: dict[str, Any], need_id: str, repetition: int,
+) -> dict[str, str]:
+    """Look up the A/B mapping for one (need_id, repetition).
+
+    The key is nested `{need_id: {str(repetition): {A, B}}}`. A need-level
+    `{A, B}` object (the 1-rep pilot shape) is not a mapping for any
+    repetition — looking it up by need_id alone is how the three reps of a
+    need would leak their assignment after the first rating.
+    """
+    by_need = mappings.get(need_id)
+    if not isinstance(by_need, dict):
+        raise ValueError(
+            f"missing blind mapping for {need_id or 'an unnamed need'} repetition {repetition}"
+        )
+    mapping = by_need.get(str(repetition))
+    if mapping is None:
+        mapping = by_need.get(repetition)
+    if not isinstance(mapping, dict) or set(mapping) != {"A", "B"}:
+        raise ValueError(
+            f"missing blind mapping for {need_id or 'an unnamed need'} repetition {repetition}"
+        )
+    if set(mapping.values()) != set(ARMS):
+        raise ValueError(f"blind mapping for {need_id} repetition {repetition} must name both arms")
+    return mapping
+
+
 def reveal(payload: dict[str, Any], key_payload: dict[str, Any]) -> dict[str, Any]:
     """Translate blind A/B ratings into arm names using `blind-key.json`.
 
@@ -41,17 +68,18 @@ def reveal(payload: dict[str, Any], key_payload: dict[str, Any]) -> dict[str, An
         if not isinstance(item, dict):
             raise ValueError("each evaluation must be an object")
         need_id = str(item.get("need_id") or "")
-        mapping = mappings.get(need_id)
-        if not isinstance(mapping, dict) or set(mapping) != {"A", "B"}:
-            raise ValueError(f"missing blind mapping for {need_id or 'an unnamed need'}")
-        if set(mapping.values()) != set(ARMS):
-            raise ValueError(f"blind mapping for {need_id} must name both arms")
+        repetition = item.get("repetition")
+        if not isinstance(repetition, int) or isinstance(repetition, bool) or repetition < 1:
+            raise ValueError(
+                f"evaluation repetition must be a positive integer for {need_id or 'an unnamed need'}"
+            )
+        mapping = _mapping_for(mappings, need_id, repetition)
         preferred = item.get("preferred")
         if preferred not in {"A", "B", "tie"}:
             raise ValueError("blind preferred must be A, B, or tie")
         entry: dict[str, Any] = {
             "need_id": need_id,
-            "repetition": item.get("repetition"),
+            "repetition": repetition,
             "preferred": "tie" if preferred == "tie" else mapping[preferred],
         }
         for label in ("A", "B"):

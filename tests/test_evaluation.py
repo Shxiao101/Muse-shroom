@@ -1,14 +1,17 @@
 import json
 import tempfile
+import threading
 import unittest
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 
 from evaluation.cassette import CassetteGitHub, load_cassette
+from evaluation.blind_review_ui import build_server as build_review_server
 from evaluation.matched_ab import (
-    adapt_direct_arm, build_matched_blind_pack, build_schedule,
-    check_claim_traceability, collect_repository_facts, load_requests,
-    main as matched_ab_main,
+    BLIND_ENTRY_FIELDS, adapt_direct_arm, assemble_arm, build_matched_blind_pack,
+    build_schedule, check_claim_traceability, collect_repository_facts,
+    load_requests, main as matched_ab_main,
 )
 from evaluation.run_ab import build_blind_pack, main as run_ab_main
 from evaluation.score_ab import main as score_ab_main, reveal, summarize
@@ -535,8 +538,9 @@ class MatchedABContractTests(unittest.TestCase):
             cases = json.loads(blind_text)["cases"]
             self.assertEqual([case["need_id"] for case in cases], need_ids)
             for case in cases:
+                self.assertEqual(case["repetition"], 1)
                 self.assertEqual(case["request"], f"text for {case['need_id']}")
-                mapping = key_payload["mappings"][case["need_id"]]
+                mapping = key_payload["mappings"][case["need_id"]]["1"]
                 self.assertEqual(set(mapping), {"A", "B"})
                 self.assertEqual(set(mapping.values()), {"muse-shroom", "direct"})
                 for label, arm in mapping.items():
@@ -545,6 +549,7 @@ class MatchedABContractTests(unittest.TestCase):
                         [item["repo"] for item in case["lists"][label]],
                         [f"{suffix}/{case['need_id']}"],
                     )
+                    self.assertEqual(set(case["lists"][label][0]), set(BLIND_ENTRY_FIELDS))
 
     def test_matched_blind_pack_rejects_mismatched_arms(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -607,7 +612,7 @@ class MatchedABContractTests(unittest.TestCase):
             ]), 0)
 
             self.assertNotIn("muse-shroom", blind.read_text(encoding="utf-8"))
-            mapping = json.loads(key.read_text(encoding="utf-8"))["mappings"]["need-1"]
+            mapping = json.loads(key.read_text(encoding="utf-8"))["mappings"]["need-1"]["1"]
             self.assertEqual(set(mapping.values()), {"muse-shroom", "direct"})
 
     def test_collect_repository_facts_aggregates_both_arms_read_only(self):
@@ -839,8 +844,11 @@ class MatchedScoreTests(unittest.TestCase):
 
     def test_reveal_translates_blind_labels_before_scoring(self):
         key = {"mappings": {
-            "need-01": {"A": "muse-shroom", "B": "direct"},
-            "need-02": {"A": "direct", "B": "muse-shroom"},
+            "need-01": {
+                "1": {"A": "muse-shroom", "B": "direct"},
+                "2": {"A": "direct", "B": "muse-shroom"},
+            },
+            "need-02": {"1": {"A": "direct", "B": "muse-shroom"}},
         }}
         blind = {"evaluations": [
             {"need_id": "need-01", "repetition": 1, "preferred": "A",
@@ -871,13 +879,13 @@ class MatchedScoreTests(unittest.TestCase):
     def test_cli_unblinds_with_the_key_before_scoring(self):
         need_ids = [f"need-{index:02d}" for index in range(8)]
         mappings = {
-            need_id: ({"A": "muse-shroom", "B": "direct"} if index % 2
-                      else {"A": "direct", "B": "muse-shroom"})
+            need_id: {"1": ({"A": "muse-shroom", "B": "direct"} if index % 2
+                            else {"A": "direct", "B": "muse-shroom"})}
             for index, need_id in enumerate(need_ids)
         }
         blind = {"evaluations": [
             {"need_id": need_id, "repetition": 1,
-             "preferred": "A" if mappings[need_id]["A"] == "muse-shroom" else "B"}
+             "preferred": "A" if mappings[need_id]["1"]["A"] == "muse-shroom" else "B"}
             for need_id in need_ids
         ]}
         with tempfile.TemporaryDirectory() as directory:
@@ -905,6 +913,302 @@ class MatchedScoreTests(unittest.TestCase):
             ratings.write_text(json.dumps(self.ratings(specs)), encoding="utf-8")
             self.assertEqual(score_matched_main([str(ratings), "--output", str(summary)]), 0)
             self.assertTrue(json.loads(summary.read_text(encoding="utf-8"))["passed"])
+
+
+BLIND_LEAK_FIELDS = (
+    "discovery_paths", "boundary_role", "mechanism_label", "evidence_ids",
+    "verification", "evidence", "new_mechanisms", "star_growth",
+)
+GITHUB_QUERY_FRAGMENTS = (
+    "in:name,description,topics,readme",
+    "stars:1..",
+    "is:public",
+    "archived:false",
+)
+SCORE_BLOCK = {
+    name: 3 for name in ("relevance", "interesting", "evidence", "actionability", "diversity")
+}
+
+
+def _arm_payload(arm, need_ids, reps, *, extra=None, omit_repetition=False):
+    results = []
+    for need_id in need_ids:
+        for repetition in range(1, reps + 1):
+            candidate = {
+                "repo": f"{arm}/{need_id}/{repetition}",
+                "url": f"https://github.com/{arm}/{need_id}",
+                "description": f"{arm} description",
+                "rationale": f"{arm} rationale",
+                "source_term": "focus",
+                "quote": "a quoted line",
+            }
+            if extra:
+                candidate.update(extra)
+            row = {
+                "prompt_id": need_id,
+                "request": f"text for {need_id}",
+                "candidates": [candidate],
+            }
+            if not omit_repetition:
+                row["repetition"] = repetition
+            results.append(row)
+    return {"arm": arm, "results": results}
+
+
+class MatchedBlindPackInvariantTests(unittest.TestCase):
+    def test_three_reps_yield_twenty_four_cases_and_independent_mappings(self):
+        need_ids = [f"need-{index:02d}" for index in range(1, 9)]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            blind, key = root / "blind.json", root / "key.json"
+            extra = {
+                "boundary_role": "anchor",
+                "mechanism_label": "timer",
+                "evidence_ids": ["e1"],
+                "verification": {"sha": "abc"},
+                "evidence": [{"kind": "readme"}],
+                "new_mechanisms": ["x"],
+                "star_growth": {"from": 1, "to": 2},
+                "discovery_paths": [{
+                    "query": '"focus" in:name,description,topics,readme stars:1..500 is:public archived:false',
+                }],
+            }
+            build_matched_blind_pack(
+                _arm_payload("muse-shroom", need_ids, 3, extra=extra),
+                _arm_payload("direct", need_ids, 3),
+                blind_path=blind, key_path=key, seed="fixed",
+            )
+            pack = json.loads(blind.read_text(encoding="utf-8"))
+            mappings = json.loads(key.read_text(encoding="utf-8"))["mappings"]
+            cases = pack["cases"]
+            self.assertEqual(len(cases), 24)
+            self.assertEqual(
+                {(case["need_id"], case["repetition"]) for case in cases},
+                {(need_id, rep) for need_id in need_ids for rep in (1, 2, 3)},
+            )
+            self.assertEqual(
+                sum(len(by_rep) for by_rep in mappings.values()), 24,
+            )
+            varied = False
+            for need_id in need_ids:
+                orders = [tuple(sorted(mappings[need_id][str(rep)].items())) for rep in (1, 2, 3)]
+                if len(set(orders)) > 1:
+                    varied = True
+                    break
+            self.assertTrue(varied, "independent shuffle must not reuse one mapping for every rep")
+            rebuilt = root / "blind2.json"
+            rebuilt_key = root / "key2.json"
+            build_matched_blind_pack(
+                _arm_payload("muse-shroom", need_ids, 3, extra=extra),
+                _arm_payload("direct", need_ids, 3),
+                blind_path=rebuilt, key_path=rebuilt_key, seed="fixed",
+            )
+            self.assertEqual(key.read_text(encoding="utf-8"), rebuilt_key.read_text(encoding="utf-8"))
+            text = blind.read_text(encoding="utf-8")
+            for fragment in GITHUB_QUERY_FRAGMENTS:
+                self.assertNotIn(fragment, text)
+            for case in cases:
+                for label in ("A", "B"):
+                    self.assertEqual(set(case["lists"][label][0]), set(BLIND_ENTRY_FIELDS))
+                    for field in BLIND_LEAK_FIELDS:
+                        self.assertNotIn(field, case["lists"][label][0])
+
+    def test_mismatched_need_repetition_sets_are_rejected(self):
+        need_ids = ["need-01", "need-02"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(ValueError, "same need IDs"):
+                build_matched_blind_pack(
+                    _arm_payload("muse-shroom", need_ids, 3),
+                    _arm_payload("direct", need_ids, 1),
+                    blind_path=root / "blind.json", key_path=root / "key.json", seed="fixed",
+                )
+
+    def test_one_rep_without_repetition_field_still_builds_one_case_per_need(self):
+        need_ids = ["need-1", "need-2"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            blind, key = root / "blind.json", root / "key.json"
+            build_matched_blind_pack(
+                _arm_payload("muse-shroom", need_ids, 1, omit_repetition=True),
+                _arm_payload("direct", need_ids, 1, omit_repetition=True),
+                blind_path=blind, key_path=key, seed="fixed",
+            )
+            cases = json.loads(blind.read_text(encoding="utf-8"))["cases"]
+            self.assertEqual([case["need_id"] for case in cases], need_ids)
+            self.assertEqual([case["repetition"] for case in cases], [1, 1])
+            mappings = json.loads(key.read_text(encoding="utf-8"))["mappings"]
+            self.assertEqual(sum(len(by_rep) for by_rep in mappings.values()), 2)
+
+    def test_reveal_uses_need_and_repetition_and_does_not_fall_back_to_need(self):
+        key = {"mappings": {
+            "need-01": {"1": {"A": "muse-shroom", "B": "direct"}},
+        }}
+        revealed = reveal_matched(
+            {"evaluations": [{"need_id": "need-01", "repetition": 1, "preferred": "A"}]},
+            key,
+        )
+        self.assertEqual(revealed["evaluations"][0]["preferred"], "muse-shroom")
+        with self.assertRaisesRegex(ValueError, "missing blind mapping"):
+            reveal_matched(
+                {"evaluations": [{"need_id": "need-01", "repetition": 2, "preferred": "A"}]},
+                key,
+            )
+        with self.assertRaisesRegex(ValueError, "missing blind mapping"):
+            reveal_matched(
+                {"evaluations": [{"need_id": "need-01", "repetition": 1, "preferred": "A"}]},
+                {"mappings": {"need-01": {"A": "muse-shroom", "B": "direct"}}},
+            )
+
+    def test_assemble_arm_carries_repetition_from_run_records(self):
+        requests = [{"id": "need-01", "text": "focus tools"}]
+        metadata = {
+            "model_id": "model", "muse_shroom_revision": "abc",
+            "skill_component_digest": "digest", "timestamp": "2026-09-10T00:00:00Z",
+            "configuration": {},
+        }
+        payload = assemble_arm(
+            [
+                {
+                    "need_id": "need-01", "arm": "muse-shroom", "repetition": 2,
+                    "metadata": metadata, "candidates": [{"repo": "a/b"}],
+                },
+            ],
+            requests,
+        )
+        self.assertEqual(payload["results"][0]["repetition"], 2)
+        self.assertEqual(payload["results"][0]["prompt_id"], "need-01")
+        self.assertEqual(payload["results"][0]["request"], "focus tools")
+
+    def test_direct_adapter_keeps_distinct_repetitions_of_the_same_need(self):
+        requests = {
+            "schema_version": 2,
+            "requests": [{"id": "need-1", "captured_at": "2026-09-08", "text": "Find a small tool"}],
+        }
+        metadata = {
+            "model_id": "model", "muse_shroom_revision": "none",
+            "skill_component_digest": "none", "timestamp": "2026-09-03T00:00:00Z",
+            "configuration": {},
+        }
+        adapted = adapt_direct_arm(requests, {
+            "metadata": metadata,
+            "results": [
+                {"prompt_id": "need-1", "repetition": 1, "candidates": [{"repo": "a/one"}]},
+                {"prompt_id": "need-1", "repetition": 2, "candidates": [{"repo": "a/two"}]},
+            ],
+        })
+        self.assertEqual([row["repetition"] for row in adapted["results"]], [1, 2])
+        self.assertEqual([row["candidates"][0]["repo"] for row in adapted["results"]], ["a/one", "a/two"])
+
+
+class BlindReviewUiTests(unittest.TestCase):
+    def test_ui_source_never_mentions_the_unblinding_key_file(self):
+        root = ROOT / "evaluation"
+        files = [
+            root / "blind_review_ui.py",
+            root / "blind_review_static" / "app.js",
+            root / "blind_review_static" / "index.html",
+            root / "blind_review_static" / "styles.css",
+        ]
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("blind-key", text)
+            self.assertNotIn("blind_key", text)
+
+    def test_ui_renders_pack_saves_ratings_and_resumes(self):
+        need_ids = ["need-01", "need-02"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            blind, key, ratings_path = root / "blind-review.json", root / "blind-key.json", root / "ratings.json"
+            build_matched_blind_pack(
+                _arm_payload("muse-shroom", need_ids, 1),
+                _arm_payload("direct", need_ids, 1),
+                blind_path=blind, key_path=key, seed="fixed",
+            )
+            key.write_text(json.dumps({"canary": "UNBLIND-CANARY-TOKEN"}), encoding="utf-8")
+            server = build_review_server(pack_path=blind, ratings_path=ratings_path, host="127.0.0.1", port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                port = server.server_address[1]
+                base = f"http://127.0.0.1:{port}"
+                home = urllib.request.urlopen(base + "/", timeout=5).read().decode("utf-8")
+                self.assertIn("Matched A/B review", home)
+                pack = json.loads(urllib.request.urlopen(base + "/api/pack", timeout=5).read())
+                self.assertEqual(len(pack["cases"]), 2)
+                for case in pack["cases"]:
+                    self.assertIn("repetition", case)
+                    self.assertEqual(set(case["lists"]["A"][0]), set(BLIND_ENTRY_FIELDS))
+                dumped = json.dumps(pack)
+                self.assertNotIn("UNBLIND-CANARY-TOKEN", dumped)
+                self.assertNotIn("blind-key", dumped)
+                first = pack["cases"][0]
+                evaluation = {
+                    "need_id": first["need_id"], "repetition": first["repetition"],
+                    "preferred": "A", "A": SCORE_BLOCK, "B": SCORE_BLOCK,
+                }
+                request = urllib.request.Request(
+                    base + "/api/ratings",
+                    data=json.dumps({"evaluations": [evaluation]}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="PUT",
+                )
+                saved = json.loads(urllib.request.urlopen(request, timeout=5).read())
+                self.assertEqual(len(saved["evaluations"]), 1)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+            resumed = build_review_server(pack_path=blind, ratings_path=ratings_path, host="127.0.0.1", port=0)
+            thread = threading.Thread(target=resumed.serve_forever, daemon=True)
+            thread.start()
+            try:
+                port = resumed.server_address[1]
+                loaded = json.loads(urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/ratings", timeout=5,
+                ).read())
+                self.assertEqual(loaded["evaluations"][0]["need_id"], first["need_id"])
+                self.assertEqual(loaded["evaluations"][0]["preferred"], "A")
+            finally:
+                resumed.shutdown()
+                resumed.server_close()
+
+            on_disk = json.loads(ratings_path.read_text(encoding="utf-8"))
+            self.assertEqual(on_disk["evaluations"][0]["need_id"], first["need_id"])
+            self.assertEqual(on_disk["evaluations"][0]["preferred"], "A")
+            self.assertEqual(
+                set(on_disk["evaluations"][0]["A"]),
+                {"relevance", "interesting", "evidence", "actionability", "diversity"},
+            )
+
+    def test_saved_ratings_are_accepted_by_score_matched_ab(self):
+        need_ids = [f"need-{index:02d}" for index in range(1, 9)]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            blind, key, ratings_path, summary = (
+                root / "blind.json", root / "key.json", root / "ratings.json", root / "summary.json",
+            )
+            build_matched_blind_pack(
+                _arm_payload("muse-shroom", need_ids, 1),
+                _arm_payload("direct", need_ids, 1),
+                blind_path=blind, key_path=key, seed="fixed",
+            )
+            mappings = json.loads(key.read_text(encoding="utf-8"))["mappings"]
+            evaluations = []
+            for need_id in need_ids:
+                evaluations.append({
+                    "need_id": need_id, "repetition": 1, "preferred": "A",
+                    "A": SCORE_BLOCK, "B": SCORE_BLOCK,
+                })
+            ratings_path.write_text(json.dumps({"evaluations": evaluations}), encoding="utf-8")
+            code = score_matched_main([
+                str(ratings_path), "--key", str(key), "--output", str(summary),
+            ])
+            self.assertIn(code, (0, 1))
+            result = json.loads(summary.read_text(encoding="utf-8"))
+            self.assertEqual(result["mode"], "pilot")
+            self.assertEqual(result["needs"], 8)
+            self.assertEqual(set(mappings), set(need_ids))
 
 
 if __name__ == "__main__":
