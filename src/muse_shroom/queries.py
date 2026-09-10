@@ -278,10 +278,18 @@ def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, Any
         return values
 
     problem_primary = bucket(problem_groups, "problem", aliases=False)
-    problem_aliases: list[tuple[str, str, str, str, str]] = []
+    problem_alias_first: list[tuple[str, str, str, str, str]] = []
+    problem_alias_rest: list[tuple[str, str, str, str, str]] = []
     for concept_id, _concept, terms in problem_groups:
-        for term in terms[1:]:
-            problem_aliases.append((
+        extra = terms[1:]
+        if not extra:
+            continue
+        problem_alias_first.append((
+            f"{quote_term(extra[0])} in:name,description,topics,readme {suffix}",
+            "problem", "stars", concept_id, extra[0],
+        ))
+        for term in extra[1:]:
+            problem_alias_rest.append((
                 f"{quote_term(term)} in:name,description,topics,readme {suffix}",
                 "problem", "stars", concept_id, term,
             ))
@@ -325,15 +333,17 @@ def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, Any
         for item in result[before:]:
             item["lane_kind"] = lane_by_kind[item["kind"]]
 
-    # Reserve one primary problem query per concept first; aliases compete later.
+    # Reserve one primary problem query per concept first, then one first-alias
+    # query per aliased concept. Remaining aliases compete after gem/typed.
     take(problem_primary, min(3, len(problem_groups)))
+    take(problem_alias_first, min(3, len(problem_alias_first)))
     take(mechanisms, min(4, len(mechanisms)))
     take(exploration, min(3, len(exploration)))
     take(gem, min(2, len(gem)))
     take(typed)
     take(mechanisms)
     take(exploration)
-    take(problem_aliases)
+    take(problem_alias_rest)
     take(problem_primary)
     return result
 

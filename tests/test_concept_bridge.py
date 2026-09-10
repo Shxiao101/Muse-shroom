@@ -7,8 +7,8 @@ from muse_shroom.models import Concept, SearchRequest
 from muse_shroom.search import SearchEngine, _compact_search_output, public_candidate
 from muse_shroom.selection import (
     SHORTLIST_LIMIT, balanced_select, concept_coverage, covered_core_ids,
-    lexical_concept_evidence, nongeneric_query_source, probe_select,
-    score_candidates, shortlist_select,
+    identity_concept_evidence, lexical_concept_evidence, nongeneric_query_source,
+    probe_select, score_candidates, shortlist_select,
 )
 from muse_shroom.storage import Store
 
@@ -170,6 +170,122 @@ class ConceptBridgeTests(unittest.TestCase):
         shortlist, _ = shortlist_select([popular, alias_hit], request)
         names = {item["full_name"] for item in shortlist}
         self.assertIn("small/behavior", names)
+
+    def test_identity_hit_is_preferred_over_readme_only_in_the_same_lane(self):
+        request = SearchRequest.from_dict({
+            "request": "self-control",
+            "core_concepts": [{"term": "自控", "aliases": ["self-control"]}],
+        })
+        identity = repo("small/timer", 80, description="self-control commitment device")
+        identity.update({
+            "matched_kinds": ["core"],
+            "discovery_paths": [
+                path("core", "self-control", 1, concept_id="core:0", term="self-control"),
+            ],
+            "readme": "# Timer\nUnrelated installation notes.\n## Usage\nRun it.",
+        })
+        crowd = []
+        for index in range(20):
+            item = repo(f"catalog-{index}/links", 200_000 - index, description="curated links")
+            item.update({
+                "matched_kinds": ["core"],
+                "discovery_paths": [
+                    path("core", "self-control", 1, concept_id="core:0", term="self-control"),
+                ],
+                "readme": "# Catalog\nIncludes self-control and many other topics.\n## Usage\nBrowse it.",
+            })
+            crowd.append(item)
+        shortlist, _ = shortlist_select([identity, *crowd], request)
+        names = {item["full_name"] for item in shortlist}
+        self.assertIn("small/timer", names)
+
+    def test_identity_pool_of_twelve_fills_the_shortlist(self):
+        request = SearchRequest.from_dict({
+            "request": "self-control",
+            "core_concepts": [{"term": "自控", "aliases": ["self-control"]}],
+        })
+        identity = []
+        for index in range(12):
+            item = repo(
+                f"timer-{index}/app", 40 + index,
+                description="self-control commitment device",
+            )
+            item.update({
+                "matched_kinds": ["core"],
+                "discovery_paths": [
+                    path("core", "self-control", 1, concept_id="core:0", term="self-control"),
+                ],
+                "readme": "# Timer\nself-control tool.\n## Usage\nRun it.",
+            })
+            identity.append(item)
+        crowd = []
+        for index in range(20):
+            item = repo(f"catalog-{index}/links", 300_000 - index, description="curated links")
+            item.update({
+                "matched_kinds": ["core"],
+                "discovery_paths": [
+                    path("core", "self-control", 1, concept_id="core:0", term="self-control"),
+                ],
+                "readme": "# Catalog\nIncludes self-control.\n## Usage\nBrowse it.",
+            })
+            crowd.append(item)
+        shortlist, _ = shortlist_select(identity + crowd, request)
+        self.assertEqual(len(shortlist), 12)
+        for item in shortlist:
+            self.assertTrue(identity_concept_evidence(item), item["full_name"])
+
+    def test_readme_only_pool_still_fills_twelve_shortlist_seats(self):
+        request = SearchRequest.from_dict({
+            "request": "self-control",
+            "core_concepts": [{"term": "自控", "aliases": ["self-control"]}],
+        })
+        crowd = []
+        for index in range(20):
+            item = repo(f"catalog-{index}/links", 1000 - index, description="curated links")
+            item.update({
+                "matched_kinds": ["core"],
+                "discovery_paths": [
+                    path("core", "self-control", index + 1, concept_id="core:0", term="self-control"),
+                ],
+                "readme": "# Catalog\nIncludes self-control.\n## Usage\nBrowse it.",
+            })
+            crowd.append(item)
+        shortlist, _ = shortlist_select(crowd, request)
+        self.assertEqual(len(shortlist), SHORTLIST_LIMIT)
+        self.assertEqual(len(shortlist), 12)
+        for item in shortlist:
+            self.assertFalse(identity_concept_evidence(item), item["full_name"])
+            self.assertTrue(lexical_concept_evidence(item), item["full_name"])
+
+    def test_identity_and_lexical_evidence_diverge_on_readme_only_hits(self):
+        request = SearchRequest.from_dict({
+            "request": "self-control",
+            "core_concepts": [{"term": "自控", "aliases": ["self-control"]}],
+        })
+        named = repo("small/timer", 80, description="self-control commitment device")
+        named.update({
+            "matched_kinds": ["core"],
+            "discovery_paths": [
+                path("core", "self-control", 1, concept_id="core:0", term="self-control"),
+            ],
+            "readme": "# Timer\nUnrelated.\n## Usage\nRun it.",
+        })
+        readme_only = repo("list/catalog", 90, description="curated links")
+        readme_only.update({
+            "matched_kinds": ["core"],
+            "discovery_paths": [
+                path("core", "self-control", 1, concept_id="core:0", term="self-control"),
+            ],
+            "readme": "# Catalog\nIncludes self-control.\n## Usage\nBrowse it.",
+        })
+        scored = {
+            item["full_name"]: item
+            for item in score_candidates([named, readme_only], request, enriched=True)
+        }
+        self.assertTrue(lexical_concept_evidence(scored["small/timer"]))
+        self.assertTrue(identity_concept_evidence(scored["small/timer"]))
+        self.assertTrue(lexical_concept_evidence(scored["list/catalog"]))
+        self.assertFalse(identity_concept_evidence(scored["list/catalog"]))
 
     def test_low_stars_alone_are_not_a_gem_reason(self):
         request = SearchRequest.from_dict({"request": "focus", "core_concepts": ["self-control"]})

@@ -245,6 +245,14 @@ def lexical_concept_evidence(candidate: dict[str, Any]) -> bool:
     )
 
 
+def identity_concept_evidence(candidate: dict[str, Any]) -> bool:
+    return any(
+        str(item.get("source") or "") in {"name", "topics", "description"}
+        and float(item.get("score") or 0) > 0
+        for item in candidate.get("concept_matches") or []
+    )
+
+
 def _alias_hit(candidate: dict[str, Any]) -> bool:
     for item in candidate.get("concept_matches") or []:
         matched = str(item.get("matched_alias") or "").casefold()
@@ -416,7 +424,7 @@ def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest
         red = redundancy_penalty(item, presented, presented_counts=presented_counts)
         return base + contrib * weights["contribution"] + novelty * weights["novelty"] - red * weights["redundancy"]
 
-    def take(lane: str, quota: int, *, allow_repeat: bool) -> None:
+    def take(lane: str, quota: int, *, allow_repeat: bool, identity_only: bool) -> None:
         while counts.get(lane, 0) < quota:
             pool = [
                 item for item in items
@@ -427,6 +435,8 @@ def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest
                 unseen = [item for item in pool if _unseen_mechanisms(item, presented) or not candidate_mechanism_names(item)]
                 if unseen:
                     pool = unseen
+            if identity_only:
+                pool = [item for item in pool if identity_concept_evidence(item)]
             if not pool:
                 return
             best = sorted(pool, key=lambda item: (-live_score(item, lane), repo_key(item)))[0]
@@ -435,24 +445,34 @@ def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest
                 continue
             counts[lane] = counts.get(lane, 0) + 1
 
-    for lane, quota in quotas.items():
-        take(lane, quota, allow_repeat=False)
-        if counts.get(lane, 0) < quota:
-            take(lane, quota, allow_repeat=True)
+    def fill(*, identity_only: bool) -> None:
+        for lane, quota in quotas.items():
+            take(lane, quota, allow_repeat=False, identity_only=identity_only)
+            if counts.get(lane, 0) < quota:
+                take(lane, quota, allow_repeat=True, identity_only=identity_only)
+
+    def fallback_lane(item: dict[str, Any]) -> str:
+        if "core" in item.get("selection_lanes", []):
+            return "core"
+        return next((lane for lane in quotas if lane in item.get("selection_lanes", [])), "core")
+
+    def backfill(*, identity_only: bool) -> None:
+        leftover = [
+            item for item in items
+            if repo_key(item) not in selected_names
+            and (identity_concept_evidence(item) if identity_only else True)
+        ]
+        leftover.sort(key=lambda item: (-live_score(item, fallback_lane(item)), repo_key(item)))
+        for item in leftover:
+            if len(selected) >= target:
+                return
+            add(item, fallback_lane(item))
+
     target = sum(quotas.values())
-    fallback = sorted(
-        (item for item in items if repo_key(item) not in selected_names),
-        key=lambda item: (
-            -live_score(item, next((lane for lane in quotas if lane in item.get("selection_lanes", [])), "core")),
-            repo_key(item),
-        ),
-    )
-    for item in fallback:
-        if len(selected) >= target:
-            break
-        add(item, "core" if "core" in item.get("selection_lanes", []) else next(
-            (lane for lane in quotas if lane in item.get("selection_lanes", [])), "core"
-        ))
+    fill(identity_only=True)
+    backfill(identity_only=True)
+    fill(identity_only=False)
+    backfill(identity_only=False)
     counts["fallback"] = max(0, len(selected) - sum(counts.get(lane, 0) for lane in quotas))
     for item in items:
         item.pop("_lane_scores", None)
