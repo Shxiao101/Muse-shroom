@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Matched A/B review</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">跳到主要内容</a>
+  <div id="app">
+    <header class="topbar">
+      <span class="brand">Matched A/B review</span>
+      <p class="tagline" id="progress">正在加载…</p>
+      <div class="topbar-end">
+        <button type="button" id="prev" class="btn ghost">上一对</button>
+        <button type="button" id="next" class="btn ghost">下一对</button>
+      </div>
+    </header>
+    <div class="layout">
+      <nav class="nav" id="nav" aria-label="cases"></nav>
+      <main id="main" tabindex="-1"></main>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
