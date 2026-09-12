@@ -1,12 +1,15 @@
+import tempfile
 import unittest
 
 from muse_shroom.analyze import github_links, make_evidence, readme_signals, safe_readme
 from muse_shroom.models import (
     ContractError, Refinement, SearchHypothesis, SearchRequest, Selection,
 )
-from muse_shroom.queries import build_queries, code_filename_query, refinement_queries
+from muse_shroom.queries import build_queries, code_filename_query, refinement_queries, unplanned_terms
+from muse_shroom.search import SearchEngine
+from muse_shroom.storage import Store
 
-from tests.helpers import repo
+from tests.helpers import FrozenGitHub, repo
 
 
 class ContractAndQueryTests(unittest.TestCase):
@@ -232,6 +235,98 @@ class ContractAndQueryTests(unittest.TestCase):
             ["专注管理", "自控训练", "减少分心"],
         )
         self.assertEqual(len({item["concept_id"] for item in problem[:3]}), 3)
+
+    def test_one_exploration_seat_precedes_the_remaining_problem_aliases(self):
+        request = SearchRequest.from_dict({
+            "request": "focus tools",
+            "problem_concepts": [
+                {"term": "focus management", "aliases": ["deep work", "attention control", "flow state"]},
+                {"term": "distraction control", "aliases": ["distraction blocking", "app blocker", "digital detox"]},
+            ],
+            "mechanisms": [{"term": "pomodoro"}],
+            "exploration_directions": [
+                {"term": "habit design", "aliases": ["behavior design", "commitment device"]},
+            ],
+        })
+        queries = build_queries(request)
+        reserved = {"focus management", "distraction control", "deep work", "distraction blocking"}
+        rest = {"attention control", "flow state", "app blocker", "digital detox"}
+        problem = {item["term"]: index for index, item in enumerate(queries) if item["kind"] == "problem"}
+        exploration = [index for index, item in enumerate(queries) if item["kind"] == "exploration"]
+        self.assertLessEqual(len(queries), 12)
+        self.assertTrue(reserved | rest <= set(problem))
+        self.assertTrue(exploration)
+        self.assertLess(max(problem[term] for term in reserved), min(exploration))
+        last_rest = max(problem[term] for term in rest)
+        self.assertEqual(sum(1 for index in exploration if index < last_rest), 1)
+
+    def test_exploration_keeps_one_seat_when_problem_terms_fill_the_budget(self):
+        request = SearchRequest.from_dict({
+            "request": "focus tools",
+            "problem_concepts": [
+                {"term": "focus management",
+                 "aliases": ["deep work", "attention control", "flow state", "mental clarity"]},
+                {"term": "distraction control",
+                 "aliases": ["distraction blocking", "app blocker", "digital detox", "notification silence"]},
+                {"term": "task switching",
+                 "aliases": ["context switching", "multitasking cost", "interruption recovery", "task resumption"]},
+            ],
+            "exploration_directions": [{"term": "habit design"}, {"term": "environment design"}],
+        })
+        queries = build_queries(request)
+        self.assertEqual(len(queries), 12)
+        self.assertEqual([item["term"] for item in queries if item["kind"] == "exploration"], ["habit design"])
+
+    def test_first_reserved_problem_alias_prefers_a_non_cjk_alias(self):
+        request = SearchRequest.from_dict({
+            "request": "focus tools",
+            "problem_concepts": [{"term": "专注管理", "aliases": ["专注力", "focus management"]}],
+        })
+        problem = [item["term"] for item in build_queries(request) if item["kind"] == "problem"]
+        self.assertEqual(problem[:2], ["专注管理", "focus management"])
+
+    def test_unplanned_terms_partition_the_request_terms(self):
+        request = SearchRequest.from_dict({
+            "request": "focus tools",
+            "problem_concepts": [
+                {"term": "focus management", "aliases": ["deep work", "attention control", "flow state"]},
+                {"term": "distraction control", "aliases": ["distraction blocking", "app blocker", "digital detox"]},
+            ],
+            "mechanisms": [
+                {"term": "pomodoro", "aliases": ["focus timer", "time boxing", "work intervals"]},
+                {"term": "website blocking", "aliases": ["site blocker", "url blocklist", "cold turkey"]},
+            ],
+            "exploration_directions": [{"term": "habit design", "aliases": ["behavior design", "commitment device"]}],
+        })
+        queries = build_queries(request)
+        unplanned = unplanned_terms(request, [item["query"] for item in queries])
+        planned = {item["term"] for item in queries}
+        reported = {row["term"] for row in unplanned}
+        supplied = {
+            term
+            for group in (request.problem_concepts, request.mechanisms, request.exploration_directions)
+            for concept in group for term in concept.terms()
+        }
+        self.assertTrue(reported)
+        self.assertEqual(planned | reported, supplied)
+        self.assertFalse(planned & reported)
+        self.assertLessEqual({row["group"] for row in unplanned}, {"problem", "mechanism", "exploration"})
+
+    def test_search_observation_reports_unsearched_request_terms(self):
+        request = SearchRequest.from_dict({
+            "request": "focus tools",
+            "problem_concepts": [{"term": "focus management", "aliases": ["deep work"]}],
+            "mechanisms": [{"term": "pomodoro", "aliases": ["focus timer"]}],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                result = SearchEngine(store, FrozenGitHub([]), initial_query_limit=2).search(request, "quick")
+            finally:
+                store.close()
+        summary = result["observation"]["query_summary"]
+        self.assertEqual({item["term"] for item in summary["executed"]}, {"focus management", "deep work"})
+        self.assertEqual({row["term"] for row in summary["unsearched_terms"]}, {"pomodoro", "focus timer"})
 
     def test_long_cjk_primary_uses_english_alias_for_gem_and_typed(self):
         request = SearchRequest.from_dict({

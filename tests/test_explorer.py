@@ -258,6 +258,36 @@ class ExplorerReadModelTests(unittest.TestCase):
         self.assertIn("if (!result.ranked)", frontend)
         self.assertNotIn("if (!result.ranked || !all.length)", frontend)
 
+    def test_result_view_exposes_host_supplied_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            try:
+                github = FrozenGitHub(
+                    [("focus", [repo("focus/timer", 40, description="focus timer")])],
+                    readmes={
+                        "focus/timer": "# Timer A focus timer.",
+                        "host/stop": "# Stop Stops scope creep in coding agents.",
+                    },
+                    repos={"host/stop": repo("host/stop", 7, description="scope guard")},
+                )
+                engine = SearchEngine(store, github, relation_budget=0)
+                search_id = engine.search(SearchRequest.from_dict(REQUEST), "quick")["search_id"]
+                engine.supply(search_id, ["host/stop"], "Found during Web verification.")
+                rank_search(store, search_id, [{
+                    "repo": "host/stop", "rationale": "Stops scope creep.", "mechanism_label": "scope guard",
+                    "source_term": "scope creep", "quote": "Stops scope creep in coding agents.",
+                    "evidence_ids": ["repo:host/stop:readme"], "boundary_role": "anchor",
+                }])
+                view = ExplorerReadModel(data_dir=directory).result_view(search_id)
+            finally:
+                store.close()
+        self.assertEqual([item["source"] for item in view["items"]], ["host_supplied"])
+        frontend = (
+            Path(__file__).resolve().parents[1] / "src" / "muse_shroom" / "explorer" / "static" / "app.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn('item.source === "host_supplied"', frontend)
+        self.assertIn("hostSupplied", frontend)
+
     def test_explorer_views_are_read_only(self):
         with tempfile.TemporaryDirectory() as directory:
             store, github, search_id = _session(directory, iterate=True, rank=True)

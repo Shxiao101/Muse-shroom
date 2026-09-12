@@ -107,6 +107,18 @@ def _verify_selection(
     return ["quote_not_verbatim_at_recorded_sha"], None
 
 
+def candidate_source(candidate: dict[str, Any]) -> str:
+    """host_supplied only when the host's own submission is the sole discovery path."""
+    paths = [path for path in candidate.get("discovery_paths") or [] if isinstance(path, dict)]
+    supplied = any(path.get("relation") == "host_supplied" for path in paths)
+    recalled = any(
+        path.get("kind") == "query"
+        or (path.get("kind") == "relationship" and path.get("relation") != "host_supplied")
+        for path in paths
+    )
+    return "host_supplied" if supplied and not recalled else "muse_recall"
+
+
 def _raw_item(
     store: Store, candidate: dict[str, Any], selection: Selection,
     verification: dict[str, Any], new_mechanisms: list[str],
@@ -135,6 +147,7 @@ def _raw_item(
         "discovery_paths": list(candidate.get("discovery_paths") or []),
         "new_mechanisms": new_mechanisms,
         "verification": verification,
+        "source": candidate_source(candidate),
     }
 
 
@@ -276,7 +289,9 @@ def rank_search(
             continue
         label_key = selection.mechanism_label.casefold()
         new_mechanisms = []
-        if label_key not in presented_keys:
+        # A repository the host supplied is shown, but it is not a Muse-shroom
+        # discovery, so it never counts as a newly introduced mechanism.
+        if label_key not in presented_keys and candidate_source(candidate) != "host_supplied":
             new_mechanisms = [selection.mechanism_label]
             introduced.append(selection.mechanism_label)
             presented_keys.add(label_key)
@@ -300,11 +315,15 @@ def rank_search(
 
     selected_labels = [item["mechanism_label"] for item in items]
     boundary["presented_mechanisms"] = _unique_labels([*presented_before, *selected_labels])
+    recalled_labels = [item["mechanism_label"] for item in items if item["source"] != "host_supplied"]
+    host_labels = [item["mechanism_label"] for item in items if item["source"] == "host_supplied"]
     boundary["recalled_mechanisms"] = _unique_labels([
-        *(boundary.get("recalled_mechanisms") or []), *selected_labels,
+        *(boundary.get("recalled_mechanisms") or []), *recalled_labels,
     ])
     origins = dict(boundary.get("mechanism_origins") or {})
     origins["agent_selection"] = _unique_labels(selected_labels)
+    if host_labels:
+        origins["host_supplied"] = _unique_labels(host_labels)
     boundary["mechanism_origins"] = origins
     previous_boundary = previous_snapshot.get("boundary") if previous_snapshot else None
     delta = compute_boundary_delta(boundary, previous_boundary).to_dict()
@@ -316,6 +335,7 @@ def rank_search(
         **{f"{role}_count": count for role, count in role_counts.items()},
         "mechanisms_shown": _unique_labels([*presented_before, *selected_labels]),
         "new_mechanisms_introduced": introduced,
+        "host_supplied_count": len(host_labels),
     }
     # Any rejection means the rank is not final. Saving it and reporting "done" would
     # strand the Agent: the Skill treats rank-with-done as terminal, so it could never

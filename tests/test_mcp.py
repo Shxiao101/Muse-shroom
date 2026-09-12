@@ -206,6 +206,7 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
         for name in ("muse_search", "muse_observe", "muse_iterate", "muse_rank", "muse_status"):
             self.assertIn(name, names)
         self.assertIn("muse_inspect", names)
+        self.assertIn("muse_supply", names)
         self.assertNotIn("muse_expand", names)
         self.assertNotIn("expand", names)
 

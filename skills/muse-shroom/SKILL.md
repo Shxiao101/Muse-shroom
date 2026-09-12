@@ -57,7 +57,7 @@ Call `muse_search` with the SearchRequest, `mode`, and optional `refresh`; or `m
 
 Quick mode skips this section and goes to assess.
 
-Each round, read `observation` in this order: `stop`, `unexplored_directions`, `boundary_delta`, `mechanism_distribution`, `ambiguity_signals`, `discovered_term_evidence`, `semantic_hypotheses`, `remaining_budget`, `anchors`. For evidence-derived additions, use source terms carried by `discovered_term_evidence`; cite `discovered_term`, that term's own evidence ID, or `user_request`. `request_anchored` is context for your judgement, never a permission gate. During iterations 1 and 2 you may also submit at most two session-wide `host_hypothesis` additions. Do not rebuild the strategy from the original request or by scanning the whole candidate pool.
+Each round, read `observation` in this order: `stop`, `unexplored_directions`, `boundary_delta`, `mechanism_distribution`, `ambiguity_signals`, `discovered_term_evidence`, `semantic_hypotheses`, `remaining_budget`, `anchors`. For evidence-derived additions, use source terms carried by `discovered_term_evidence`; cite `discovered_term`, that term's own evidence ID, or `user_request`. `request_anchored` is context for your judgement, never a permission gate. During iterations 1 and 2 you may also submit at most two session-wide `host_hypothesis` additions. Do not rebuild the strategy from the original request or by scanning the whole candidate pool. One exception: `query_summary.unsearched_terms` lists request terms and aliases the query budget left unsearched; when one of them names the core need, a later hypothesis may put it in `concepts` or `aliases`.
 
 The initial deep search response contains the observation used to decide the first iteration. After every successful `muse_iterate` whose `next_action` is still `iterate`, call `muse_observe` before preparing another hypothesis. Never chain two `muse_iterate` calls without an intervening `muse_observe`. If observe returns `next_action=done` or `can_iterate=false`, do not iterate again.
 
@@ -83,6 +83,8 @@ Choose useful candidates and put them in the exact order you want to present. Fo
 
 When `semantic_hypotheses` shows `evidence_found`, consider the supplied semantic candidate. Cite its corresponding evidence when you select it, but do not copy the hypothesis term as a label unless that is genuinely your interpretation.
 
+If you know a relevant repository this search did not recall, for example one found during explicit Web verification, pass it to `muse_supply` (or `muse-shroom supply --search-id ID --repositories REPOS.json --reason TEXT`) before rank. Muse-shroom fetches and records its evidence itself; cite only the evidence IDs it returns. Never recommend a repository whose evidence was not recorded. Accepted items keep `source: host_supplied`.
+
 Type-aware judgement remains yours: applications normally need install and an entry point; MCPs need a tool contract and permissions; Skills need a trigger boundary; mods need compatibility and an uninstall path. If evidence is insufficient, omit the repository. If that omits every candidate, still call rank: submit `selection: []` with `no_recommendation.reason` (single-line, up to 500 characters) so the session records a done terminal with no items. An empty selection without that reason is a contract error.
 
 On a contract error, fix the JSON and retry this step. Do not search again.
@@ -93,7 +95,7 @@ Call `muse_rank` with `search_id` and the ordered `selection`, or `muse-shroom r
 
 ## 9. Present
 
-Follow `display_order`. For each item: name, one-line use, boundary role, rationale, and an explicit new-mechanism field. Render `New mechanism: <comma-separated new_mechanisms>` when the array is non-empty and `New mechanism: none` when it is empty, translated when appropriate. Do not append a second priority, recommendation, or best-first order after the list.
+Follow `display_order`. For each item: name, one-line use, boundary role, rationale, and an explicit new-mechanism field. When `source` is `host_supplied`, say that the repository came from outside Muse-shroom's recall. Render `New mechanism: <comma-separated new_mechanisms>` when the array is non-empty and `New mechanism: none` when it is empty, translated when appropriate. Do not append a second priority, recommendation, or best-first order after the list.
 
 Only validated semantic mechanisms that appear in final ranked items may be presented as formal new mechanisms. Distinguish `proposed`, `searched`, `evidence_found`, `validated`, `rejected`, and `inconclusive` from `semantic_hypotheses`. Rejected and inconclusive hypotheses may be summarized briefly in deep mode.
 

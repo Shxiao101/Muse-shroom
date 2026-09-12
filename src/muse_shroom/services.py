@@ -79,6 +79,13 @@ class MuseCore:
         finally:
             store.close()
 
+    def supply(self, search_id: str, repositories: Any, reason: Any) -> dict[str, Any]:
+        store = self._store()
+        try:
+            return SearchEngine(store, self._github(store)).supply(search_id, repositories, reason)
+        finally:
+            store.close()
+
     def rank(self, search_id: str, selection: Any) -> dict[str, Any]:
         store = self._store()
         try:

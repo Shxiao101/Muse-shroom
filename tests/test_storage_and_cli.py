@@ -101,6 +101,37 @@ class StorageAndCliTests(unittest.TestCase):
             self.assertEqual(payload["error"], "ContractError")
             self.assertIn("UTF-8", payload["message"])
 
+    def test_supply_cli_records_evidence_for_an_outside_repository(self):
+        from tests.helpers import FrozenGitHub
+
+        with tempfile.TemporaryDirectory() as directory:
+            request_path = os.path.join(directory, "request.json")
+            repositories_path = os.path.join(directory, "repositories.json")
+            with open(request_path, "w", encoding="utf-8") as handle:
+                json.dump({"request": "focus", "problem_concepts": ["focus timer"]}, handle)
+            with open(repositories_path, "w", encoding="utf-8") as handle:
+                json.dump(["host/stop"], handle)
+            github = FrozenGitHub(
+                [("focus timer", [repo("focus/timer", 10, description="focus timer")])],
+                readmes={"host/stop": "# Stop Stops scope creep."},
+                repos={"host/stop": repo("host/stop", 3, description="scope guard")},
+            )
+            stdout = io.StringIO()
+            with patch("muse_shroom.cli.GitHubClient", return_value=github), redirect_stdout(stdout):
+                self.assertEqual(main(["--data-dir", directory, "search", "--request", request_path]), 0)
+            search_id = json.loads(stdout.getvalue())["search_id"]
+            stdout = io.StringIO()
+            with patch("muse_shroom.cli.GitHubClient", return_value=github), redirect_stdout(stdout):
+                code = main([
+                    "--data-dir", directory, "supply", "--search-id", search_id,
+                    "--repositories", repositories_path, "--reason", "Found during Web verification.",
+                ])
+            self.assertEqual(code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual([item["full_name"] for item in payload["supplied"]], ["host/stop"])
+            self.assertTrue(payload["supplied"][0]["readme_recorded"])
+            self.assertEqual(payload["next_action"], "rank")
+
     def test_search_writes_output_file_and_prints_receipt(self):
         from muse_shroom.search import SearchEngine
         from muse_shroom.models import SearchRequest

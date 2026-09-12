@@ -344,7 +344,11 @@ HOST_INSTRUCTIONS = (
     "unless you have a separate verification reason. Web may still be used later for "
     "explicit verification. This is Muse-shroom-first, not a ban on Web. "
     "Default flow: muse_status, then muse_search, then (deep mode) muse_observe and "
-    "muse_iterate as next_action requires, then muse_rank. Always pass search_id "
+    "muse_iterate as next_action requires, then muse_rank. Before muse_rank you may pass "
+    "repositories found outside Muse-shroom to muse_supply (owner/repo, at most 8 per call "
+    "and 16 per session); it records their evidence itself and rank labels them "
+    "source=host_supplied. Never recommend a repository whose evidence was not recorded. "
+    "Always pass search_id "
     "explicitly. Follow next_action and can_iterate; do not invent GitHub queries. "
     "muse_search.request is a v0.4 SearchRequest: request, problem_concepts (required), "
     "mechanisms, exploration_directions, artifact_types, constraints, exclusions, "
@@ -371,6 +375,15 @@ MUSE_ITERATE_DESCRIPTION = (
     "hypothesis.decision must be continue or stop. Continue needs search terms or "
     "strategies; stop needs stop_reason. Unknown fields such as mechanisms or rationale "
     "are rejected. Does not start a new search."
+)
+
+MUSE_SUPPLY_DESCRIPTION = (
+    "Add repositories the host found outside this search, for example during Web verification, "
+    "to an existing search_id. repositories is 1-8 owner/repo names, at most 16 per session; "
+    "reason is single-line, up to 500 characters. Muse-shroom fetches metadata and README "
+    "itself, records evidence at the README SHA, and returns evidence IDs usable in rank. "
+    "Supplied repositories never change the shortlist, boundary, or iteration budget, and rank "
+    "labels them source=host_supplied. Returns supplied, rejected, next_action, can_iterate."
 )
 
 MUSE_RANK_DESCRIPTION = (

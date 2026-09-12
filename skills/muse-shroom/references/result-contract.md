@@ -13,6 +13,7 @@ no_recommendation
 boundary_role
 mechanism_label
 new_mechanisms
+source
 rationale
 verification
 coverage
@@ -42,6 +43,12 @@ evidence, and discovery paths. No aggregate usefulness score is returned.
 previously presented in the session. It is not a judgement of novelty or quality.
 `verification` names the cited evidence ID and recorded SHA that contain the exact
 `source_term` and `quote`. The mechanism label is deliberately not text-matched.
+
+`source` is `muse_recall` when this search recalled the repository and `host_supplied`
+when it entered only through `muse_supply`. Host-supplied items are verified the same way,
+but they never count toward `new_mechanisms`, `newly_presented_mechanisms`, or
+`boundary.recalled_mechanisms`; `boundary_summary.host_supplied_count` reports how many
+were accepted. Disclose the source when presenting them.
 
 Boundary roles are Agent assignments:
 

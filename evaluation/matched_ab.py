@@ -23,6 +23,7 @@ if str(ROOT / "src") not in sys.path:
 
 from evaluation.host_eval import _component_digest  # noqa: E402
 from muse_shroom.github import GitHubClient, GitHubNotFoundError  # noqa: E402
+from muse_shroom.analyze import _plain_line  # noqa: E402
 from muse_shroom.ranking import _collapsed  # noqa: E402
 from muse_shroom.storage import Store  # noqa: E402
 
@@ -295,6 +296,13 @@ def check_claim_traceability(
     Quote matching folds whitespace only, via ranking._collapsed, because README
     line wrapping is a rendering artifact. Case, punctuation, and word forms must
     still match exactly; both checkers share quote_not_verbatim_at_recorded_sha.
+
+    Production verifies quotes against README excerpts it recorded, and those are
+    rendered line by line through analyze._plain_line. A quote copied from such an
+    excerpt can span list items whose raw markdown markers are gone, so each
+    source is matched both raw and rendered the same way. passed_raw keeps the
+    raw-only count, and passed_quote_only ignores source_term, so a field one arm
+    was never told how to fill stays visible instead of silently failing claims.
     """
     rows: list[dict[str, Any]] = []
     for result in arm_payload.get("results") or []:
@@ -306,33 +314,51 @@ def check_claim_traceability(
                 failures.append("repository_not_found")
             elif facts.get("archived"):
                 failures.append("repository_archived")
+            existence_failures = list(failures)
             quote = _collapsed(candidate.get("quote") or "")
             source_term = _collapsed(candidate.get("source_term") or "")
+            matched = None
+            quote_found = not quote
             if quote:
-                sources = [
-                    source for source in facts.get("sources") or []
+                texts = [
+                    (_collapsed(source.get("text") or ""), _rendered_source(source.get("text") or ""))
+                    for source in facts.get("sources") or []
                     if isinstance(source, dict) and source.get("sha")
                 ]
-                if not any(
-                    quote in _collapsed(source.get("text") or "")
-                    and (not source_term or source_term in _collapsed(source.get("text") or ""))
-                    for source in sources
-                ):
+                for raw_text, rendered_text in texts:
+                    if quote in raw_text or quote in rendered_text:
+                        quote_found = True
+                    if quote in raw_text and (not source_term or source_term in raw_text):
+                        matched = "raw"
+                        break
+                    if quote in rendered_text and (not source_term or source_term in rendered_text):
+                        matched = matched or "rendered"
+                if matched is None:
                     failures.append("quote_not_verbatim_at_recorded_sha")
             rows.append({
                 "prompt_id": result.get("prompt_id"),
                 "repo": repo_name,
                 "passed": not failures,
                 "failures": failures,
+                "matched": matched,
+                "passed_raw": not existence_failures and (not quote or matched == "raw"),
+                "passed_quote_only": not existence_failures and quote_found,
             })
     return {
         "arm": arm_payload.get("arm"),
         "checked": len(rows),
         "passed": sum(item["passed"] for item in rows),
         "failed": sum(not item["passed"] for item in rows),
+        "passed_raw": sum(item["passed_raw"] for item in rows),
+        "passed_quote_only": sum(item["passed_quote_only"] for item in rows),
         "repositories": rows,
         "measurement": "claim_traceability_only",
     }
+
+
+def _rendered_source(text: Any) -> str:
+    """README text as production records excerpts: each line through analyze._plain_line."""
+    return _collapsed(" ".join(part for part in map(_plain_line, str(text).splitlines()) if part))
 
 
 def build_matched_blind_pack(
