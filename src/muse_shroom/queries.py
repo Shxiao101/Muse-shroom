@@ -284,11 +284,16 @@ def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, Any
         extra = terms[1:]
         if not extra:
             continue
+        # The reserved alias should reach GitHub's own vocabulary, so prefer a
+        # non-CJK alias when the host supplied one.
+        first = next((term for term in extra if not CJK_RE.search(term)), extra[0])
         problem_alias_first.append((
-            f"{quote_term(extra[0])} in:name,description,topics,readme {suffix}",
-            "problem", "stars", concept_id, extra[0],
+            f"{quote_term(first)} in:name,description,topics,readme {suffix}",
+            "problem", "stars", concept_id, first,
         ))
-        for term in extra[1:]:
+        for term in extra:
+            if term == first:
+                continue
             problem_alias_rest.append((
                 f"{quote_term(term)} in:name,description,topics,readme {suffix}",
                 "problem", "stars", concept_id, term,
@@ -333,19 +338,60 @@ def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, Any
         for item in result[before:]:
             item["lane_kind"] = lane_by_kind[item["kind"]]
 
-    # Reserve one primary problem query per concept first, then one first-alias
-    # query per aliased concept. Remaining aliases compete after gem/typed.
+    # Core recall before boundary work. One primary per problem concept and one
+    # first alias per aliased concept are reserved, then the mechanism reserve.
+    # Every remaining problem term is searched before any exploration seat:
+    # exploring around a need whose own synonyms went unsearched yields variety
+    # without relevance. Gem and typed decorate a core that is already covered.
     take(problem_primary, min(3, len(problem_groups)))
     take(problem_alias_first, min(3, len(problem_alias_first)))
     take(mechanisms, min(4, len(mechanisms)))
+    take(problem_primary)
+    take(problem_alias_first)
+    take(problem_alias_rest)
     take(exploration, min(3, len(exploration)))
     take(gem, min(2, len(gem)))
     take(typed)
     take(mechanisms)
     take(exploration)
-    take(problem_alias_rest)
-    take(problem_primary)
     return result
+
+
+def unplanned_terms(request: SearchRequest, queries: Iterable[str]) -> list[dict[str, Any]]:
+    """Request terms and aliases that no executed query has searched.
+
+    A request may carry more terms than the query budget can search. Reporting
+    the remainder keeps that loss visible to the host instead of silent. A term
+    counts as searched when its quoted form appears in an executed query; generic
+    artifact words are never queried on their own and are not reported.
+    """
+    searched = [str(query) for query in queries]
+    if request.legacy_schema:
+        sources = [
+            *(("problem", f"core:{index}", concept) for index, concept in enumerate(request.core_concepts)),
+            *(("exploration", f"adjacent:{index}", concept)
+              for index, concept in enumerate(request.adjacent_concepts)),
+        ]
+    else:
+        offset = len(request.problem_concepts)
+        sources = [
+            *(("problem", f"core:{index}", concept) for index, concept in enumerate(request.problem_concepts)),
+            *(("mechanism", f"core:{offset + index}", concept)
+              for index, concept in enumerate(request.mechanisms)),
+            *(("exploration", f"adjacent:{index}", concept)
+              for index, concept in enumerate(request.exploration_directions)),
+        ]
+    unsearched: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group, concept_id, concept in sources:
+        for term in concept.terms():
+            quoted = quote_term(term)
+            if not quoted or is_generic_term(term) or term in seen:
+                continue
+            seen.add(term)
+            if not any(quoted in query for query in searched):
+                unsearched.append({"term": term, "group": group, "concept_id": concept_id})
+    return unsearched
 
 
 def query_fingerprint(query: str) -> str:

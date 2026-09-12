@@ -41,7 +41,7 @@ from .sidecar import (
 )
 from .queries import (
     build_queries, code_filename_query, confirmation_queries, hypothesis_queries,
-    indexed_groups, query_fingerprint, reverse_reference_query,
+    indexed_groups, query_fingerprint, reverse_reference_query, unplanned_terms,
 )
 from .selection import (
     SHORTLIST_LIMIT, candidate_allowed, covered_core_ids, probe_select,
@@ -1138,7 +1138,12 @@ class SearchEngine:
             search_id, candidates, request, stale, cached_at, incomplete,
             enriched_count=enriched_count, relation_calls=0, code_calls=0,
             stage="search", rejected_directions=[], iteration=0,
-            query_summary=self._query_summary(executed, skipped),
+            query_summary={
+                **self._query_summary(executed, skipped),
+                "unsearched_terms": unplanned_terms(
+                    request, [str(item.get("query") or "") for item in [*executed, *skipped]],
+                ),
+            },
             confirmed_directions=[],
         )
         output["next_action"] = "iterate" if mode == "deep" else "rank"
@@ -1495,7 +1500,13 @@ class SearchEngine:
             relation_calls=calls, code_calls=code_calls, stage=stage,
             rejected_directions=rejected, iteration=iteration,
             negative_directions=negatives, hypothesis=hypothesis.to_dict(),
-            query_summary=self._query_summary(executed, skipped),
+            query_summary={
+                **self._query_summary(executed, skipped),
+                "unsearched_terms": unplanned_terms(request, [
+                    str(row.get("query") or "")
+                    for row in self.store.query_history(search_id) if not row.get("skipped")
+                ]),
+            },
             remaining=after_remaining, exploration_additions=additions,
             confirmed_directions=confirmed_directions,
             confirmation_records=all_confirmation_records,

@@ -206,12 +206,12 @@ def _search_metrics(store: Store, search_id: str, case: dict[str, Any],
 
 def _scripted_iterations(engine: SearchEngine, search_id: str, result: dict[str, Any],
                          rounds: int) -> int:
-    summary = result.get("query_summary") or {}
+    summary = (result.get("observation") or {}).get("query_summary") or {}
     if "unsearched_terms" not in summary:
-        raise SystemExit("deep_script needs query_summary.unsearched_terms (query compiler change)")
+        raise SystemExit("deep_script needs observation.query_summary.unsearched_terms (query compiler change)")
     done = 0
     for _ in range(rounds):
-        unsearched = (result.get("query_summary") or {}).get("unsearched_terms") or []
+        unsearched = ((result.get("observation") or {}).get("query_summary") or {}).get("unsearched_terms") or []
         concepts = [
             row["term"] for row in unsearched
             if isinstance(row, dict) and row.get("group") in {"problem", "mechanism"}
