@@ -259,6 +259,45 @@ class V03QualityTests(unittest.TestCase):
             self.assertNotIn("UNTRUSTED RAW README", stdout.getvalue())
         self.store = Store(self.temp.name)
 
+    def test_search_page_size_defaults_to_ten_and_is_configurable(self):
+        timers = [repo(f"timer/app-{index}", 100 - index, description="focus timer app") for index in range(30)]
+        request = {"request": "focus timer", "problem_concepts": [{"term": "focus timer"}]}
+
+        default = SearchEngine(self.store, FrozenGitHub([("focus timer", timers)])).search(
+            SearchRequest.from_dict(request), "quick",
+        )
+        wide = SearchEngine(
+            self.store, FrozenGitHub([("focus timer", timers)]), search_page_size=30,
+        ).search(SearchRequest.from_dict(request), "quick", refresh=True)
+
+        self.assertEqual(default["candidate_count"], 10)
+        self.assertEqual(wide["candidate_count"], 30)
+
+    def test_initial_query_limit_caps_the_first_search_plan(self):
+        request = {
+            "request": "focus tools",
+            "problem_concepts": [
+                {"term": "focus timer", "aliases": ["pomodoro", "deep work"]},
+                {"term": "distraction blocker", "aliases": ["website blocker"]},
+            ],
+            "mechanisms": [{"term": "session timer", "aliases": ["time boxing"]}],
+        }
+        default_github = FrozenGitHub([])
+        SearchEngine(self.store, default_github).search(SearchRequest.from_dict(request), "quick")
+        capped_github = FrozenGitHub([])
+        SearchEngine(self.store, capped_github, initial_query_limit=2).search(
+            SearchRequest.from_dict(request), "quick", refresh=True,
+        )
+
+        self.assertGreater(default_github.request_counts["search"], 2)
+        self.assertEqual(capped_github.request_counts["search"], 2)
+
+    def test_search_engine_rejects_out_of_range_search_parameters(self):
+        github = FrozenGitHub([])
+        for kwargs in ({"search_page_size": 0}, {"search_page_size": 101}, {"initial_query_limit": 0}):
+            with self.subTest(**kwargs), self.assertRaises(ValueError):
+                SearchEngine(self.store, github, **kwargs)
+
 
 if __name__ == "__main__":
     unittest.main()

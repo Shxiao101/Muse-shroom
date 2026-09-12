@@ -563,7 +563,9 @@ class SearchEngine:
                  readme_enrich_per_iteration: int = DEFAULT_README_ENRICH_PER_ITERATION,
                  consecutive_no_gain_limit: int = DEFAULT_CONSECUTIVE_NO_GAIN,
                  reference_time: str | datetime | None = None,
-                 semantic_sidecar: bool = True) -> None:
+                 semantic_sidecar: bool = True,
+                 search_page_size: int = 10,
+                 initial_query_limit: int = 12) -> None:
         self.store = store
         self.github = github
         self.candidate_limit = candidate_limit
@@ -576,6 +578,14 @@ class SearchEngine:
         self.consecutive_no_gain_limit = consecutive_no_gain_limit
         self.reference_time = reference_time
         self.semantic_sidecar = semantic_sidecar
+        if not 1 <= search_page_size <= 100:
+            raise ValueError("search_page_size must be between 1 and 100")
+        if initial_query_limit < 1:
+            raise ValueError("initial_query_limit must be at least 1")
+        # GitHub returns at most 100 results per search page. A larger page costs
+        # no extra search calls, only more candidates to filter and enrich.
+        self.search_page_size = search_page_size
+        self.initial_query_limit = initial_query_limit
         self._pool_cap = candidate_limit or DEFAULT_QUICK_CANDIDATE_LIMIT
 
     def _limit_for(self, mode: str | None = None, state: dict[str, Any] | None = None) -> int:
@@ -620,7 +630,7 @@ class SearchEngine:
             return stale, cached_at, executable, skipped
         with ThreadPoolExecutor(max_workers=min(6, max(1, len(query_list)))) as pool:
             futures = {
-                pool.submit(self.github.search_repositories, spec["query"], 10, spec.get("sort", "stars")): index
+                pool.submit(self.github.search_repositories, spec["query"], self.search_page_size, spec.get("sort", "stars")): index
                 for index, spec in enumerate(query_list)
             }
             results: list[tuple[dict[str, str], ApiResult] | None] = [None] * len(query_list)
@@ -869,7 +879,7 @@ class SearchEngine:
                 query = reverse_reference_query(full_name, request)
                 try:
                     calls += 1
-                    result = self.github.search_repositories(query, per_page=10)
+                    result = self.github.search_repositories(query, per_page=self.search_page_size)
                     stale = stale or result.stale
                     cached_at = cached_at or result.cached_at
                     items = self._items(result)
@@ -1105,7 +1115,7 @@ class SearchEngine:
         skipped: list[dict[str, Any]] = []
         try:
             s, cache_time, executed, skipped = self._recall(
-                search_id, build_queries(request), candidates, iteration=0,
+                search_id, build_queries(request, limit=self.initial_query_limit), candidates, iteration=0,
             )
             stale, cached_at = stale or s, cached_at or cache_time
             candidates = {
