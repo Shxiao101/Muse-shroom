@@ -224,6 +224,7 @@ def _public_ranked_item(item: dict[str, Any], *, bucket: str | None, debug: bool
         "quote": item.get("quote") or "",
         "evidence_ids": list(item.get("evidence_ids") or []),
         "verification": item.get("verification") or {},
+        "source": item.get("source") or "muse_recall",
     }
     if debug:
         payload["discovery_paths"] = list(item.get("discovery_paths") or [])

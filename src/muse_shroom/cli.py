@@ -102,6 +102,13 @@ def build_parser() -> argparse.ArgumentParser:
     iterate.add_argument("--search-id", required=True)
     iterate.add_argument("--refinement", required=True, help="hypothesis JSON path or - for stdin")
     iterate.add_argument("--output", help="write full JSON to this UTF-8 file and print a short receipt")
+    supply = sub.add_parser(
+        "supply", help="add repositories found outside this search; Muse-shroom records their evidence",
+    )
+    supply.add_argument("--search-id", required=True)
+    supply.add_argument("--repositories", required=True, help="JSON array of owner/repo names: path or - for stdin")
+    supply.add_argument("--reason", required=True, help="single-line reason, up to 500 characters")
+    supply.add_argument("--output", help="write full JSON to this UTF-8 file and print a short receipt")
     observe = sub.add_parser("observe", help="read-only restore of session observation")
     observe.add_argument("--search-id", required=True)
     observe.add_argument("--output", help="write full JSON to this UTF-8 file and print a short receipt")
@@ -201,9 +208,11 @@ def run(args: argparse.Namespace) -> Any:
             }
         if args.command == "observe":
             return SearchEngine(store, None).observe(args.search_id)
-        if args.command in {"search", "expand", "iterate"}:
+        if args.command in {"search", "expand", "iterate", "supply"}:
             github = GitHubClient(store)
             engine = SearchEngine(store, github)
+            if args.command == "supply":
+                return engine.supply(args.search_id, _json_input(args.repositories), args.reason)
             if args.command == "search":
                 return engine.search(
                     SearchRequest.from_dict(_json_input(args.request)), args.mode,

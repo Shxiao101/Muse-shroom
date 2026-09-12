@@ -18,6 +18,7 @@ from .mcp_schema import (
     MUSE_ITERATE_DESCRIPTION,
     MUSE_RANK_DESCRIPTION,
     MUSE_SEARCH_DESCRIPTION,
+    MUSE_SUPPLY_DESCRIPTION,
     publish_agent_schemas,
 )
 from .models import ContractError
@@ -87,6 +88,10 @@ def create_server(*, data_dir: str | None = None, github: Any | None = None, log
     @mcp.tool(annotations=github_write, description=MUSE_ITERATE_DESCRIPTION)
     def muse_iterate(search_id: str, hypothesis: dict[str, Any]) -> dict[str, Any]:
         return invoke(lambda: core.iterate(search_id, hypothesis))
+
+    @mcp.tool(annotations=github_write, description=MUSE_SUPPLY_DESCRIPTION)
+    def muse_supply(search_id: str, repositories: list[str], reason: str) -> dict[str, Any]:
+        return invoke(lambda: core.supply(search_id, repositories, reason))
 
     @mcp.tool(annotations=local_write, description=MUSE_RANK_DESCRIPTION)
     def muse_rank(

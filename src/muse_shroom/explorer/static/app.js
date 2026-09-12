@@ -50,7 +50,7 @@ const STRINGS = {
     themeAuto: "跟随系统", themeLight: "浅色", themeDark: "深色", themeLabel: "配色",
     stars: "star", noDescription: "没有仓库描述",
 
-    whyTitle: "为什么不同", introduces: "引入机制",
+    whyTitle: "为什么不同", introduces: "引入机制", hostSupplied: "来自 Muse-shroom 召回之外",
     evidenceTitle: "证据", fromReadme: "来自该仓库 README",
     useCaseTitle: "用途", categoryLabel: "分类", difficultyLabel: "上手难度",
     risksTitle: "风险", mechanismsTitle: "机制", scoresTitle: "评分（debug）",
@@ -110,7 +110,7 @@ const STRINGS = {
     themeAuto: "Follow system", themeLight: "Light", themeDark: "Dark", themeLabel: "Theme",
     stars: "stars", noDescription: "No repository description",
 
-    whyTitle: "Why this is different", introduces: "Introduces",
+    whyTitle: "Why this is different", introduces: "Introduces", hostSupplied: "Supplied from outside Muse-shroom recall",
     evidenceTitle: "Evidence", fromReadme: "from this repository's README",
     useCaseTitle: "What it's for", categoryLabel: "Category", difficultyLabel: "Difficulty",
     risksTitle: "Risks", mechanismsTitle: "Mechanisms", scoresTitle: "Scores (debug)",
@@ -472,6 +472,7 @@ function resultCard(item, searchId) {
     ${topics.length ? `<p class="card-topics">${topics.map((x) => `<span class="topic">${esc(x)}</span>`).join("")}</p>` : ""}
     <p class="card-foot">
       ${roleChip(item.boundary_role)}
+      ${item.source === "host_supplied" ? `<span class="pill">${esc(t("hostSupplied"))}</span>` : ""}
       ${mechanism ? `<span class="pill discovered">${esc(mechanism)}</span>` : ""}
     </p>
   </a>`;
@@ -596,7 +597,7 @@ async function renderRepo(searchId, repo) {
       <header class="repo-head">
         <h1>${esc(detail.repo)}</h1>
         <p class="lede">${esc(detail.description || t("noDescription"))}</p>
-        <p class="meta">${roleChip(detail.boundary_role)}${meta.map((m) => `<span class="pill">${esc(m)}</span>`).join("")}</p>
+        <p class="meta">${roleChip(detail.boundary_role)}${detail.source === "host_supplied" ? `<span class="pill">${esc(t("hostSupplied"))}</span>` : ""}${meta.map((m) => `<span class="pill">${esc(m)}</span>`).join("")}</p>
         ${detail.url ? `<p><a class="external" href="${esc(detail.url)}" target="_blank" rel="noreferrer noopener">${esc(t("openOnGitHub"))}</a></p>` : ""}
       </header>
 

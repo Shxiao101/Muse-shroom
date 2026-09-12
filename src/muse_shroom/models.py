@@ -69,6 +69,28 @@ def require_single_line(value: Any, *, where: str, limit: int) -> str:
     return text
 
 
+REPOSITORY_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+SUPPLY_BATCH_LIMIT = 8
+SUPPLY_SESSION_LIMIT = 16
+SUPPLY_REASON_LIMIT = 500
+
+
+def parse_supplied_repositories(value: Any) -> list[str]:
+    """Validate owner/repo names a host found outside a search session's recall."""
+    if not isinstance(value, list) or not value:
+        raise ContractError("repositories must be a non-empty array of owner/repo names")
+    names: list[str] = []
+    for item in value:
+        name = item.strip() if isinstance(item, str) else ""
+        if not REPOSITORY_NAME_RE.fullmatch(name):
+            raise ContractError("repositories must use owner/repo names")
+        if name.casefold() not in {existing.casefold() for existing in names}:
+            names.append(name)
+    if len(names) > SUPPLY_BATCH_LIMIT:
+        raise ContractError(f"repositories cannot contain more than {SUPPLY_BATCH_LIMIT} names per call")
+    return names
+
+
 def require_fields(
     data: dict[str, Any],
     required: tuple[str, ...],

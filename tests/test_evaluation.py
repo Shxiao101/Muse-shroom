@@ -752,6 +752,55 @@ class MatchedABContractTests(unittest.TestCase):
         self.assertEqual(failures["case/repo"], ["quote_not_verbatim_at_recorded_sha"])
         self.assertEqual(failures["punct/repo"], ["quote_not_verbatim_at_recorded_sha"])
 
+    def test_claim_checker_matches_quotes_copied_from_rendered_readme_excerpts(self):
+        arm = {
+            "arm": "muse-shroom",
+            "results": [{
+                "prompt_id": "need-1",
+                "candidates": [{
+                    "repo": "list/repo",
+                    "source_term": "Focus Statistics",
+                    "quote": "Focus Statistics:** Track your progress. Live Scroll Counter:** See a counter.",
+                }],
+            }],
+        }
+        readme = chr(10).join([
+            "- **Focus Statistics:** Track your progress.",
+            "- **Live Scroll Counter:** See a counter.",
+        ])
+        facts = {
+            "list/repo": {"exists": True, "archived": False, "sources": [{"sha": "abc", "text": readme}]},
+        }
+
+        checked = check_claim_traceability(arm, facts)
+
+        self.assertEqual(checked["passed"], 1)
+        self.assertEqual(checked["passed_raw"], 0)
+        self.assertEqual(checked["repositories"][0]["matched"], "rendered")
+
+    def test_claim_checker_reports_quote_only_traceability_separately(self):
+        arm = {
+            "arm": "direct",
+            "results": [{
+                "prompt_id": "need-1",
+                "candidates": [{
+                    "repo": "good/repo", "source_term": "github search words", "quote": "exact quote",
+                }],
+            }],
+        }
+        facts = {
+            "good/repo": {
+                "exists": True, "archived": False,
+                "sources": [{"sha": "abc", "text": "a device with exact quote"}],
+            },
+        }
+
+        checked = check_claim_traceability(arm, facts)
+
+        self.assertEqual(checked["passed"], 0)
+        self.assertEqual(checked["passed_quote_only"], 1)
+        self.assertEqual(checked["repositories"][0]["failures"], ["quote_not_verbatim_at_recorded_sha"])
+
 
 class MatchedScoreTests(unittest.TestCase):
     @staticmethod
