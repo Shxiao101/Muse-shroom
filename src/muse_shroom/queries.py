@@ -340,14 +340,18 @@ def build_queries(request: SearchRequest, limit: int = 12) -> list[dict[str, Any
 
     # Core recall before boundary work. One primary per problem concept and one
     # first alias per aliased concept are reserved, then the mechanism reserve.
-    # Every remaining problem term is searched before any exploration seat:
-    # exploring around a need whose own synonyms went unsearched yields variety
-    # without relevance. Gem and typed decorate a core that is already covered.
+    # A request that names exploration directions keeps one exploration seat
+    # ahead of the remaining problem aliases, so quick mode never drops every
+    # direction the user asked to explore. Further exploration waits for the
+    # remaining problem terms: exploring around a need whose own synonyms went
+    # unsearched yields variety without relevance. Gem and typed decorate a core
+    # that is already covered.
     take(problem_primary, min(3, len(problem_groups)))
     take(problem_alias_first, min(3, len(problem_alias_first)))
     take(mechanisms, min(4, len(mechanisms)))
     take(problem_primary)
     take(problem_alias_first)
+    take(exploration, min(1, len(exploration)))
     take(problem_alias_rest)
     take(exploration, min(3, len(exploration)))
     take(gem, min(2, len(gem)))

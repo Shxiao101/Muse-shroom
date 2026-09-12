@@ -236,7 +236,7 @@ class ContractAndQueryTests(unittest.TestCase):
         )
         self.assertEqual(len({item["concept_id"] for item in problem[:3]}), 3)
 
-    def test_problem_aliases_are_all_planned_before_any_exploration_query(self):
+    def test_one_exploration_seat_precedes_the_remaining_problem_aliases(self):
         request = SearchRequest.from_dict({
             "request": "focus tools",
             "problem_concepts": [
@@ -249,16 +249,33 @@ class ContractAndQueryTests(unittest.TestCase):
             ],
         })
         queries = build_queries(request)
-        aliases = {
-            "deep work", "attention control", "flow state",
-            "distraction blocking", "app blocker", "digital detox",
-        }
+        reserved = {"focus management", "distraction control", "deep work", "distraction blocking"}
+        rest = {"attention control", "flow state", "app blocker", "digital detox"}
         problem = {item["term"]: index for index, item in enumerate(queries) if item["kind"] == "problem"}
         exploration = [index for index, item in enumerate(queries) if item["kind"] == "exploration"]
         self.assertLessEqual(len(queries), 12)
-        self.assertTrue(aliases <= set(problem))
+        self.assertTrue(reserved | rest <= set(problem))
         self.assertTrue(exploration)
-        self.assertLess(max(problem[alias] for alias in aliases), min(exploration))
+        self.assertLess(max(problem[term] for term in reserved), min(exploration))
+        last_rest = max(problem[term] for term in rest)
+        self.assertEqual(sum(1 for index in exploration if index < last_rest), 1)
+
+    def test_exploration_keeps_one_seat_when_problem_terms_fill_the_budget(self):
+        request = SearchRequest.from_dict({
+            "request": "focus tools",
+            "problem_concepts": [
+                {"term": "focus management",
+                 "aliases": ["deep work", "attention control", "flow state", "mental clarity"]},
+                {"term": "distraction control",
+                 "aliases": ["distraction blocking", "app blocker", "digital detox", "notification silence"]},
+                {"term": "task switching",
+                 "aliases": ["context switching", "multitasking cost", "interruption recovery", "task resumption"]},
+            ],
+            "exploration_directions": [{"term": "habit design"}, {"term": "environment design"}],
+        })
+        queries = build_queries(request)
+        self.assertEqual(len(queries), 12)
+        self.assertEqual([item["term"] for item in queries if item["kind"] == "exploration"], ["habit design"])
 
     def test_first_reserved_problem_alias_prefers_a_non_cjk_alias(self):
         request = SearchRequest.from_dict({
