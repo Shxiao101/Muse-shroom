@@ -298,6 +298,81 @@ class V03QualityTests(unittest.TestCase):
             with self.subTest(**kwargs), self.assertRaises(ValueError):
                 SearchEngine(self.store, github, **kwargs)
 
+    def _supply_session(self, github):
+        engine = SearchEngine(self.store, github)
+        result = engine.search(SearchRequest.from_dict({
+            "request": "focus tools", "problem_concepts": [{"term": "focus timer"}],
+        }), "quick")
+        return engine, result["search_id"]
+
+    def test_supplied_repository_gains_recorded_evidence_and_ranks_as_host_supplied(self):
+        github = FrozenGitHub(
+            [("focus timer", [repo("recall/timer", 50, description="focus timer app")])],
+            readmes={
+                "recall/timer": "# Timer A focus timer app.",
+                "host/stop": "# Stop Stops scope creep in coding agents.",
+            },
+            repos={"host/stop": repo("host/stop", 7, description="Guard that stops scope creep")},
+        )
+        engine, search_id = self._supply_session(github)
+
+        supplied = engine.supply(search_id, ["host/stop"], "Found during Web verification.")
+
+        self.assertEqual([item["full_name"] for item in supplied["supplied"]], ["host/stop"])
+        self.assertTrue(supplied["supplied"][0]["readme_recorded"])
+        self.assertEqual(supplied["rejected"], [])
+        self.assertEqual(supplied["next_action"], "rank")
+        result = rank_search(self.store, search_id, [{
+            "repo": "host/stop", "rationale": "Stops scope creep.", "mechanism_label": "scope guard",
+            "source_term": "scope creep", "quote": "Stops scope creep in coding agents.",
+            "evidence_ids": ["repo:host/stop:readme"], "boundary_role": "anchor",
+        }])
+        self.assertEqual(result["rejected_items"], [])
+        self.assertEqual(result["items"][0]["source"], "host_supplied")
+        self.assertEqual(result["newly_presented_mechanisms"], [])
+        self.assertEqual(result["boundary_summary"]["host_supplied_count"], 1)
+
+    def test_unsupplied_outside_repository_is_still_an_unknown_candidate(self):
+        github = FrozenGitHub(
+            [("focus timer", [repo("recall/timer", 50, description="focus timer app")])],
+            readmes={"recall/timer": "# Timer A focus timer app."},
+        )
+        _engine, search_id = self._supply_session(github)
+        result = rank_search(self.store, search_id, [{
+            "repo": "host/stop", "rationale": "Claim", "mechanism_label": "scope guard",
+            "source_term": "scope", "quote": "scope", "evidence_ids": ["repo:host/stop:readme"],
+            "boundary_role": "edge",
+        }])
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["rejected_items"][0]["reasons"], ["unknown_candidate"])
+
+    def test_supply_rejects_invalid_missing_and_private_repositories(self):
+        private = repo("host/secret", 3)
+        private["private"] = True
+        github = FrozenGitHub([("focus timer", [])], repos={"host/secret": private})
+        engine, search_id = self._supply_session(github)
+        for bad in ([], ["not a repo"], [f"owner/repo-{index}" for index in range(9)]):
+            with self.subTest(repositories=bad), self.assertRaises(ContractError):
+                engine.supply(search_id, bad, "reason")
+        with self.assertRaises(ContractError):
+            engine.supply(search_id, ["host/secret"], "")
+
+        result = engine.supply(search_id, ["host/missing", "host/secret"], "Found elsewhere.")
+
+        self.assertEqual(result["supplied"], [])
+        self.assertEqual(
+            {row["repo"]: row["reason"] for row in result["rejected"]},
+            {"host/missing": "not_found", "host/secret": "not_public"},
+        )
+
+    def test_supply_enforces_the_session_limit(self):
+        repos = {f"host/repo-{index}": repo(f"host/repo-{index}", index) for index in range(17)}
+        engine, search_id = self._supply_session(FrozenGitHub([("focus timer", [])], repos=repos))
+        engine.supply(search_id, [f"host/repo-{index}" for index in range(8)], "batch one")
+        engine.supply(search_id, [f"host/repo-{index}" for index in range(8, 16)], "batch two")
+        with self.assertRaises(ContractError):
+            engine.supply(search_id, ["host/repo-16"], "batch three")
+
 
 if __name__ == "__main__":
     unittest.main()

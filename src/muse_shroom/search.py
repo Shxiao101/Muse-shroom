@@ -29,7 +29,9 @@ from .models import (
     DEFAULT_MAX_ITERATIONS, DEFAULT_QUERIES_PER_ITERATION,
     DEFAULT_QUICK_CANDIDATE_LIMIT, DEFAULT_README_ENRICH_PER_ITERATION,
     DEFAULT_SESSION_QUERY_BUDGET, HARD_STOP_REASONS,
-    HOST_HYPOTHESIS_EVIDENCE, Refinement, SearchHypothesis, SearchRequest, repo_key,
+    HOST_HYPOTHESIS_EVIDENCE, SUPPLY_REASON_LIMIT, SUPPLY_SESSION_LIMIT, ContractError,
+    Refinement, SearchHypothesis, SearchRequest, parse_supplied_repositories, repo_key,
+    require_single_line,
 )
 from .sidecar import (
     SEMANTIC_CANDIDATE_CAP, SEMANTIC_PARTITION, SEMANTIC_QUERY_BUDGET,
@@ -723,18 +725,25 @@ class SearchEngine:
         candidate["evidence"] = list(existing.values())
 
     def _enrich(self, candidates: dict[str, dict[str, Any]], request: SearchRequest,
-                limit: int | None = None) -> tuple[bool, str | None, bool, int]:
+                limit: int | None = None,
+                targets: Iterable[str] | None = None) -> tuple[bool, str | None, bool, int]:
         stale = False
         cached_at = None
         failed = False
         missing = [item for item in candidates.values() if "readme" not in item]
         if not missing:
             return False, None, False, 0
-        selected, _ = probe_select(
-            missing, request, limit=limit or self.enrich_limit,
-            reference_time=self.reference_time,
-        )
-        pending = selected
+        if targets is not None:
+            # Repositories the host named are fetched as named. Relevance selection
+            # must not skip them, or their quotes could never be verified.
+            wanted = {str(name).lower() for name in targets}
+            pending = [item for item in missing if repo_key(item).lower() in wanted]
+        else:
+            selected, _ = probe_select(
+                missing, request, limit=limit or self.enrich_limit,
+                reference_time=self.reference_time,
+            )
+            pending = selected
 
         def fetch(candidate: dict[str, Any]) -> tuple[dict[str, Any], ApiResult | None | str]:
             try:
@@ -809,7 +818,7 @@ class SearchEngine:
 
     def _add_related(self, candidates: dict[str, dict[str, Any]], repo: dict[str, Any],
                      parent: str, relation: str, detail: str, request: SearchRequest,
-                     *, iteration: int = 0) -> None:
+                     *, iteration: int = 0, bypass_cap: bool = False) -> None:
         key = repo_key(repo)
         if repo.get("private") or repo.get("visibility") not in {None, "public"}:
             return
@@ -817,7 +826,7 @@ class SearchEngine:
             return
         if not candidate_allowed(repo, request, include_readme=False):
             return
-        if key not in candidates and len(candidates) >= self._pool_cap:
+        if not bypass_cap and key not in candidates and len(candidates) >= self._pool_cap:
             return
         candidate = candidates.setdefault(key, dict(repo))
         if "first_seen_iteration" not in candidate:
@@ -1160,6 +1169,88 @@ class SearchEngine:
 
     def iterate(self, search_id: str, refinement: dict[str, Any]) -> dict[str, Any]:
         return self._run_iteration(search_id, SearchHypothesis.from_dict(refinement), stage="iterate")
+
+    def supply(self, search_id: str, repositories: Any, reason: Any) -> dict[str, Any]:
+        """Bring repositories the host found elsewhere into the evidence of this session.
+
+        Muse-shroom fetches the metadata and README of each repository itself and
+        records evidence at the README SHA, so rank verifies them exactly like
+        recalled candidates. Supplied repositories bypass the pool cap but never
+        touch the shortlist, boundary snapshot, or iteration budget: they are not
+        Muse-shroom discoveries, and rank labels them host_supplied.
+        """
+        names = parse_supplied_repositories(repositories)
+        reason = require_single_line(reason, where="reason", limit=SUPPLY_REASON_LIMIT)
+        session = self.store.load_search(search_id)
+        state = self.store.get_session_state(search_id)
+        previous = [str(name) for name in state.get("host_supplied") or []]
+        known = {name.lower() for name in previous}
+        fresh = [name for name in names if name.lower() not in known]
+        if len(previous) + len(fresh) > SUPPLY_SESSION_LIMIT:
+            raise ContractError(
+                f"a search session accepts at most {SUPPLY_SESSION_LIMIT} supplied repositories"
+            )
+        request = SearchRequest.from_dict(session["request"])
+        candidates = {repo_key(item): item for item in session["candidates"]}
+        iteration = int(state.get("iteration") or 0)
+        accepted: list[str] = []
+        rejected: list[dict[str, str]] = []
+        stale = bool(session["stale"])
+        for name in names:
+            try:
+                result = self.github.repository(name)
+            except GitHubNotFoundError:
+                rejected.append({"repo": name, "reason": "not_found"})
+                continue
+            stale = stale or bool(result.stale)
+            repo = result.data if isinstance(result.data, dict) else {}
+            if repo.get("private") or repo.get("visibility") not in {None, "public"}:
+                rejected.append({"repo": name, "reason": "not_public"})
+                continue
+            if not repo.get("full_name") or not candidate_allowed(repo, request, include_readme=False):
+                rejected.append({"repo": name, "reason": "excluded_by_constraints"})
+                continue
+            self._add_related(
+                candidates, repo, "host", "host_supplied", reason, request,
+                iteration=iteration, bypass_cap=True,
+            )
+            accepted.append(repo_key(repo))
+        accepted = list(dict.fromkeys(accepted))
+        enrich_failed = False
+        if accepted:
+            enrich_stale, _cached_at, enrich_failed, _count = self._enrich(
+                candidates, request, targets=accepted,
+            )
+            stale = stale or enrich_stale
+        concept_terms = self._concept_terms(request)
+        for key in accepted:
+            candidate = candidates[key]
+            candidate.setdefault("evidence", make_evidence(
+                candidate, "", False, concept_terms=concept_terms,
+                artifact_types=request.artifact_types,
+            ))
+            annotate_candidate_mechanisms(candidate, request)
+            self.store.save_candidate(search_id, candidate)
+        state["host_supplied"] = [
+            *previous,
+            *(candidates[key]["full_name"] for key in accepted if key not in known),
+        ]
+        self.store.save_session_state(search_id, state)
+        observed = self.observe(search_id)
+        return {
+            "schema_version": 2,
+            "search_id": search_id,
+            "supplied": [
+                {**public_candidate(candidates[key]), "readme_recorded": bool(candidates[key].get("readme_sha"))}
+                for key in accepted
+            ],
+            "rejected": rejected,
+            "host_supplied_count": len(state["host_supplied"]),
+            "stale": stale,
+            "incomplete_phase": "enrichment_partial_failure" if enrich_failed else None,
+            "next_action": observed["next_action"],
+            "can_iterate": observed["can_iterate"],
+        }
 
     def observe(self, search_id: str) -> dict[str, Any]:
         session = self.store.load_search(search_id)
