@@ -74,6 +74,14 @@ Report separately, never folded into the verdict:
 ## Review
 
 Blind and interleaved via `build_blind_pack` in `evaluation/run_ab.py`, which shuffles
-the two arms per need and writes `blind-key.json`. Judges rate `relevance`,
-`interesting`, `evidence`, `actionability`, and `diversity`, then choose `A`, `B`, or
-`tie`. Do not open `blind-key.json` until every rating is final.
+the two arms per need and writes `blind-key.json`. Judges choose `A`, `B`, or `tie`
+for each pair; no per-dimension scores are collected (see Amendments). Do not open
+`blind-key.json` until every choice is final.
+
+## Amendments
+
+- **2026-09-15, maintainer decision, before the third gate's capture.** Per-dimension
+  ratings (`relevance`, `interesting`, `evidence`, `actionability`, `diversity`) are no
+  longer collected: they never entered the verdict, and across the first two gates the
+  maintainer judged them to add little information. The Threshold section is unchanged;
+  the verdict still comes only from `A` / `B` / `tie` choices pooled per need.

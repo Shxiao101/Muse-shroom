@@ -112,11 +112,6 @@ h2 { font-size: 1.05rem; margin: 0 0 10px; color: var(--gold); }
   margin-top: 18px; background: var(--panel); border: 1px solid var(--line);
   padding: 16px 18px;
 }
-.score-table { width: 100%; border-collapse: collapse; }
-.score-table th, .score-table td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
-.score-table th { color: var(--muted); font-weight: 500; font-size: .85rem; }
-.score-table select { min-width: 56px; }
-
 .preferred { display: flex; gap: 16px; flex-wrap: wrap; margin: 14px 0; }
 .preferred label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
 

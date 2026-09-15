@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from evaluation.cassette import CassetteGitHub, load_cassette
-from evaluation.blind_review_ui import build_server as build_review_server
+from evaluation.blind_review_ui import build_server as build_review_server, validate_ratings as validate_review_ratings
 from evaluation.matched_ab import (
     BLIND_ENTRY_FIELDS, adapt_direct_arm, assemble_arm, build_matched_blind_pack,
     build_schedule, check_claim_traceability, collect_repository_facts,
@@ -974,11 +974,6 @@ GITHUB_QUERY_FRAGMENTS = (
     "is:public",
     "archived:false",
 )
-SCORE_BLOCK = {
-    name: 3 for name in ("relevance", "interesting", "evidence", "actionability", "diversity")
-}
-
-
 def _arm_payload(arm, need_ids, reps, *, extra=None, omit_repetition=False):
     results = []
     for need_id in need_ids:
@@ -1194,7 +1189,7 @@ class BlindReviewUiTests(unittest.TestCase):
                 first = pack["cases"][0]
                 evaluation = {
                     "need_id": first["need_id"], "repetition": first["repetition"],
-                    "preferred": "A", "A": SCORE_BLOCK, "B": SCORE_BLOCK,
+                    "preferred": "A",
                 }
                 request = urllib.request.Request(
                     base + "/api/ratings",
@@ -1225,10 +1220,15 @@ class BlindReviewUiTests(unittest.TestCase):
             on_disk = json.loads(ratings_path.read_text(encoding="utf-8"))
             self.assertEqual(on_disk["evaluations"][0]["need_id"], first["need_id"])
             self.assertEqual(on_disk["evaluations"][0]["preferred"], "A")
-            self.assertEqual(
-                set(on_disk["evaluations"][0]["A"]),
-                {"relevance", "interesting", "evidence", "actionability", "diversity"},
-            )
+            self.assertEqual(set(on_disk["evaluations"][0]), {"need_id", "repetition", "preferred"})
+
+    def test_ratings_carry_only_the_choice(self):
+        pack = {"cases": [{"need_id": "need-01", "repetition": 1, "lists": {"A": [], "B": []}}]}
+        row = {"need_id": "need-01", "repetition": 1, "preferred": "tie"}
+        self.assertEqual(validate_review_ratings({"evaluations": [row]}, pack), {"evaluations": [row]})
+        scored = dict(row, A={"relevance": 3}, B={"relevance": 4})
+        with self.assertRaisesRegex(ValueError, "no longer collected"):
+            validate_review_ratings({"evaluations": [scored]}, pack)
 
     def test_saved_ratings_are_accepted_by_score_matched_ab(self):
         need_ids = [f"need-{index:02d}" for index in range(1, 9)]
@@ -1245,10 +1245,7 @@ class BlindReviewUiTests(unittest.TestCase):
             mappings = json.loads(key.read_text(encoding="utf-8"))["mappings"]
             evaluations = []
             for need_id in need_ids:
-                evaluations.append({
-                    "need_id": need_id, "repetition": 1, "preferred": "A",
-                    "A": SCORE_BLOCK, "B": SCORE_BLOCK,
-                })
+                evaluations.append({"need_id": need_id, "repetition": 1, "preferred": "A"})
             ratings_path.write_text(json.dumps({"evaluations": evaluations}), encoding="utf-8")
             code = score_matched_main([
                 str(ratings_path), "--key", str(key), "--output", str(summary),

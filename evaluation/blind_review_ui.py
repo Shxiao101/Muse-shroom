@@ -1,4 +1,4 @@
-"""Local localhost UI for scoring a matched-pair blind-review pack.
+"""Local localhost UI for choosing A, B, or tie on a matched-pair blind-review pack.
 
 Reads only `blind-review.json`. Writes only `ratings.json`. Never opens,
 names, or displays the un-blinding key. Resume is the ratings file: a
@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "localhost."}
 STATIC_DIR = Path(__file__).resolve().parent / "blind_review_static"
-DIMENSIONS = ("relevance", "interesting", "evidence", "actionability", "diversity")
+EVALUATION_KEYS = frozenset({"need_id", "repetition", "preferred"})
 PREFERRED = frozenset({"A", "B", "tie"})
 
 
@@ -76,21 +76,15 @@ def load_ratings(path: Path) -> dict[str, Any]:
     return {"evaluations": evaluations}
 
 
-def _score_block(block: Any, *, label: str) -> dict[str, int]:
-    if not isinstance(block, dict) or set(block) != set(DIMENSIONS):
-        raise ValueError(f"{label} scores must be exactly {', '.join(DIMENSIONS)}")
-    scores: dict[str, int] = {}
-    for name in DIMENSIONS:
-        value = block[name]
-        if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 5:
-            raise ValueError(f"{label} {name} must be an integer 1–5")
-        scores[name] = value
-    return scores
-
-
 def validate_evaluation(item: Any, case_keys: set[tuple[str, int]]) -> dict[str, Any]:
     if not isinstance(item, dict):
         raise ValueError("each evaluation must be an object")
+    extra = set(item) - EVALUATION_KEYS
+    if extra:
+        raise ValueError(
+            "ratings carry only need_id, repetition, and preferred; per-dimension scores "
+            f"are no longer collected: {', '.join(sorted(extra))}"
+        )
     need_id = str(item.get("need_id") or "")
     repetition = item.get("repetition")
     if not need_id:
@@ -106,8 +100,6 @@ def validate_evaluation(item: Any, case_keys: set[tuple[str, int]]) -> dict[str,
         "need_id": need_id,
         "repetition": repetition,
         "preferred": preferred,
-        "A": _score_block(item.get("A"), label="A"),
-        "B": _score_block(item.get("B"), label="B"),
     }
 
 
@@ -200,7 +192,6 @@ class ReviewHandler(BaseHTTPRequestHandler):
             return _json_bytes({
                 "case_count": len(self.pack.get("cases") or []),
                 "rated_count": len(ratings["evaluations"]),
-                "dimensions": list(DIMENSIONS),
             })
         if path.startswith("/api/"):
             return _json_bytes({"error": "NotFound", "message": "unknown endpoint"}, 404)
@@ -292,7 +283,7 @@ def run_review_ui(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Score a matched-pair blind-review pack in a localhost UI",
+        description="Choose A, B, or tie for each matched pair in a localhost UI",
     )
     parser.add_argument("--review", type=Path, required=True, help="path to blind-review.json")
     parser.add_argument("--ratings", type=Path, required=True, help="path to write ratings.json")

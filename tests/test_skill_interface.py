@@ -54,8 +54,8 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn("muse-shroom observe", self.skill)
         self.assertIn("can_iterate", self.skill)
         self.assertIn("next_action", self.skill)
-        self.assertIn("primary retrieval path", self.skill)
-        self.assertIn("generic Web search", self.skill)
+        self.assertIn("Host recall", self.skill)
+        self.assertIn("Do not skip host recall because Muse-shroom is available", self.skill)
         self.assertIn("use Muse-shroom", self.skill)
         self.assertIn("display_order", (REFERENCES / "result-contract.md").read_text(encoding="utf-8"))
         hypothesis = (REFERENCES / "hypothesis-contract.md").read_text(encoding="utf-8")
@@ -71,6 +71,25 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertNotIn("biofeedback", hypothesis)
         self.assertNotIn("commitment device", hypothesis)
         self.assertNotIn("digital wellbeing", hypothesis)
+
+    def test_skill_and_mcp_instructions_state_one_host_recall_rule(self):
+        # Hosts read the MCP server instructions even when the Skill is not loaded, so
+        # both channels must carry the same rule, with limits taken from the code.
+        from muse_shroom.mcp_schema import HOST_INSTRUCTIONS, MUSE_SUPPLY_DESCRIPTION
+        from muse_shroom.models import SUPPLY_BATCH_LIMIT, SUPPLY_SESSION_LIMIT
+
+        limits = f"at most {SUPPLY_BATCH_LIMIT} per call and {SUPPLY_SESSION_LIMIT} per session"
+        for text in (self.skill, HOST_INSTRUCTIONS):
+            self.assertIn("Do not skip host recall because Muse-shroom is available", text)
+            self.assertIn("Never recommend a repository whose evidence was not recorded", text)
+            self.assertIn("muse_supply", text)
+            self.assertIn(limits, text)
+            self.assertNotIn("Muse-shroom-first", text)
+            self.assertNotIn("Do not start with generic Web search", text)
+        self.assertIn("host-recall", MUSE_SUPPLY_DESCRIPTION)
+        self.assertIn(f"1-{SUPPLY_BATCH_LIMIT} owner/repo", MUSE_SUPPLY_DESCRIPTION)
+        self.assertIn(f"at most {SUPPLY_SESSION_LIMIT} per session", MUSE_SUPPLY_DESCRIPTION)
+        self.assertNotIn("Web verification", MUSE_SUPPLY_DESCRIPTION)
 
     def test_hypothesis_contract_keeps_expand_as_compatibility_only(self):
         hypothesis = (REFERENCES / "hypothesis-contract.md").read_text(encoding="utf-8")
