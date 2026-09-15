@@ -1,5 +1,14 @@
 # Muse-shroom 0.8.1
 
+探索一个需求在 GitHub 上的解法边界，找能激发新思路的项目，而不只是最直接的答案。每条结果带一个边界角色和 README 原文证据：
+
+- `anchor`：主流、可靠的参照
+- `edge`：贴近现有做法，但机制有变化
+- `leap`：离开主要的解法路径
+- `wildcard`：表面不相关，但机制可以迁移
+
+找边界要用深搜：宿主 Agent 读每轮观察结果决定往哪走，前两轮可以提出跨领域的假设。快搜不迭代，也不提跨领域假设。
+
 本地 GitHub 搜索内核：CLI 负责可复现的 API 调用、SQLite 缓存和机械校验；需求理解和最终选择留给宿主 Agent（Codex、Claude、Cursor 等）。
 
 不克隆、不运行候选仓库。Token 不写入数据库或日志，默认存进系统凭据存储。
@@ -28,12 +37,13 @@ MCP 是可选 extra。安装后用 `muse-shroom-mcp` 或 `python -m muse_shroom.
 
 ## 工作流
 
-宿主 Agent 使用 [`skills/muse-shroom`](skills/muse-shroom/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → `rank`。快搜跳过 iterate。MCP 可用时优先 `muse_search` / `muse_observe` / `muse_iterate` / `muse_rank`，否则走 CLI，策略相同。契约在 Skill 的 `references/`。
+宿主 Agent 使用 [`skills/muse-shroom`](skills/muse-shroom/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → 宿主自己找到的仓库经 `supply` 取证 → `rank`。快搜跳过 iterate。MCP 可用时优先 `muse_search` / `muse_observe` / `muse_iterate` / `muse_supply` / `muse_rank`，否则走 CLI，策略相同。契约在 Skill 的 `references/`。
 
 ```console
 muse-shroom search --request examples/music-ai.request.json --mode quick --output search.json
 muse-shroom observe --search-id SEARCH_ID --output observe.json
 muse-shroom iterate --search-id SEARCH_ID --refinement examples/focus-tools.hypothesis.json --output iterate.json
+muse-shroom supply --search-id SEARCH_ID --repositories repositories.json --reason "found by host web search" --output supply.json
 muse-shroom rank --search-id SEARCH_ID --selection selection.json --output rank.json
 ```
 
