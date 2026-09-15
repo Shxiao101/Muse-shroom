@@ -13,7 +13,7 @@ Prefer Muse-shroom MCP over the CLI. MCP tools may be deferred and absent from t
 
 Use the CLI only after deferred-tool discovery explicitly returns no Muse-shroom tools, the host has no discovery mechanism and exposes no Muse-shroom tools, or loading/starting the discovered MCP server fails. The initial visible tool list alone is not evidence that MCP is unavailable. When falling back, briefly tell the user the concrete reason. Optional `muse_inspect` is debug-only. Do not change the search strategy for MCP vs CLI. When using the CLI, write JSON as UTF-8 files; on Windows, never pipe `Get-Content` into Muse-shroom.
 
-Once the user has asked for Muse-shroom (“使用 Muse-shroom”, “use Muse-shroom”, “search with Muse-shroom”), use it as the primary retrieval path for that request. Do not start with generic Web search instead. After a successful Muse-shroom flow, do not repeat the same search through Web unless you have a separate verification reason. Web may still be used later for explicit verification. This is Muse-shroom-first, not a ban on Web.
+Once the user has asked for Muse-shroom (“使用 Muse-shroom”, “use Muse-shroom”, “search with Muse-shroom”), combine two recall sources and let Muse-shroom own the evidence. **Muse-shroom recall** is `muse_search`, plus the observe → iterate loop in deep mode. **Host recall** is what you would find for the core need without Muse-shroom: repositories you already know and your normal Web search. Do not skip host recall because Muse-shroom is available, and do not replace `muse_search` with Web search. Host-recall repositories reach the user only through `muse_supply` and `muse_rank` (§7), never directly.
 
 ## 1. Purpose and when to use
 
@@ -30,7 +30,7 @@ Do not use this Skill for known-repo code search or automatic installation.
 Resolve the search interpretation and mode in one interaction by default.
 
 1. Propose the search interpretation in user-facing language: problem, likely mechanisms, exploration directions, artifact types, constraints, exclusions.
-2. In the same message, if mode is unspecified, ask: **quick** (one search, then rank) or **deep** (search, then a bounded observe → decide → iterate loop, then rank).
+2. In the same message, if mode is unspecified, ask: **quick** (one search plus host recall, then rank) or **deep** (search, then a bounded observe → decide → iterate loop, then host recall and rank).
 3. Treat a plain quick/deep choice as confirmation of the proposed interpretation. If the user corrects the interpretation while choosing a mode, apply those corrections before searching. If the user already gave a specific reading or said “就搜这个”, “直接搜”, “无需确认”, or an equivalent, do not ask for separate confirmation.
 
 Separate the surface phrase from the underlying symptom. “Codex overthinks” can mean latency, cost, over-design, repeated review, or caution; keep those as distinct concepts.
@@ -83,7 +83,7 @@ Choose useful candidates and put them in the exact order you want to present. Fo
 
 When `semantic_hypotheses` shows `evidence_found`, consider the supplied semantic candidate. Cite its corresponding evidence when you select it, but do not copy the hypothesis term as a label unless that is genuinely your interpretation.
 
-If you know a relevant repository this search did not recall, for example one found during explicit Web verification, pass it to `muse_supply` (or `muse-shroom supply --search-id ID --repositories REPOS.json --reason TEXT`) before rank. Muse-shroom fetches and records its evidence itself; cite only the evidence IDs it returns. Never recommend a repository whose evidence was not recorded. Accepted items keep `source: host_supplied`.
+**Host recall.** Before rank, pass the host-recall repositories that directly serve the core need to `muse_supply` (or `muse-shroom supply --search-id ID --repositories REPOS.json --reason TEXT`): at most 8 per call and 16 per session, with a single-line reason. Skip repositories already among this search's candidates. Muse-shroom fetches and records their evidence itself; cite only the evidence IDs it returns. Never recommend a repository whose evidence was not recorded. Accepted items keep `source: host_supplied`. Then select across both sources on merit: a host-supplied repository needs the same evidence as a recalled one, and a recalled repository gets no preference for having been found by Muse-shroom.
 
 Type-aware judgement remains yours: applications normally need install and an entry point; MCPs need a tool contract and permissions; Skills need a trigger boundary; mods need compatibility and an uninstall path. If evidence is insufficient, omit the repository. If that omits every candidate, still call rank: submit `selection: []` with `no_recommendation.reason` (single-line, up to 500 characters) so the session records a done terminal with no items. An empty selection without that reason is a contract error.
 

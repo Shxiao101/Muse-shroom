@@ -470,8 +470,8 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tool_schemas_expose_v04_nested_fields(self):
         mcp = create_server(data_dir=tempfile.mkdtemp(), github=_github(), log_level="ERROR")
-        self.assertIn("Muse-shroom-first", mcp.instructions or "")
-        self.assertIn("generic Web search", mcp.instructions or "")
+        self.assertIn("Do not skip host recall because Muse-shroom is available", mcp.instructions or "")
+        self.assertNotIn("Muse-shroom-first", mcp.instructions or "")
         async with Client(mcp) as client:
             listed = await client.list_tools()
         blob = _dump(listed)
