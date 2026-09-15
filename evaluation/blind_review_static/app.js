@@ -1,4 +1,3 @@
-const DIMENSIONS = ["relevance", "interesting", "evidence", "actionability", "diversity"];
 const FIELDS = ["description", "rationale", "source_term", "quote"];
 
 const main = document.getElementById("main");
@@ -34,12 +33,6 @@ function parseJson(response, label) {
 
 function ratingFor(item) {
   return state.ratings.get(caseKey(item)) || null;
-}
-
-function emptyScores() {
-  const scores = {};
-  for (const name of DIMENSIONS) scores[name] = "";
-  return scores;
 }
 
 function fieldText(value) {
@@ -89,34 +82,14 @@ function renderColumn(label, entries) {
   </section>`;
 }
 
-function scoreSelect(list, dimension, value) {
-  const options = ["", "1", "2", "3", "4", "5"].map((choice) => {
-    const selected = String(value) === choice ? " selected" : "";
-    const label = choice || "—";
-    return `<option value="${choice}"${selected}>${label}</option>`;
-  }).join("");
-  return `<select name="${list}-${dimension}" aria-label="${list} ${dimension}">${options}</select>`;
-}
-
-function renderScores(current) {
-  const a = current?.A || emptyScores();
-  const b = current?.B || emptyScores();
+function renderChoice(current) {
   const preferred = current?.preferred || "";
-  const head = DIMENSIONS.map((name) => `<th>${escapeHtml(name)}</th>`).join("");
-  const row = (list, scores) => DIMENSIONS.map((name) => `<td>${scoreSelect(list, name, scores[name])}</td>`).join("");
   const pref = ["A", "B", "tie"].map((choice) => {
     const checked = preferred === choice ? " checked" : "";
     return `<label><input type="radio" name="preferred" value="${choice}"${checked}> ${choice}</label>`;
   }).join("");
   return `<section class="scores">
-    <h2>打分</h2>
-    <table class="score-table">
-      <thead><tr><th></th>${head}</tr></thead>
-      <tbody>
-        <tr><th>A</th>${row("A", a)}</tr>
-        <tr><th>B</th>${row("B", b)}</tr>
-      </tbody>
-    </table>
+    <h2>选择</h2>
     <div class="preferred" role="radiogroup" aria-label="preferred">${pref}</div>
     <div class="actions">
       <button type="button" class="btn" id="save">保存</button>
@@ -141,7 +114,7 @@ function render() {
   const item = state.cases[state.index];
   const rated = state.ratings.size;
   progress.textContent = item
-    ? `第 ${state.index + 1} / ${state.cases.length} 对 · 已打 ${rated}`
+    ? `第 ${state.index + 1} / ${state.cases.length} 对 · 已选 ${rated}`
     : "没有 case";
   prevBtn.disabled = state.index <= 0;
   nextBtn.disabled = state.index >= state.cases.length - 1;
@@ -158,7 +131,7 @@ function render() {
       ${renderColumn("A", lists.A)}
       ${renderColumn("B", lists.B)}
     </div>
-    ${renderScores(ratingFor(item))}
+    ${renderChoice(ratingFor(item))}
   `;
   document.getElementById("save").addEventListener("click", () => save(false));
   document.getElementById("save-next").addEventListener("click", () => save(true));
@@ -166,23 +139,12 @@ function render() {
 
 function readForm() {
   const item = state.cases[state.index];
-  const block = (list) => {
-    const scores = {};
-    for (const name of DIMENSIONS) {
-      const raw = document.querySelector(`[name="${list}-${name}"]`).value;
-      if (!raw) throw new Error(`${list} 的 ${name} 还没打`);
-      scores[name] = Number(raw);
-    }
-    return scores;
-  };
   const preferred = document.querySelector('input[name="preferred"]:checked');
-  if (!preferred) throw new Error("还没有选择 preferred（A / B / tie）");
+  if (!preferred) throw new Error("还没有选择 A / B / tie");
   return {
     need_id: item.need_id,
     repetition: item.repetition ?? 1,
     preferred: preferred.value,
-    A: block("A"),
-    B: block("B"),
   };
 }
 
