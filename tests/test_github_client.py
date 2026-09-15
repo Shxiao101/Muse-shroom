@@ -98,6 +98,53 @@ class GitHubClientTests(unittest.TestCase):
             result = self.client.readme("owner/repo")
         self.assertEqual(result.data, {"text": "# Hello", "sha": "abc123"})
 
+    def test_transient_network_error_retries_once_then_succeeds(self):
+        failure = urllib.error.URLError("connection reset")
+        with patch("urllib.request.urlopen", side_effect=[failure, Response({"items": [{"full_name": "a/b"}]})]) as urlopen:
+            with patch("muse_shroom.github.time.sleep") as sleep:
+                result = self.client.search_repositories("retry then succeed")
+        self.assertFalse(result.stale)
+        self.assertEqual(result.data["items"][0]["full_name"], "a/b")
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertEqual(self.client.request_counts["search"], 2)
+        sleep.assert_called_once_with(1.0)
+
+    def test_repeated_network_failure_without_cache_raises(self):
+        with patch("urllib.request.urlopen", side_effect=[urllib.error.URLError("reset"), TimeoutError("timed out")]) as urlopen:
+            with patch("muse_shroom.github.time.sleep"):
+                with self.assertRaises(GitHubError) as raised:
+                    self.client.search_repositories("no cache")
+        self.assertIn("network failure", str(raised.exception))
+        self.assertEqual(urlopen.call_count, 2)
+
+    def test_repeated_network_failure_returns_stale_cache(self):
+        with patch("urllib.request.urlopen", return_value=Response({"items": [{"full_name": "a/b"}]})):
+            self.client.search_repositories("cached network")
+        with patch("urllib.request.urlopen", side_effect=[urllib.error.URLError("reset"), urllib.error.URLError("reset")]) as urlopen:
+            with patch("muse_shroom.github.time.sleep"):
+                result = self.client.search_repositories("cached network")
+        self.assertTrue(result.stale)
+        self.assertEqual(result.data["items"][0]["full_name"], "a/b")
+        self.assertEqual(urlopen.call_count, 2)
+
+    def test_http_error_is_not_retried(self):
+        failure = urllib.error.HTTPError("url", 503, "unavailable", {}, None)
+        with patch("urllib.request.urlopen", side_effect=failure) as urlopen:
+            with patch("muse_shroom.github.time.sleep") as sleep:
+                with self.assertRaises(GitHubError):
+                    self.client.search_repositories("http 503")
+        self.assertEqual(urlopen.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_network_retries_can_be_disabled(self):
+        client = GitHubClient(self.store, token="secret-test-token", network_retries=0)
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("reset")) as urlopen:
+            with patch("muse_shroom.github.time.sleep") as sleep:
+                with self.assertRaises(GitHubError):
+                    client.search_repositories("no retry")
+        self.assertEqual(urlopen.call_count, 1)
+        sleep.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
