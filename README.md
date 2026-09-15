@@ -1,4 +1,4 @@
-# Muse-shroom 0.7.2
+# Muse-shroom 0.8.0
 
 本地 GitHub 搜索内核：CLI 负责可复现的 API 调用、SQLite 缓存和机械校验；需求理解和最终选择留给宿主 Agent（Codex、Claude、Cursor 等）。
 
