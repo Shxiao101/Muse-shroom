@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import base64
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,7 +45,8 @@ class ApiResult:
 
 class GitHubClient:
     def __init__(self, store: Store, token: str | None = None,
-                 base_url: str = "https://api.github.com", timeout: float = 15.0) -> None:
+                 base_url: str = "https://api.github.com", timeout: float = 15.0,
+                 network_retries: int = 1, retry_delay: float = 1.0) -> None:
         self.store = store
         try:
             credential = resolve_token(token)
@@ -55,6 +57,8 @@ class GitHubClient:
         self.token = credential.token
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.network_retries = network_retries
+        self.retry_delay = retry_delay
         self.request_counts = {"core": 0, "search": 0, "code_search": 0}
         self.rate_limits: dict[str, dict[str, Any]] = {}
         self._metrics_lock = threading.Lock()
@@ -104,40 +108,50 @@ class GitHubClient:
             "X-GitHub-Api-Version": API_VERSION,
             "User-Agent": f"Muse-shroom/{__version__}",
         })
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                raw = response.read()
-                data = raw.decode("utf-8", errors="replace") if "raw" in accept else json.loads(raw)
-                self.store.set_cache(cache_key, data)
-                return ApiResult(data, rate_limit=self._rate_limit(getattr(response, "headers", None), resource))
-        except urllib.error.HTTPError as exc:
-            rate_limit = self._rate_limit(getattr(exc, "headers", None), resource)
-            if exc.code == 401:
-                raise GitHubAuthenticationError(
-                    "GitHub rejected the credential (401); run 'muse-shroom auth login'"
-                ) from exc
-            if exc.code == 404:
-                raise GitHubNotFoundError("GitHub resource was not found (404)") from exc
-            confirmed_rate_limit = exc.code == 429 or (
-                exc.code == 403 and rate_limit is not None
-                and (rate_limit.get("remaining") == 0 or rate_limit.get("retry_after") is not None)
-            )
-            if confirmed_rate_limit or 500 <= exc.code <= 599:
+        remaining_retries = self.network_retries
+        while True:
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    raw = response.read()
+                    data = raw.decode("utf-8", errors="replace") if "raw" in accept else json.loads(raw)
+                    self.store.set_cache(cache_key, data)
+                    return ApiResult(data, rate_limit=self._rate_limit(getattr(response, "headers", None), resource))
+            except urllib.error.HTTPError as exc:
+                rate_limit = self._rate_limit(getattr(exc, "headers", None), resource)
+                if exc.code == 401:
+                    raise GitHubAuthenticationError(
+                        "GitHub rejected the credential (401); run 'muse-shroom auth login'"
+                    ) from exc
+                if exc.code == 404:
+                    raise GitHubNotFoundError("GitHub resource was not found (404)") from exc
+                confirmed_rate_limit = exc.code == 429 or (
+                    exc.code == 403 and rate_limit is not None
+                    and (rate_limit.get("remaining") == 0 or rate_limit.get("retry_after") is not None)
+                )
+                if confirmed_rate_limit or 500 <= exc.code <= 599:
+                    cached = self.store.get_cache(cache_key)
+                    if cached:
+                        return ApiResult(cached[0], stale=True, cached_at=cached[1], rate_limit=rate_limit)
+                if confirmed_rate_limit:
+                    raise GitHubRateLimitError(f"GitHub API rate limited request ({exc.code})") from exc
+                if exc.code == 403:
+                    raise GitHubError("GitHub denied the request (403); check token permissions") from exc
+                if exc.code == 422:
+                    raise GitHubError("GitHub rejected the generated query (422)") from exc
+                raise GitHubError(f"GitHub API request failed ({exc.code})") from exc
+            except (urllib.error.URLError, TimeoutError) as exc:
+                if remaining_retries > 0:
+                    remaining_retries -= 1
+                    with self._metrics_lock:
+                        self.request_counts[resource] += 1
+                    time.sleep(self.retry_delay)
+                    continue
                 cached = self.store.get_cache(cache_key)
                 if cached:
-                    return ApiResult(cached[0], stale=True, cached_at=cached[1], rate_limit=rate_limit)
-            if confirmed_rate_limit:
-                raise GitHubRateLimitError(f"GitHub API rate limited request ({exc.code})") from exc
-            if exc.code == 403:
-                raise GitHubError("GitHub denied the request (403); check token permissions") from exc
-            if exc.code == 422:
-                raise GitHubError("GitHub rejected the generated query (422)") from exc
-            raise GitHubError(f"GitHub API request failed ({exc.code})") from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
-            cached = self.store.get_cache(cache_key)
-            if cached:
-                return ApiResult(cached[0], stale=True, cached_at=cached[1])
-            raise GitHubError(f"GitHub API network failure: {exc.reason if hasattr(exc, 'reason') else exc}") from exc
+                    return ApiResult(cached[0], stale=True, cached_at=cached[1])
+                raise GitHubError(
+                    f"GitHub API network failure: {exc.reason if hasattr(exc, 'reason') else exc}"
+                ) from exc
 
     def search_repositories(self, query: str, per_page: int = 10, sort: str = "stars") -> ApiResult:
         return self._request("/search/repositories", {
