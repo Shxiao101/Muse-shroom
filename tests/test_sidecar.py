@@ -1,4 +1,5 @@
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,13 +7,14 @@ from pathlib import Path
 from evaluation.host_eval import prepare, score_case
 from muse_shroom.iteration import validate_hypothesis_evidence
 from muse_shroom.models import ContractError, SearchHypothesis, SearchRequest
-from muse_shroom.queries import hypothesis_queries
+from muse_shroom.queries import CJK_RE, hypothesis_queries
 from muse_shroom.ranking import rank_search
 from muse_shroom.search import SEARCH_OUTPUT_MAX_BYTES, SearchEngine, _wire_size
 from muse_shroom.selection import SHORTLIST_LIMIT
 from muse_shroom.sidecar import (
-    SEMANTIC_CANDIDATE_CAP, compare_base_ledgers, match_hypothesized_term,
-    plan_sidecar_queries, public_hypothesis, split_additions,
+    SEMANTIC_CANDIDATE_CAP, SEMANTIC_QUERIES_PER_HYPOTHESIS, SEMANTIC_QUERY_BUDGET,
+    apply_semantic_mechanism, compare_base_ledgers, derive_hypothesis_status,
+    match_hypothesized_term, plan_sidecar_queries, public_hypothesis, split_additions,
     validate_host_hypotheses,
 )
 from muse_shroom.storage import Store
@@ -526,6 +528,227 @@ class SidecarSearchTests(unittest.TestCase):
         record["incomplete"] = True
         from muse_shroom.sidecar import derive_hypothesis_status
         self.assertEqual(derive_hypothesis_status(record), "inconclusive")
+
+
+CJK_ANCHOR_REQUEST = {
+    "request": "提高专注力的工具",
+    "problem_concepts": [
+        {"term": "提高专注"},
+        {"term": "减少分心", "aliases": ["distraction"]},
+    ],
+    "mechanisms": ["pomodoro"],
+    "artifact_types": ["application"],
+}
+
+
+def _host_addition(term, anchor, aliases=None, **extra):
+    addition = {
+        "term": term,
+        "request_anchor": anchor,
+        "reason": "neighboring domain may transfer",
+        "evidence": "host_hypothesis",
+        **extra,
+    }
+    if aliases is not None:
+        addition["aliases"] = aliases
+    return addition
+
+
+def _host_hypothesis(*additions, **fields):
+    return {
+        "decision": "continue",
+        "reason": "test sidecar",
+        "add_exploration_directions": list(additions),
+        "strategies": ["keyword"],
+        **fields,
+    }
+
+
+def _record(term, anchor, aliases=(), record_id="h1:1:x"):
+    return {
+        "id": record_id, "term": term, "aliases": list(aliases),
+        "request_anchor": anchor, "queries": [],
+    }
+
+
+def _phrases(query):
+    return re.findall(r'"([^"]+)"', query)
+
+
+class SidecarReachTests(unittest.TestCase):
+    def test_host_hypothesis_aliases_are_a_bounded_single_line_list(self):
+        hypothesis = SearchHypothesis.from_dict(_host_hypothesis(_host_addition(
+            "physiological pacing", "focus", aliases=["pacing", "Pacing", "physiological pacing"],
+        )), strict=True)
+        addition = hypothesis.add_exploration_directions[0]
+        # Repeats of each other or of the term are dropped; the limit applies to what was sent.
+        self.assertEqual(addition.aliases, ["pacing"])
+        self.assertEqual(addition.to_dict()["aliases"], ["pacing"])
+        for aliases in (["a", "b", "c", "d"], "pacing", ["pacing", 3], ["two\nlines"], [""]):
+            with self.assertRaises(ContractError, msg=repr(aliases)):
+                SearchHypothesis.from_dict(_host_hypothesis(_host_addition(
+                    "physiological pacing", "focus", aliases=aliases,
+                )), strict=True)
+
+    def test_only_host_hypotheses_carry_aliases(self):
+        with self.assertRaises(ContractError):
+            SearchHypothesis.from_dict(_host_hypothesis({
+                "term": "observed-term", "evidence": "discovered_term", "aliases": ["other"],
+            }), strict=True)
+
+    def test_host_hypothesis_needs_an_english_phrasing(self):
+        request = SearchRequest.from_dict(CJK_ANCHOR_REQUEST)
+        cjk_only = SearchHypothesis.from_dict(_host_hypothesis(
+            _host_addition("呼吸节律调节", "提高专注"),
+        ))
+        with self.assertRaises(ContractError) as raised:
+            validate_host_hypotheses(cjk_only, request, iteration=1, existing=[])
+        self.assertIn("English phrasing", str(raised.exception))
+        with_alias = SearchHypothesis.from_dict(_host_hypothesis(
+            _host_addition("呼吸节律调节", "提高专注", aliases=["breath pacing"]),
+        ))
+        validate_host_hypotheses(with_alias, request, iteration=1, existing=[])
+
+    def test_aliases_obey_exclusions_negatives_and_ordinary_fields(self):
+        request = SearchRequest.from_dict({**REQUEST, "exclusions": ["wearable"]})
+        excluded = SearchHypothesis.from_dict(_host_hypothesis(
+            _host_addition("physiological pacing", "focus", aliases=["wearable"]),
+        ))
+        with self.assertRaises(ContractError):
+            validate_host_hypotheses(excluded, request, iteration=1, existing=[])
+        negative = SearchHypothesis.from_dict(_host_hypothesis(
+            _host_addition("physiological pacing", "focus", aliases=["heart sensor"]),
+        ))
+        with self.assertRaises(ContractError):
+            validate_host_hypotheses(
+                negative, request, iteration=1, existing=[], negatives=["heart sensor"],
+            )
+        repeated = SearchHypothesis.from_dict(_host_hypothesis(
+            _host_addition("physiological pacing", "focus", aliases=["breath pacing"]),
+            concepts=["breath pacing"],
+        ))
+        with self.assertRaises(ContractError):
+            validate_host_hypotheses(repeated, request, iteration=1, existing=[])
+        repository = SearchHypothesis.from_dict(_host_hypothesis(
+            _host_addition("physiological pacing", "focus", aliases=["owner/repo"]),
+        ))
+        with self.assertRaises(ContractError):
+            validate_host_hypotheses(repository, request, iteration=1, existing=[])
+
+    def test_shortest_english_phrasing_leads_and_cjk_is_never_searched(self):
+        request = SearchRequest.from_dict(CJK_ANCHOR_REQUEST)
+        planned, skipped = plan_sidecar_queries(
+            [_record("physiological pacing technique", "提高专注", aliases=["pacing", "呼吸节律"])],
+            request, remaining_budget=4,
+        )
+        self.assertEqual(skipped, [])
+        # The anchored concept has no English phrasing, so no bridge: the second query
+        # tries the next phrasing of the hypothesis instead.
+        self.assertEqual([item["kind"] for item in planned], ["semantic_pure", "semantic_pure"])
+        self.assertEqual([_phrases(item["query"]) for item in planned], [
+            ["pacing"], ["physiological pacing technique"],
+        ])
+
+    def test_bridge_uses_an_english_phrasing_of_the_anchored_concept(self):
+        request = SearchRequest.from_dict(CJK_ANCHOR_REQUEST)
+        planned, _skipped = plan_sidecar_queries(
+            [_record("breath pacing", "减少分心")], request, remaining_budget=4,
+        )
+        self.assertEqual([item["kind"] for item in planned], ["semantic_pure", "semantic_bridge"])
+        self.assertEqual(_phrases(planned[1]["query"]), ["breath pacing", "distraction"])
+        latin = SearchRequest.from_dict(REQUEST)
+        planned, _skipped = plan_sidecar_queries(
+            [_record("physiological pacing", "focus management")], latin, remaining_budget=4,
+        )
+        self.assertEqual(_phrases(planned[1]["query"]), ["physiological pacing", "focus"])
+
+    def test_one_phrasing_without_an_english_anchor_plans_one_query(self):
+        request = SearchRequest.from_dict(CJK_ANCHOR_REQUEST)
+        planned, skipped = plan_sidecar_queries(
+            [_record("breath pacing", "提高专注")], request, remaining_budget=4,
+        )
+        self.assertEqual(len(planned), 1)
+        self.assertEqual(skipped, [])
+
+    def test_sidecar_queries_stay_within_budget_and_never_mix_scripts(self):
+        requests = [SearchRequest.from_dict(REQUEST), SearchRequest.from_dict(CJK_ANCHOR_REQUEST)]
+        records = [
+            ("physiological pacing", ["pacing", "breath pacing"]),
+            ("呼吸节律调节", ["breath pacing", "paced breathing technique"]),
+            ("slow breathing", []),
+        ]
+        anchors = ["focus", "focus management", "提高专注", "减少分心", "distraction"]
+        for request in requests:
+            valid_anchors = {term for concept in request.problem_concepts for term in concept.terms()}
+            for anchor in anchors:
+                if anchor not in valid_anchors:
+                    continue
+                batch = [
+                    _record(term, anchor, aliases=aliases, record_id=f"h:{index}")
+                    for index, (term, aliases) in enumerate(records)
+                ]
+                planned, _skipped = plan_sidecar_queries(batch, request, remaining_budget=SEMANTIC_QUERY_BUDGET)
+                self.assertLessEqual(len(planned), SEMANTIC_QUERY_BUDGET)
+                per_record = {}
+                for item in planned:
+                    per_record[item["hypothesis_id"]] = per_record.get(item["hypothesis_id"], 0) + 1
+                    self.assertFalse(
+                        any(CJK_RE.search(phrase) for phrase in _phrases(item["query"])),
+                        item["query"],
+                    )
+                self.assertTrue(all(count <= SEMANTIC_QUERIES_PER_HYPOTHESIS for count in per_record.values()))
+
+    def test_one_query_hypothesis_without_evidence_is_rejected(self):
+        record = {
+            "id": "h1", "term": "breath pacing", "evidence_repos": [],
+            "queries": [{"kind": "semantic_pure", "executed": True}],
+        }
+        self.assertEqual(derive_hypothesis_status(record), "rejected")
+        record["queries"][0]["executed"] = False
+        self.assertEqual(derive_hypothesis_status(record), "proposed")
+
+    def test_alias_in_recorded_text_counts_as_evidence(self):
+        def candidate():
+            return {
+                "full_name": "labs/breath", "html_url": "https://github.com/labs/breath",
+                "description": "", "topics": [], "evidence": [], "mechanisms": [],
+                "readme": "# Breath\nbreath pacing for calm work\n",
+            }
+
+        self.assertFalse(apply_semantic_mechanism(candidate(), "physiological pacing", "h1"))
+        matched = candidate()
+        self.assertTrue(apply_semantic_mechanism(
+            matched, "physiological pacing", "h1", ["breath pacing"],
+        ))
+        mechanism = next(item for item in matched["mechanisms"] if item.get("semantic_origin"))
+        self.assertEqual(mechanism["name"], "physiological pacing")
+        self.assertEqual(mechanism["matched_terms"], ["breath pacing"])
+
+    def test_cjk_term_with_english_alias_reaches_evidence_through_iterate(self):
+        breath = repo("labs/breath", 40, description="breath pacing trainer", topics=["calm"])
+        timer = repo("tools/timer", 300, description="pomodoro timer")
+        github = FrozenGitHub(
+            [("focus", [timer]), ("breath pacing", [breath])],
+            readmes={
+                "tools/timer": "# Timer\nA pomodoro timer.\n## Usage\nStart.",
+                "labs/breath": "# Breath\nbreath pacing for deep work.\n## Usage\nBreathe.",
+            },
+        )
+        directory = tempfile.TemporaryDirectory()
+        store = Store(directory.name)
+        self.addCleanup(directory.cleanup)
+        self.addCleanup(store.close)
+        engine = SearchEngine(store, github, relation_budget=0)
+        search = engine.search(SearchRequest.from_dict(REQUEST), "deep")
+        iterated = engine.iterate(search["search_id"], _host_hypothesis(
+            _host_addition("呼吸节律调节", "focus", aliases=["breath pacing"]),
+        ))
+        hypothesis = iterated["observation"]["semantic_hypotheses"][0]
+        self.assertEqual(hypothesis["aliases"], ["breath pacing"])
+        self.assertEqual(hypothesis["status"], "evidence_found")
+        self.assertIn("labs/breath", hypothesis["evidence_repos"])
+        for query in hypothesis["queries"]:
+            self.assertFalse(any(CJK_RE.search(phrase) for phrase in _phrases(query["query"])))
 
 
 class HostEvalWorkflowTests(unittest.TestCase):

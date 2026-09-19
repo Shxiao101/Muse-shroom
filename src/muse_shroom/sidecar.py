@@ -12,7 +12,7 @@ from typing import Any, Iterable
 from .models import (
     ContractError, ExplorationAddition, SearchHypothesis, SearchRequest, repo_key,
 )
-from .queries import qualifiers, quote_term, query_fingerprint, term_blocked_by_negative
+from .queries import CJK_RE, qualifiers, quote_term, query_fingerprint, term_blocked_by_negative
 from .text import contains, normalize, normalized_lines, readme_match
 
 
@@ -88,7 +88,39 @@ def problem_anchor_map(request: SearchRequest) -> dict[str, str]:
 
 
 def _host_term_set(additions: Iterable[ExplorationAddition]) -> set[str]:
-    return {normalize(item.term) for item in additions if item.term.strip()}
+    return {
+        normalize(value)
+        for item in additions
+        for value in (item.term, *item.aliases)
+        if value.strip()
+    }
+
+
+def searchable_phrasings(values: Iterable[str]) -> list[str]:
+    """Phrasings a literal GitHub search can hit: no CJK, fewest words first.
+
+    Sorting is stable, so phrasings of equal length keep the order given.
+    """
+    phrasings: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        key = normalize(text)
+        if not key or key in seen or CJK_RE.search(text):
+            continue
+        seen.add(key)
+        phrasings.append(text)
+    return sorted(phrasings, key=lambda text: len(text.split()))
+
+
+def anchor_phrasings(request: SearchRequest, anchor: str) -> list[str]:
+    """Searchable phrasings of the problem concept that the request anchor names."""
+    key = normalize(anchor)
+    for concept in request.problem_concepts:
+        terms = concept.terms()
+        if key in {normalize(term) for term in terms}:
+            return searchable_phrasings(terms)
+    return []
 
 
 def validate_host_hypotheses(
@@ -153,6 +185,19 @@ def validate_host_hypotheses(
             )
         if "/" in addition.term and addition.term.count("/") == 1:
             raise ContractError("host_hypothesis must not name a repository")
+        for alias in addition.aliases:
+            alias_key = normalize(alias)
+            if alias_key in exclusions or alias_key in blocked or term_blocked_by_negative(alias, negatives):
+                raise ContractError(
+                    f"host_hypothesis alias {alias!r} is excluded or a negative direction"
+                )
+            if "/" in alias and alias.count("/") == 1:
+                raise ContractError("host_hypothesis must not name a repository")
+        if not searchable_phrasings([addition.term, *addition.aliases]):
+            raise ContractError(
+                "host_hypothesis needs at least one English phrasing in term or aliases; "
+                "the sidecar searches GitHub literally"
+            )
     return host
 
 
@@ -163,6 +208,7 @@ def hypothesis_record(
     return {
         "id": hypothesis_id,
         "term": addition.term,
+        "aliases": list(addition.aliases),
         "request_anchor": addition.request_anchor,
         "reason": addition.reason,
         "evidence": HOST_HYPOTHESIS,
@@ -184,7 +230,14 @@ def plan_sidecar_queries(
     known_fingerprints: Iterable[str] = (),
     remaining_budget: int = SEMANTIC_QUERY_BUDGET,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Emit separately quoted pure and bridge queries. Never one combined phrase."""
+    """Plan at most two literal queries per hypothesis, each phrase quoted on its own.
+
+    Only phrasings without CJK are searched: a quoted CJK phrase next to a Latin one,
+    or a long CJK sentence, returns nothing from GitHub. The first query uses the
+    shortest searchable phrasing. The second bridges it to the anchored problem
+    concept when that concept has a searchable phrasing, and otherwise tries the
+    next phrasing of the hypothesis.
+    """
     suffix = qualifiers(request)
     known = set(known_fingerprints)
     planned: list[dict[str, Any]] = []
@@ -218,10 +271,16 @@ def plan_sidecar_queries(
     for record in records:
         if term_blocked_by_negative(record["term"], negatives):
             continue
-        specs = [
-            make(record["term"], "semantic_pure", record),
-            make(record["term"], "semantic_bridge", record, extra=record.get("request_anchor")),
-        ]
+        phrasings = searchable_phrasings([record["term"], *(record.get("aliases") or [])])
+        if not phrasings:
+            continue
+        anchors = anchor_phrasings(request, str(record.get("request_anchor") or ""))
+        specs = [make(phrasings[0], "semantic_pure", record)]
+        if anchors:
+            specs.append(make(phrasings[0], "semantic_bridge", record, extra=anchors[0]))
+        elif len(phrasings) > 1:
+            specs.append(make(phrasings[1], "semantic_pure", record))
+        specs = specs[:SEMANTIC_QUERIES_PER_HYPOTHESIS]
         for spec in specs:
             if spec is None:
                 continue
@@ -273,10 +332,26 @@ def match_hypothesized_term(candidate: dict[str, Any], term: str) -> list[dict[s
     return unique
 
 
+def match_hypothesized_phrasings(
+    candidate: dict[str, Any], phrasings: Iterable[str],
+) -> list[dict[str, Any]]:
+    """Literal matches for any phrasing of a hypothesis, in phrasing order."""
+    matches: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for phrasing in phrasings:
+        for match in match_hypothesized_term(candidate, phrasing):
+            identity = (str(match["source"]), str(match["matched_term"]).casefold())
+            if identity not in seen:
+                seen.add(identity)
+                matches.append(match)
+    return matches
+
+
 def apply_semantic_mechanism(
     candidate: dict[str, Any], term: str, hypothesis_id: str,
+    aliases: Iterable[str] = (),
 ) -> bool:
-    matches = match_hypothesized_term(candidate, term)
+    matches = match_hypothesized_phrasings(candidate, [term, *aliases])
     if not matches:
         return False
     full_name = str(candidate.get("full_name") or "").lower()
@@ -359,11 +434,11 @@ def derive_hypothesis_status(record: dict[str, Any]) -> str:
         return "validated"
     if record.get("evidence_repos"):
         return "evidence_found"
-    if failed or incomplete or (skipped and len(executed) < SEMANTIC_QUERIES_PER_HYPOTHESIS):
-        if not executed and not record.get("evidence_repos"):
-            return "inconclusive" if (skipped or failed or incomplete) else "proposed"
+    if failed or incomplete or skipped:
         return "inconclusive"
-    if len(executed) >= SEMANTIC_QUERIES_PER_HYPOTHESIS and not record.get("evidence_repos"):
+    # A hypothesis may plan one query or two; every planned query ran and none
+    # produced evidence.
+    if planned and len(executed) == len(planned):
         return "rejected"
     if executed:
         return "searched"
@@ -415,6 +490,7 @@ def public_hypothesis(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": record.get("id"),
         "term": record.get("term"),
+        "aliases": list(record.get("aliases") or []),
         "request_anchor": record.get("request_anchor"),
         "reason": record.get("reason"),
         "source_iteration": record.get("source_iteration"),

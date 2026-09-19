@@ -1412,6 +1412,7 @@ class SearchEngine:
                 "evidence": HOST_HYPOTHESIS_EVIDENCE,
                 "source_iteration": iteration,
                 "request_anchor": addition.request_anchor,
+                **({"aliases": list(addition.aliases)} if addition.aliases else {}),
             })
         self.store.update_search_request(search_id, request.to_dict())
         strategies = hypothesis.resolved_strategies()
@@ -1812,9 +1813,13 @@ class SearchEngine:
                 except GitHubError:
                     record["incomplete"] = True
                     continue
-                apply_semantic_mechanism(candidate, record["term"], record["id"])
+                apply_semantic_mechanism(
+                    candidate, record["term"], record["id"], record.get("aliases") or (),
+                )
             for candidate in recalled:
-                if not apply_semantic_mechanism(candidate, record["term"], record["id"]):
+                if not apply_semantic_mechanism(
+                    candidate, record["term"], record["id"], record.get("aliases") or (),
+                ):
                     continue
                 repo = str(candidate.get("full_name") or "")
                 if repo and repo not in record["evidence_repos"]:
