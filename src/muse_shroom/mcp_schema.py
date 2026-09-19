@@ -398,7 +398,8 @@ MUSE_ITERATE_DESCRIPTION = (
     "Run one bounded iteration for an existing search_id using a SearchHypothesis. "
     "hypothesis.decision must be continue or stop. Continue needs search terms or "
     "strategies; stop needs stop_reason. Unknown fields such as mechanisms or rationale "
-    "are rejected. Does not start a new search."
+    "are rejected. Does not start a new search. candidates lists only shortlist members new "
+    "or changed since this server last returned them; unchanged_candidates names the rest."
 )
 
 MUSE_SUPPLY_DESCRIPTION = (

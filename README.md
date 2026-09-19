@@ -88,7 +88,7 @@ Cursor（`.cursor/mcp.json`）：
 
 快搜：`search` 然后 `rank`。深搜中间按 `observation` 有限次 `iterate`。`rank` 接收宿主 Agent 的有序 `selection`，只校验证据归属和原文引用，生成 `items` 与 `display_order`，保留该顺序。代码不重排。`popular` / `gems` / `adjacent` 是主列表确定后的兼容投影。
 
-`candidate_count` 是完整召回池，`candidates` 是评估 shortlist，可能不含池中每一项。`rank` 前可用 `candidates --scope all` 或 `inspect` 看未进 shortlist 的证据。细节见 [`docs/search-internals.md`](docs/search-internals.md)。
+`candidate_count` 是完整召回池，`candidates` 是评估 shortlist，可能不含池中每一项。返回给 Agent 的结果里同一信息只出现一次：MCP 下 `iterate` 只返回新的或有变化的候选，其余列在 `unchanged_candidates`；`rank` 不再重复完整证据和发现路径，保存的排序和 Explorer 里仍有。`rank` 前可用 `candidates --scope all` 或 `inspect` 看未进 shortlist 的证据。细节见 [`docs/search-internals.md`](docs/search-internals.md)。
 
 ### 职责边界
 
