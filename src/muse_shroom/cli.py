@@ -15,7 +15,7 @@ from .agent_view import rank_view, session_view
 from .auth import AuthError, TOKEN_URL, delete_saved_token, resolve_token, save_token, validate_token
 from .github import GitHubClient, GitHubError
 from .models import ContractError, SearchRequest
-from .ranking import rank_search
+from .ranking import find_candidate, rank_search
 from .search import SearchEngine, public_candidate
 from .storage import Store
 
@@ -247,7 +247,7 @@ def run(args: argparse.Namespace) -> Any:
                 "candidates": result,
             }
         if args.command == "inspect":
-            candidate = store.get_candidate(args.repo, args.search_id)
+            candidate = find_candidate(store, args.repo, args.search_id)
             if candidate is None:
                 raise KeyError(f"repository not found in local snapshots: {args.repo}")
             history = store.star_history(args.repo)
