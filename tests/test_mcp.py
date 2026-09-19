@@ -265,6 +265,18 @@ class McpAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("buckets", mcp_rank)
             self.assertNotIn("scores", mcp_rank["items"][0])
 
+    async def test_text_block_is_the_compact_structured_payload(self):
+        # A host that prints the whole result gets the text copy too; indented JSON made a
+        # Codex search reply exceed the host's output limit.
+        with tempfile.TemporaryDirectory() as directory:
+            mcp = create_server(data_dir=directory, github=_github(), log_level="ERROR")
+            async with Client(mcp) as client:
+                searched = await client.call_tool("muse_search", {"request": REQUEST, "mode": "quick"})
+        text = searched.content[0].text
+        self.assertEqual(json.loads(text), searched.structured_content)
+        self.assertNotIn("\n", text)
+        self.assertEqual(text, json.dumps(searched.structured_content, ensure_ascii=False, separators=(",", ":")))
+
     async def test_observe_is_read_only(self):
         github = _github()
         with tempfile.TemporaryDirectory() as directory:
