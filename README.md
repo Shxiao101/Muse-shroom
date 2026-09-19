@@ -37,7 +37,7 @@ MCP 是可选 extra。安装后用 `muse-shroom-mcp` 或 `python -m muse_shroom.
 
 ## 工作流
 
-宿主 Agent 使用 [`skills/muse-shroom`](skills/muse-shroom/SKILL.md)：解释需求 → 宿主先像没有 Muse-shroom 时那样自己搜，列出草稿清单 → `search` →（深搜）按 `observation` `iterate` → 草稿清单经 `supply` 取证 → `rank`：草稿全部保留，再补上 Muse-shroom 找到而草稿没有的。快搜跳过 iterate。MCP 可用时优先 `muse_search` / `muse_observe` / `muse_iterate` / `muse_supply` / `muse_rank`，否则走 CLI，策略相同。契约在 Skill 的 `references/`。
+宿主 Agent 使用 [`skills/muse-shroom`](skills/muse-shroom/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → 宿主像没有 Muse-shroom 时那样自己搜，列出草稿清单（只找仓库，不为核实去翻页面）→ 草稿清单经 `supply` 取证 → `rank`：草稿全部保留，再补上 Muse-shroom 找到而草稿没有的。快搜跳过 iterate。MCP 可用时优先 `muse_search` / `muse_observe` / `muse_iterate` / `muse_supply` / `muse_rank`，否则走 CLI，策略相同。契约在 Skill 的 `references/`。
 
 ```console
 muse-shroom search --request examples/music-ai.request.json --mode quick --output search.json

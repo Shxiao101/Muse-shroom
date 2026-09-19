@@ -13,7 +13,7 @@ Prefer Muse-shroom MCP over the CLI. MCP tools may be deferred and absent from t
 
 Use the CLI only after deferred-tool discovery explicitly returns no Muse-shroom tools, the host has no discovery mechanism and exposes no Muse-shroom tools, or loading/starting the discovered MCP server fails. The initial visible tool list alone is not evidence that MCP is unavailable. When falling back, briefly tell the user the concrete reason. Optional `muse_inspect` is debug-only. Do not change the search strategy for MCP vs CLI. When using the CLI, write JSON as UTF-8 files; on Windows, never pipe `Get-Content` into Muse-shroom.
 
-Once the user has asked for Muse-shroom (“使用 Muse-shroom”, “use Muse-shroom”, “search with Muse-shroom”), combine two recall sources and let Muse-shroom own the evidence. **Host recall comes first.** Before `muse_search`, search the way you would answer this request without Muse-shroom, boundary finds included: repositories you already know and your normal Web search, for the core need and for adjacent or cross-domain directions, as many rounds as you would normally run. Draft the list you would have given the user; that draft is your host recall. **Muse-shroom recall** is `muse_search`, plus the observe → iterate loop in deep mode; its job is to add what the draft misses. Do not skip host recall because Muse-shroom is available, do not cut it short because Muse-shroom will search too, and do not replace `muse_search` with Web search. Host-recall repositories reach the user only through `muse_supply` and `muse_rank` (§7), never directly.
+Once the user has asked for Muse-shroom (“使用 Muse-shroom”, “use Muse-shroom”, “search with Muse-shroom”), combine two recall sources and let Muse-shroom own the evidence. **Muse-shroom recall** is `muse_search`, plus the observe → iterate loop in deep mode. **Host recall** is the search you would run for this request without Muse-shroom, boundary finds included: repositories you already know and your normal Web search, for the core need and for adjacent or cross-domain directions, as many rounds as you would normally run. Run it after Muse-shroom recall and before rank, so its search results stay in context only for the last few calls, and draft the list you would have given the user without Muse-shroom. Search to find repositories, not to check them: put a repository in the draft by name once it looks relevant, and skip `site:` look-ups or page opens whose only purpose is to verify it, because `muse_supply` fetches its README and metadata and you judge it at rank from that evidence. Do not skip host recall because Muse-shroom is available, do not cut it short because Muse-shroom already searched, and do not replace `muse_search` with Web search. Host-recall repositories reach the user only through `muse_supply` and `muse_rank` (§7), never directly.
 
 ## 1. Purpose and when to use
 
@@ -30,7 +30,7 @@ Do not use this Skill for known-repo code search or automatic installation.
 Resolve the search interpretation and mode in one interaction by default.
 
 1. Propose the search interpretation in user-facing language: problem, likely mechanisms, exploration directions, artifact types, constraints, exclusions.
-2. In the same message, if mode is unspecified, ask: **quick** (host recall and one Muse-shroom search, then rank) or **deep** (host recall, then a Muse-shroom search with a bounded observe → decide → iterate loop, then rank).
+2. In the same message, if mode is unspecified, ask: **quick** (one Muse-shroom search, then host recall and rank) or **deep** (a Muse-shroom search with a bounded observe → decide → iterate loop, then host recall and rank).
 3. Treat a plain quick/deep choice as confirmation of the proposed interpretation. If the user corrects the interpretation while choosing a mode, apply those corrections before searching. If the user already gave a specific reading or said “就搜这个”, “直接搜”, “无需确认”, or an equivalent, do not ask for separate confirmation.
 
 Separate the surface phrase from the underlying symptom. “Codex overthinks” can mean latency, cost, over-design, repeated review, or caution; keep those as distinct concepts.
@@ -47,7 +47,7 @@ If a credential is configured, run `search`, `observe`, `iterate`, and `rank` in
 
 Write the confirmed interpretation as [request-contract.md](references/request-contract.md). Do not write GitHub query syntax.
 
-The initial request may contain only the user's actual problem and constraints, direct paraphrases and GitHub-common aliases, mechanisms stated or tightly implied by the request, and exploration directions the user explicitly asked for. Do not place world-knowledge leaps in the initial request. The host-recall draft does not widen this: keep its repositories, and mechanisms you learned only from it, out of the request, so Muse-shroom searches for what the draft misses. Quick mode never invokes the semantic sidecar.
+The initial request may contain only the user's actual problem and constraints, direct paraphrases and GitHub-common aliases, mechanisms stated or tightly implied by the request, and exploration directions the user explicitly asked for. Do not place world-knowledge leaps in the initial request. Quick mode never invokes the semantic sidecar.
 
 ## 5. Search
 
