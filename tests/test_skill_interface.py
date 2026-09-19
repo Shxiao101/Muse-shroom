@@ -91,6 +91,22 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn(f"at most {SUPPLY_SESSION_LIMIT} per session", MUSE_SUPPLY_DESCRIPTION)
         self.assertNotIn("Web verification", MUSE_SUPPLY_DESCRIPTION)
 
+    def test_host_recall_is_a_full_draft_that_survives_into_the_selection(self):
+        # A host with Muse-shroom must still find what it would find without it, and keep it.
+        from muse_shroom.mcp_schema import HOST_INSTRUCTIONS, MUSE_SUPPLY_DESCRIPTION
+
+        for text in (self.skill, HOST_INSTRUCTIONS):
+            self.assertIn("Host recall comes first", text)
+            self.assertIn("as many rounds as you would normally run", text)
+            self.assertIn("do not cut it short because Muse-shroom will search too", text)
+            self.assertIn("Keep every draft repository whose evidence was recorded", text)
+            self.assertIn("Do not trim the draft to make room", text)
+            self.assertNotIn("on merit", text)
+        self.assertLess(self.skill.index("Host recall comes first"), self.skill.index("## 5. Search"))
+        self.assertIn("Default flow: muse_status, host recall, muse_search", HOST_INSTRUCTIONS)
+        self.assertIn("Supply the whole draft", MUSE_SUPPLY_DESCRIPTION)
+        self.assertIn("keep its repositories", self.skill)
+
     def test_boundary_reach_rules_are_stated_in_every_channel(self):
         from muse_shroom.mcp_schema import (
             EXPLORATION_ADDITION_SCHEMA, HOST_INSTRUCTIONS, MUSE_SUPPLY_DESCRIPTION,

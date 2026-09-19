@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from evaluation.host_eval import prepare, score_case
+from muse_shroom.github import GitHubAuthenticationError, GitHubRateLimitError, describe_error
 from muse_shroom.iteration import validate_hypothesis_evidence
 from muse_shroom.models import ContractError, SearchHypothesis, SearchRequest
 from muse_shroom.queries import CJK_RE, hypothesis_queries
@@ -749,6 +750,108 @@ class SidecarReachTests(unittest.TestCase):
         self.assertIn("labs/breath", hypothesis["evidence_repos"])
         for query in hypothesis["queries"]:
             self.assertFalse(any(CJK_RE.search(phrase) for phrase in _phrases(query["query"])))
+
+
+class FlakyGitHub(FrozenGitHub):
+    """FrozenGitHub whose searches fail when the query contains every needle in ``fail_on``."""
+
+    def __init__(self, *args, fail_on=(), error=GitHubRateLimitError, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fail_on = tuple(needle.lower() for needle in fail_on)
+        self.error = error
+
+    def search_repositories(self, query, per_page=10, sort="stars"):
+        if self.fail_on and all(needle in query.lower() for needle in self.fail_on):
+            self.request_counts["search"] += 1
+            raise self.error("GitHub API rate limited request (403) github_pat_secretvalue")
+        return super().search_repositories(query, per_page, sort)
+
+
+class RecallFailureTests(unittest.TestCase):
+    def _engine(self, github):
+        directory = tempfile.TemporaryDirectory()
+        store = Store(directory.name)
+        self.addCleanup(directory.cleanup)
+        self.addCleanup(store.close)
+        return SearchEngine(store, github, relation_budget=0), store
+
+    def _breath_github(self, **options):
+        return FlakyGitHub(
+            [
+                ("focus", [repo("tools/timer", 300, description="pomodoro timer")]),
+                ("breath pacing", [repo("labs/breath", 40, description="breath pacing trainer")]),
+            ],
+            readmes={
+                "tools/timer": "# Timer\nA pomodoro timer.\n## Usage\nStart.",
+                "labs/breath": "# Breath\nbreath pacing for deep work.\n## Usage\nBreathe.",
+            },
+            **options,
+        )
+
+    def test_error_description_is_one_redacted_line(self):
+        text = describe_error(GitHubRateLimitError("limited\nfor github_pat_abc123 now"))
+        self.assertEqual(text, "GitHubRateLimitError: limited for [redacted] now")
+
+    def test_one_failed_sidecar_query_keeps_the_others_and_records_why(self):
+        github = self._breath_github(fail_on=('"breath pacing"', '"focus"'))
+        engine, store = self._engine(github)
+        search = engine.search(SearchRequest.from_dict(REQUEST), "deep")
+        iterated = engine.iterate(search["search_id"], _host_hypothesis(
+            _host_addition("breath pacing", "focus"),
+        ))
+        hypothesis = iterated["observation"]["semantic_hypotheses"][0]
+        queries = {query["kind"]: query for query in hypothesis["queries"]}
+        self.assertTrue(queries["semantic_pure"]["executed"])
+        self.assertFalse(queries["semantic_bridge"]["executed"])
+        self.assertEqual(
+            queries["semantic_bridge"]["error"],
+            "GitHubRateLimitError: GitHub API rate limited request (403) [redacted]",
+        )
+        self.assertEqual(hypothesis["status"], "evidence_found")
+        self.assertIn("labs/breath", hypothesis["evidence_repos"])
+        self.assertEqual(iterated["observation"]["sidecar_metrics"]["semantic_queries_failed"], 1)
+        history = [item for item in store.query_history(search["search_id"]) if item["kind"] == "semantic_bridge"]
+        self.assertEqual([item["skip_reason"] for item in history], ["failed:GitHubRateLimitError"])
+        self.assertNotIn(history[0]["fingerprint"], store.query_fingerprints(search["search_id"]))
+
+    def test_every_sidecar_query_failing_leaves_the_hypothesis_inconclusive(self):
+        github = self._breath_github(fail_on=('"breath pacing"',))
+        engine, _store = self._engine(github)
+        search = engine.search(SearchRequest.from_dict(REQUEST), "deep")
+        iterated = engine.iterate(search["search_id"], _host_hypothesis(
+            _host_addition("breath pacing", "focus"),
+        ))
+        hypothesis = iterated["observation"]["semantic_hypotheses"][0]
+        self.assertEqual(hypothesis["status"], "inconclusive")
+        self.assertTrue(all("GitHubRateLimitError" in query["error"] for query in hypothesis["queries"]))
+        self.assertEqual(
+            iterated["observation"]["sidecar_metrics"]["semantic_queries_failed"],
+            len(hypothesis["queries"]),
+        )
+
+    def test_one_failed_base_query_keeps_the_others(self):
+        github = self._breath_github(fail_on=("pomodoro",))
+        engine, store = self._engine(github)
+        search = engine.search(SearchRequest.from_dict(REQUEST), "deep")
+        names = {item["full_name"] for item in search["candidates"]}
+        self.assertIn("tools/timer", names)
+        self.assertEqual(search["incomplete_phase"], "github_error:GitHubRateLimitError")
+        failed = [item for item in store.query_history(search["search_id"]) if item["skip_reason"]]
+        self.assertTrue(failed)
+        self.assertTrue(all(item["skip_reason"] == "failed:GitHubRateLimitError" for item in failed))
+        self.assertTrue(all("pomodoro" in item["query"].lower() for item in failed))
+
+    def test_every_base_query_failing_still_raises(self):
+        engine, _store = self._engine(self._breath_github(fail_on=("",)))
+        with self.assertRaises(GitHubRateLimitError):
+            engine.search(SearchRequest.from_dict(REQUEST), "deep")
+
+    def test_rejected_credential_still_aborts_the_batch(self):
+        engine, _store = self._engine(
+            self._breath_github(fail_on=("pomodoro",), error=GitHubAuthenticationError),
+        )
+        with self.assertRaises(GitHubAuthenticationError):
+            engine.search(SearchRequest.from_dict(REQUEST), "deep")
 
 
 class HostEvalWorkflowTests(unittest.TestCase):

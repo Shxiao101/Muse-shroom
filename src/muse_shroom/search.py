@@ -13,7 +13,7 @@ from .confirmation import (
 )
 from .github import (
     ApiResult, GitHubAuthenticationError, GitHubClient, GitHubError,
-    GitHubNotFoundError,
+    GitHubNotFoundError, describe_error,
 )
 from .iteration import (
     apply_hypothesis_to_request, build_observation, default_session_state,
@@ -604,11 +604,66 @@ class SearchEngine:
         data = result.data
         return list(data.get("items", [])) if isinstance(data, dict) else list(data)
 
+    def _search_batch(
+        self, queries: list[dict[str, Any]], per_page: int, workers: int,
+    ) -> tuple[list[tuple[dict[str, Any], ApiResult]], list[tuple[dict[str, Any], GitHubError]]]:
+        """Run searches concurrently; one failed query never discards the others.
+
+        Results keep the order of ``queries``. A rejected credential still aborts the
+        batch, because every other call would fail the same way.
+        """
+        outcomes: list[ApiResult | GitHubError | None] = [None] * len(queries)
+        with ThreadPoolExecutor(max_workers=min(workers, max(1, len(queries)))) as pool:
+            futures = {
+                pool.submit(
+                    self.github.search_repositories, spec["query"], per_page, spec.get("sort", "stars"),
+                ): index
+                for index, spec in enumerate(queries)
+            }
+            for future in as_completed(futures):
+                try:
+                    outcomes[futures[future]] = future.result()
+                except GitHubAuthenticationError:
+                    raise
+                except GitHubError as exc:
+                    outcomes[futures[future]] = exc
+        results: list[tuple[dict[str, Any], ApiResult]] = []
+        failures: list[tuple[dict[str, Any], GitHubError]] = []
+        for spec, outcome in zip(queries, outcomes):
+            if isinstance(outcome, GitHubError):
+                failures.append((spec, outcome))
+            elif outcome is not None:
+                results.append((spec, outcome))
+        return results, failures
+
+    def _record_failed_queries(
+        self, search_id: str, failures: list[tuple[dict[str, Any], GitHubError]], *, iteration: int,
+    ) -> list[dict[str, Any]]:
+        """Keep failed queries in the history with their reason; they stay retryable."""
+        failed: list[dict[str, Any]] = []
+        for spec, exc in failures:
+            self.store.add_query_history(
+                search_id, spec["query"], spec["kind"], 0,
+                iteration=iteration, fingerprint=spec["fingerprint"], skipped=True,
+                skip_reason=f"failed:{type(exc).__name__}",
+            )
+            failed.append({
+                **spec, "failed": True, "error_type": type(exc).__name__,
+                "error": describe_error(exc),
+            })
+        return failed
+
     def _recall(self, search_id: str, queries: Iterable[dict[str, Any]],
                 candidates: dict[str, dict[str, Any]], *,
                 iteration: int = 0,
                 known_fingerprints: set[str] | None = None
-                ) -> tuple[bool, str | None, list[dict[str, Any]], list[dict[str, Any]]]:
+                ) -> tuple[bool, str | None, list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Recall candidates for ``queries``; returns stale, cache time, executed, skipped, failed.
+
+        A query that fails is recorded with its reason and returned in ``failed`` while the
+        other queries keep their results. Only when every query fails does the first
+        failure propagate, as before.
+        """
         stale = False
         cached_at = None
         known = set(known_fingerprints or [])
@@ -627,22 +682,14 @@ class SearchEngine:
                 continue
             known.add(fingerprint)
             executable.append(item)
-        query_list = executable
-        if not query_list:
-            return stale, cached_at, executable, skipped
-        with ThreadPoolExecutor(max_workers=min(6, max(1, len(query_list)))) as pool:
-            futures = {
-                pool.submit(self.github.search_repositories, spec["query"], self.search_page_size, spec.get("sort", "stars")): index
-                for index, spec in enumerate(query_list)
-            }
-            results: list[tuple[dict[str, str], ApiResult] | None] = [None] * len(query_list)
-            for future in as_completed(futures):
-                index = futures[future]
-                results[index] = (query_list[index], future.result())
-        for completed in results:
-            if completed is None:
-                continue
-            query_spec, result = completed
+        if not executable:
+            return stale, cached_at, executable, skipped, []
+        results, failures = self._search_batch(executable, self.search_page_size, 6)
+        failed = self._record_failed_queries(search_id, failures, iteration=iteration)
+        if failures and not results:
+            raise failures[0][1]
+        executed = [spec for spec, _result in results]
+        for query_spec, result in results:
             stale = stale or result.stale
             cached_at = cached_at or result.cached_at
             items = self._items(result)
@@ -684,8 +731,8 @@ class SearchEngine:
                 if lane_kind not in kinds:
                     kinds.append(lane_kind)
                 if len(candidates) >= self._pool_cap:
-                    return stale, cached_at, executable, skipped
-        return stale, cached_at, executable, skipped
+                    return stale, cached_at, executed, skipped, failed
+        return stale, cached_at, executed, skipped, failed
 
     @staticmethod
     def _concept_terms(request: SearchRequest) -> list[str]:
@@ -1027,7 +1074,7 @@ class SearchEngine:
                 before_names = set(candidates)
                 stage_failed = False
                 try:
-                    stage_stale, stage_cache, executed, recall_skipped = self._recall(
+                    stage_stale, stage_cache, executed, recall_skipped, _failed = self._recall(
                         search_id, [query], candidates, iteration=iteration,
                         known_fingerprints=self.store.query_fingerprints(search_id),
                     )
@@ -1123,7 +1170,7 @@ class SearchEngine:
         executed: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         try:
-            s, cache_time, executed, skipped = self._recall(
+            s, cache_time, executed, skipped, failed = self._recall(
                 search_id, build_queries(request, limit=self.initial_query_limit), candidates, iteration=0,
             )
             stale, cached_at = stale or s, cached_at or cache_time
@@ -1135,6 +1182,8 @@ class SearchEngine:
             stale, cached_at = stale or s, cached_at or cache_time
             if enrich_failed:
                 incomplete = "enrichment_partial_failure"
+            if failed:
+                incomplete = f"github_error:{failed[0]['error_type']}"
         except GitHubAuthenticationError:
             self.store.mark_search(search_id, stale=False, incomplete_phase="github_authentication_error")
             raise
@@ -1436,12 +1485,13 @@ class SearchEngine:
                 )
             skipped.extend(blocked)
             try:
-                recalled_stale, recalled_cache, executed, recall_skipped = self._recall(
+                recalled_stale, recalled_cache, executed, recall_skipped, recall_errors = self._recall(
                     search_id, planned, candidates, iteration=iteration,
                     known_fingerprints=self.store.query_fingerprints(search_id),
                 )
                 stale, cached_at = stale or recalled_stale, recalled_cache
                 skipped.extend(recall_skipped)
+                recall_failed = bool(recall_errors)
             except GitHubAuthenticationError:
                 raise
             except GitHubError:
@@ -1720,7 +1770,7 @@ class SearchEngine:
         known = {
             str(item.get("fingerprint") or "")
             for item in sidecar.get("queries") or []
-            if item.get("fingerprint")
+            if item.get("fingerprint") and not item.get("failed")
         }
         planned, blocked = plan_sidecar_queries(
             new_records, request, negatives=negatives,
@@ -1747,22 +1797,24 @@ class SearchEngine:
         sink: dict[str, dict[str, Any]] = {
             repo_key(item): dict(item) for item in sidecar.get("candidates") or []
         }
-        recall_failed = False
-        executed: list[dict[str, Any]] = []
-        try:
-            _stale, _cache, executed, _skipped = self._sidecar_recall(
-                search_id, planned, sink, iteration=iteration,
-                base_names=set(base_candidates),
-            )
-            stale = stale or _stale
-            cached_at = cached_at or _cache
-        except GitHubAuthenticationError:
-            raise
-        except GitHubError:
-            recall_failed = True
-            metrics["semantic_queries_failed"] = int(metrics.get("semantic_queries_failed") or 0) + 1
+        _stale, _cache, executed, failed_queries = self._sidecar_recall(
+            search_id, planned, sink, iteration=iteration,
+            base_names=set(base_candidates),
+        )
+        stale = stale or _stale
+        cached_at = cached_at or _cache
+        metrics["semantic_queries_failed"] = (
+            int(metrics.get("semantic_queries_failed") or 0) + len(failed_queries)
+        )
+        for spec in failed_queries:
+            sidecar.setdefault("queries", []).append({**spec, "executed": False, "skipped": False})
             for record in new_records:
-                record["failed"] = True
+                if record["id"] == spec.get("hypothesis_id"):
+                    record["failed"] = True
+                    for query in record.get("queries") or []:
+                        if query.get("query") == spec.get("query"):
+                            query["failed"] = True
+                            query["error"] = spec["error"]
 
         for spec in executed:
             sidecar.setdefault("queries", []).append({**spec, "executed": True, "skipped": False})
@@ -1866,8 +1918,6 @@ class SearchEngine:
                         metrics["sidecar_api_calls"] = int(metrics.get("sidecar_api_calls") or 0) + 1
                     except (GitHubError, GitHubAuthenticationError):
                         pass
-            if recall_failed:
-                record["failed"] = True
 
         metrics["semantic_assessment_count"] = int(
             metrics.get("semantic_assessment_count") or 0
@@ -1896,28 +1946,19 @@ class SearchEngine:
         candidates: dict[str, dict[str, Any]], *, iteration: int,
         base_names: set[str],
     ) -> tuple[bool, str | None, list[dict[str, Any]], list[dict[str, Any]]]:
+        """Run sidecar queries; returns stale, cache time, executed, failed.
+
+        Each failed query is recorded with its reason and never discards the others.
+        """
         stale = False
         cached_at = None
         executable = list(queries)
-        skipped: list[dict[str, Any]] = []
         if not executable:
-            return stale, cached_at, [], skipped
-        with ThreadPoolExecutor(max_workers=min(4, max(1, len(executable)))) as pool:
-            futures = {
-                pool.submit(
-                    self.github.search_repositories, spec["query"], 10, spec.get("sort", "stars"),
-                ): index
-                for index, spec in enumerate(executable)
-            }
-            results: list[tuple[dict[str, Any], ApiResult] | None] = [None] * len(executable)
-            for future in as_completed(futures):
-                index = futures[future]
-                results[index] = (executable[index], future.result())
+            return stale, cached_at, [], []
+        results, failures = self._search_batch(executable, 10, 4)
+        failed = self._record_failed_queries(search_id, failures, iteration=iteration)
         executed: list[dict[str, Any]] = []
-        for completed in results:
-            if completed is None:
-                continue
-            query_spec, result = completed
+        for query_spec, result in results:
             stale = stale or result.stale
             cached_at = cached_at or result.cached_at
             items = self._items(result)
@@ -1953,8 +1994,8 @@ class SearchEngine:
                 if not any(item.get("query") == path["query"] for item in paths):
                     paths.append(path)
                 if len(candidates) >= SEMANTIC_CANDIDATE_CAP:
-                    return stale, cached_at, executed, skipped
-        return stale, cached_at, executed, skipped
+                    return stale, cached_at, executed, failed
+        return stale, cached_at, executed, failed
 
     def _decision_event_output(self, search_id: str, session: dict[str, Any],
                                request: SearchRequest, candidates: dict[str, dict[str, Any]],

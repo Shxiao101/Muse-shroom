@@ -1,4 +1,4 @@
-# Muse-shroom 0.9.0
+# Muse-shroom 0.10.0
 
 探索一个需求在 GitHub 上的解法边界，找能激发新思路的项目，而不只是最直接的答案。每条结果带一个边界角色和 README 原文证据：
 
@@ -37,7 +37,7 @@ MCP 是可选 extra。安装后用 `muse-shroom-mcp` 或 `python -m muse_shroom.
 
 ## 工作流
 
-宿主 Agent 使用 [`skills/muse-shroom`](skills/muse-shroom/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → 宿主自己找到的仓库经 `supply` 取证 → `rank`。快搜跳过 iterate。MCP 可用时优先 `muse_search` / `muse_observe` / `muse_iterate` / `muse_supply` / `muse_rank`，否则走 CLI，策略相同。契约在 Skill 的 `references/`。
+宿主 Agent 使用 [`skills/muse-shroom`](skills/muse-shroom/SKILL.md)：解释需求 → 宿主先像没有 Muse-shroom 时那样自己搜，列出草稿清单 → `search` →（深搜）按 `observation` `iterate` → 草稿清单经 `supply` 取证 → `rank`：草稿全部保留，再补上 Muse-shroom 找到而草稿没有的。快搜跳过 iterate。MCP 可用时优先 `muse_search` / `muse_observe` / `muse_iterate` / `muse_supply` / `muse_rank`，否则走 CLI，策略相同。契约在 Skill 的 `references/`。
 
 ```console
 muse-shroom search --request examples/music-ai.request.json --mode quick --output search.json
