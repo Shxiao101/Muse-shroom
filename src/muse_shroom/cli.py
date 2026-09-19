@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .agent_view import rank_view, session_view
 from .auth import AuthError, TOKEN_URL, delete_saved_token, resolve_token, save_token, validate_token
 from .github import GitHubClient, GitHubError
 from .models import ContractError, SearchRequest
@@ -207,20 +208,20 @@ def run(args: argparse.Namespace) -> Any:
                 "credential_error": auth_error,
             }
         if args.command == "observe":
-            return SearchEngine(store, None).observe(args.search_id)
+            return session_view(SearchEngine(store, None).observe(args.search_id))
         if args.command in {"search", "expand", "iterate", "supply"}:
             github = GitHubClient(store)
             engine = SearchEngine(store, github)
             if args.command == "supply":
                 return engine.supply(args.search_id, _json_input(args.repositories), args.reason)
             if args.command == "search":
-                return engine.search(
+                return session_view(engine.search(
                     SearchRequest.from_dict(_json_input(args.request)), args.mode,
                     refresh=args.refresh,
-                )
+                ))
             if args.command == "iterate":
-                return engine.iterate(args.search_id, _json_input(args.refinement))
-            return engine.expand(args.search_id, _json_input(args.refinement))
+                return session_view(engine.iterate(args.search_id, _json_input(args.refinement)))
+            return session_view(engine.expand(args.search_id, _json_input(args.refinement)))
         if args.command == "rank":
             result = rank_search(store, args.search_id, _json_input(args.selection))
             from .explorer.launcher import ensure_explorer
@@ -229,7 +230,7 @@ def run(args: argparse.Namespace) -> Any:
             )
             result["explorer_url"] = explorer["url"]
             result["explorer_running"] = explorer["running"]
-            return result
+            return rank_view(result)
         if args.command == "candidates":
             session = store.load_search(args.search_id)
             items = session["candidates"]

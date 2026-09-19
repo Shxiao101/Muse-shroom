@@ -6,6 +6,7 @@ import sqlite3
 from typing import Any
 
 from . import __version__
+from .agent_view import ShownCandidates, rank_view, session_view
 from .auth import AuthError, resolve_token
 from .github import GitHubClient
 from .models import SearchHypothesis, SearchRequest
@@ -15,11 +16,16 @@ from .storage import Store
 
 
 class MuseCore:
-    """Open a Store per call so session state lives in SQLite, not process memory."""
+    """Open a Store per call so session state lives in SQLite, not process memory.
+
+    Outputs are the Agent view (agent_view.py). The only process memory is which
+    candidates this server already returned, so iterate can skip unchanged ones.
+    """
 
     def __init__(self, *, data_dir: str | None = None, github: Any | None = None) -> None:
         self.data_dir = data_dir
         self.github = github
+        self.shown = ShownCandidates()
 
     def _store(self) -> Store:
         return Store(self.data_dir)
@@ -62,12 +68,14 @@ class MuseCore:
                 "adjacent_concepts. Prefer v0.4 fields problem_concepts, "
                 "mechanisms, and exploration_directions."
             )
-        return result
+        view = session_view(result)
+        self.shown.reset(str(view.get("search_id") or ""), view.get("candidates"))
+        return view
 
     def observe(self, search_id: str) -> dict[str, Any]:
         store = self._store()
         try:
-            return SearchEngine(store, None).observe(search_id)
+            return session_view(SearchEngine(store, None).observe(search_id))
         finally:
             store.close()
 
@@ -75,16 +83,19 @@ class MuseCore:
         parsed = SearchHypothesis.from_dict(hypothesis, strict=True)
         store = self._store()
         try:
-            return SearchEngine(store, self._github(store)).iterate(search_id, parsed.to_dict())
+            result = SearchEngine(store, self._github(store)).iterate(search_id, parsed.to_dict())
         finally:
             store.close()
+        return self.shown.omit_unchanged(session_view(result))
 
     def supply(self, search_id: str, repositories: Any, reason: Any) -> dict[str, Any]:
         store = self._store()
         try:
-            return SearchEngine(store, self._github(store)).supply(search_id, repositories, reason)
+            result = SearchEngine(store, self._github(store)).supply(search_id, repositories, reason)
         finally:
             store.close()
+        self.shown.remember(search_id, result.get("supplied"))
+        return result
 
     def rank(self, search_id: str, selection: Any) -> dict[str, Any]:
         store = self._store()
@@ -96,7 +107,7 @@ class MuseCore:
         explorer = ensure_explorer(search_id, data_dir=self.data_dir)
         result["explorer_url"] = explorer["url"]
         result["explorer_running"] = explorer["running"]
-        return result
+        return rank_view(result)
 
     def inspect(self, repo: str, search_id: str | None = None) -> dict[str, Any]:
         store = self._store()

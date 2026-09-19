@@ -502,6 +502,7 @@ def public_hypothesis(record: dict[str, Any]) -> dict[str, Any]:
                 "skipped": bool(item.get("skipped")),
                 "skip_reason": item.get("skip_reason"),
                 "executed": bool(item.get("executed")),
+                **({"error": item["error"]} if item.get("error") else {}),
             }
             for item in record.get("queries") or []
         ],

@@ -29,15 +29,19 @@ are never moved to fill a preferred lane or score.
 
 The search response separates recall from assessment: `candidate_count` is the full
 recall pool size, while `candidates` is the assessment shortlist and may omit recalled
-candidates. Before rank, use `candidates --scope all` or `inspect` when an omitted
+candidates. Over MCP, an iterate response lists in `candidates` only shortlist members that
+are new or changed since the server last returned them, and names the rest in
+`unchanged_candidates`. Before rank, use `candidates --scope all` or `inspect` when an omitted
 candidate may contain evidence needed for assessment. `selection` is the ordered list
 submitted by the host Agent; after mechanical validation, `items` and `display_order`
 preserve that order. The `popular`, `gems`, and `adjacent` fields are compatibility
 projections and do not define an additional order.
 
 Each accepted item includes the Agent fields plus raw facts: stars, `star_growth`, forks,
-open issues, pushed-at, archived flag, license, primary language, topics, description,
-evidence, and discovery paths. No aggregate usefulness score is returned.
+open issues, pushed-at, archived flag, license, primary language, topics, and description.
+Rank does not repeat the full evidence or discovery paths: `verification` names what was
+checked, and the saved ranking keeps both for the Explorer. No aggregate usefulness score
+is returned.
 
 `new_mechanisms` is only the ordered set difference between Agent labels and labels
 previously presented in the session. It is not a judgement of novelty or quality.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import base64
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -33,6 +34,16 @@ class GitHubAuthenticationError(GitHubError):
 
 class GitHubNotFoundError(GitHubError):
     pass
+
+
+SECRET_RE = re.compile(r"(?i)(ghp_|github_pat_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]+")
+ERROR_TEXT_LIMIT = 200
+
+
+def describe_error(exc: BaseException) -> str:
+    """One redacted line naming a failed GitHub call, safe to store and show."""
+    text = " ".join(f"{type(exc).__name__}: {exc}".split())
+    return SECRET_RE.sub("[redacted]", text)[:ERROR_TEXT_LIMIT]
 
 
 @dataclass(slots=True)

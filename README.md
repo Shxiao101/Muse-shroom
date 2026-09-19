@@ -1,4 +1,4 @@
-# Muse-shroom 0.9.0
+# Muse-shroom 0.10.0
 
 探索一个需求在 GitHub 上的解法边界，找能激发新思路的项目，而不只是最直接的答案。每条结果带一个边界角色和 README 原文证据：
 
@@ -37,7 +37,7 @@ MCP 是可选 extra。安装后用 `muse-shroom-mcp` 或 `python -m muse_shroom.
 
 ## 工作流
 
-宿主 Agent 使用 [`skills/muse-shroom`](skills/muse-shroom/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → 宿主自己找到的仓库经 `supply` 取证 → `rank`。快搜跳过 iterate。MCP 可用时优先 `muse_search` / `muse_observe` / `muse_iterate` / `muse_supply` / `muse_rank`，否则走 CLI，策略相同。契约在 Skill 的 `references/`。
+宿主 Agent 使用 [`skills/muse-shroom`](skills/muse-shroom/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → 宿主像没有 Muse-shroom 时那样自己搜，列出草稿清单（只找仓库，不为核实去翻页面）→ 草稿清单经 `supply` 取证 → `rank`：草稿全部保留，再补上 Muse-shroom 找到而草稿没有的。快搜跳过 iterate。MCP 可用时优先 `muse_search` / `muse_observe` / `muse_iterate` / `muse_supply` / `muse_rank`，否则走 CLI，策略相同。契约在 Skill 的 `references/`。
 
 ```console
 muse-shroom search --request examples/music-ai.request.json --mode quick --output search.json
@@ -88,7 +88,7 @@ Cursor（`.cursor/mcp.json`）：
 
 快搜：`search` 然后 `rank`。深搜中间按 `observation` 有限次 `iterate`。`rank` 接收宿主 Agent 的有序 `selection`，只校验证据归属和原文引用，生成 `items` 与 `display_order`，保留该顺序。代码不重排。`popular` / `gems` / `adjacent` 是主列表确定后的兼容投影。
 
-`candidate_count` 是完整召回池，`candidates` 是评估 shortlist，可能不含池中每一项。`rank` 前可用 `candidates --scope all` 或 `inspect` 看未进 shortlist 的证据。细节见 [`docs/search-internals.md`](docs/search-internals.md)。
+`candidate_count` 是完整召回池，`candidates` 是评估 shortlist，可能不含池中每一项。返回给 Agent 的结果里同一信息只出现一次：MCP 下 `iterate` 只返回新的或有变化的候选，其余列在 `unchanged_candidates`；`rank` 不再重复完整证据和发现路径，保存的排序和 Explorer 里仍有。`rank` 前可用 `candidates --scope all` 或 `inspect` 看未进 shortlist 的证据。细节见 [`docs/search-internals.md`](docs/search-internals.md)。
 
 ### 职责边界
 
