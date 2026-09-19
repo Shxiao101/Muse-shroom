@@ -133,6 +133,9 @@ class SkillInterfaceTests(unittest.TestCase):
         for call in ("muse_iterate({search_id, hypothesis})", "muse_rank({search_id, selection, no_recommendation})",
                      "muse_supply({search_id, repositories, reason})", "muse_search({request, mode, refresh})"):
             self.assertIn(call, self.skill)
+        # A 2026-09-20 Codex run printed the whole search result, text copy included, and the
+        # host cut the middle out of it.
+        self.assertIn("Read or print only a result's `structuredContent`", self.skill)
         # The live run hit this ContractError; the rule covers aliases and every ordinary field.
         self.assertIn("Do not repeat the host term or its aliases in an ordinary field", self.skill)
         hypothesis = (REFERENCES / "hypothesis-contract.md").read_text(encoding="utf-8")

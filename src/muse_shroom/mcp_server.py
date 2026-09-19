@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -33,12 +34,12 @@ def _sdk():
     try:
         from mcp.server import MCPServer
         from mcp.server.mcpserver.exceptions import ToolError
-        from mcp.types import ToolAnnotations
+        from mcp.types import CallToolResult, TextContent, ToolAnnotations
     except ImportError as exc:
         raise ImportError(
             "Muse-shroom MCP requires the optional extra: pip install 'muse-shroom[mcp]'"
         ) from exc
-    return MCPServer, ToolError, ToolAnnotations
+    return MCPServer, ToolError, ToolAnnotations, CallToolResult, TextContent
 
 
 def _redact(text: str) -> str:
@@ -49,7 +50,7 @@ def _redact(text: str) -> str:
 
 
 def create_server(*, data_dir: str | None = None, github: Any | None = None, log_level: LogLevel = "INFO"):
-    MCPServer, ToolError, ToolAnnotations = _sdk()
+    MCPServer, ToolError, ToolAnnotations, CallToolResult, TextContent = _sdk()
     core = MuseCore(data_dir=data_dir, github=github)
     mcp = MCPServer(
         "muse-shroom",
@@ -63,9 +64,15 @@ def create_server(*, data_dir: str | None = None, github: Any | None = None, log
 
     def invoke(fn):
         try:
-            return fn()
+            result = fn()
         except (ContractError, AuthError, GitHubError, KeyError, ValueError) as exc:
             raise ToolError(f"{type(exc).__name__}: {_redact(str(exc))}") from exc
+        # The SDK would add an indented JSON copy as the text block. A host that reads only
+        # the text, or prints the whole result, then gets the payload about 1.4x larger;
+        # a 2026-09-20 Codex run printed the whole search result and the host cut its middle.
+        # The tools keep their dict annotations, so the output schema is unchanged.
+        text = json.dumps(result, ensure_ascii=False, separators=(",", ":"), default=str)
+        return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=result)
 
     @mcp.tool(annotations=read_only)
     def muse_status() -> dict[str, Any]:

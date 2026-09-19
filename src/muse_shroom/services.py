@@ -10,7 +10,7 @@ from .agent_view import ShownCandidates, rank_view, session_view
 from .auth import AuthError, resolve_token
 from .github import GitHubClient
 from .models import SearchHypothesis, SearchRequest
-from .ranking import rank_search
+from .ranking import find_candidate, rank_search
 from .search import SearchEngine, public_candidate
 from .storage import Store
 
@@ -112,7 +112,7 @@ class MuseCore:
     def inspect(self, repo: str, search_id: str | None = None) -> dict[str, Any]:
         store = self._store()
         try:
-            candidate = store.get_candidate(repo, search_id)
+            candidate = find_candidate(store, repo, search_id)
             if candidate is None:
                 raise KeyError(f"repository not found in local snapshots: {repo}")
             history = store.star_history(repo)

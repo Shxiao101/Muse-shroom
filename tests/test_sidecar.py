@@ -1,7 +1,9 @@
+import io
 import json
 import re
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 from evaluation.host_eval import prepare, score_case
@@ -444,6 +446,50 @@ class SidecarSearchTests(unittest.TestCase):
             },
             "physiological pacing",
         ))
+
+    def test_inspect_and_explorer_find_a_candidate_only_the_sidecar_recalled(self):
+        # A 2026-09-20 Codex run could not correct a rejected quote for its only leap:
+        # inspect read the candidate table, which never holds sidecar-only candidates.
+        from muse_shroom.cli import main
+        from muse_shroom.explorer.read_model import ExplorerReadModel
+        from muse_shroom.services import MuseCore
+
+        pacing = repo("labs/pacing", 9, description="physiological pacing wearable")
+        timer = repo("tools/timer", 300, description="pomodoro timer")
+        github = FrozenGitHub(
+            [("focus", [timer]), ("physiological pacing", [pacing])],
+            readmes={
+                "tools/timer": "# Timer\nA pomodoro timer.\n## Usage\nStart.",
+                "labs/pacing": "# Device\nphysiological pacing for steady attention.\n## Usage\nWear.",
+            },
+        )
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        core = MuseCore(data_dir=directory.name, github=github)
+        search = core.search(REQUEST, "deep")
+        core.iterate(search["search_id"], _hypothesis(("physiological pacing", "focus")))
+        store = Store(directory.name)
+        try:
+            self.assertIsNone(store.get_candidate("labs/pacing", search["search_id"]))
+        finally:
+            store.close()
+
+        inspected = core.inspect("labs/pacing", search["search_id"])
+        semantic = [
+            item for item in inspected["repository"]["evidence"] if item.get("kind") == "mechanism_match"
+        ]
+        self.assertTrue(semantic)
+        self.assertIn("physiological pacing", json.dumps(semantic))
+        detail = ExplorerReadModel(data_dir=directory.name).repo_detail(search["search_id"], "labs/pacing")
+        self.assertEqual(detail["repo"], "labs/pacing")
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            code = main(["--data-dir", directory.name, "inspect", "labs/pacing", "--search-id", search["search_id"]])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["repository"]["full_name"], "labs/pacing")
+        # Without a session, inspect still reads only the shared snapshots.
+        with self.assertRaises(KeyError):
+            core.inspect("labs/pacing", "no-such-search")
 
     def test_validation_ignores_numeric_thresholds(self):
         pacing = repo(

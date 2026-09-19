@@ -242,6 +242,35 @@ def _unique_labels(values: Iterable[str]) -> list[str]:
     return result
 
 
+def selectable_candidates(
+    session: dict[str, Any], sidecar_state: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Every candidate rank can verify: the session's, plus the semantic sidecar's.
+
+    Sidecar candidates live only in session state, so a lookup that reads the
+    candidate table alone cannot see what a cross-domain hypothesis found.
+    """
+    by_name = {repo_key(item): item for item in session.get("candidates") or []}
+    for candidate in sidecar_state.get("candidates") or []:
+        key = repo_key(candidate)
+        if not key:
+            continue
+        by_name[key] = merge_candidate_view(by_name[key], candidate) if key in by_name else candidate
+    return by_name
+
+
+def find_candidate(store: Store, repo: str, search_id: str | None = None) -> dict[str, Any] | None:
+    """The candidate inspect shows; with a search_id, the same view rank verifies against."""
+    if not search_id:
+        return store.get_candidate(repo)
+    try:
+        session = store.load_search(search_id)
+        sidecar_state = store.get_session_state(search_id).get("semantic_sidecar") or {}
+    except KeyError:
+        return None
+    return selectable_candidates(session, sidecar_state).get(repo.strip().lower())
+
+
 def rank_search(
     store: Store, search_id: str, selection_payload: Any, *, strict: bool = False,
 ) -> dict[str, Any]:
@@ -251,12 +280,7 @@ def rank_search(
     sidecar_state = session_state.get("semantic_sidecar") or {}
     sidecar_records = list(sidecar_state.get("hypotheses") or [])
 
-    by_name = {repo_key(item): item for item in session.get("candidates") or []}
-    for candidate in sidecar_state.get("candidates") or []:
-        key = repo_key(candidate)
-        if not key:
-            continue
-        by_name[key] = merge_candidate_view(by_name[key], candidate) if key in by_name else candidate
+    by_name = selectable_candidates(session, sidecar_state)
 
     selections, no_recommendation_reason = _selection_payload(
         selection_payload, strict=strict,

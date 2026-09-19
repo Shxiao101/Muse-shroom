@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..models import HARD_STOP_REASONS, SearchRequest
+from ..ranking import find_candidate
 from ..search import public_candidate
 from ..storage import Store
 
@@ -856,7 +857,7 @@ class ExplorerReadModel:
     def repo_detail(self, search_id: str, repo: str, *, debug: bool = False) -> dict[str, Any]:
         store = self._store()
         try:
-            candidate = store.get_candidate(repo, search_id)
+            candidate = find_candidate(store, repo, search_id)
             if candidate is None:
                 raise KeyError(f"repository not found in local snapshots: {repo}")
             ranking = store.get_ranking(search_id)
