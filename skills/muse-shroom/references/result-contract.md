@@ -54,6 +54,11 @@ but they never count toward `new_mechanisms`, `newly_presented_mechanisms`, or
 `boundary.recalled_mechanisms`; `boundary_summary.host_supplied_count` reports how many
 were accepted. Disclose the source when presenting them.
 
+`muse_supply` rejects a name it cannot fetch with `not_found`, `not_public` or
+`excluded_by_constraints`. A `not_found` entry carries `did_you_mean`, up to three
+repositories whose name matches, when a lookup found any: a drafted owner is often a
+guess. Supply the corrected name once. At most three names are looked up per call.
+
 `previously_presented` (`times`, `last_at`) marks a candidate, supplied repository, or rank
 item that an earlier ranked list in the same data directory already presented: `times`
 counts those sessions and `last_at` is the latest date. The search response reports
