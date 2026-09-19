@@ -118,6 +118,11 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn("List names only", self.skill)
         for shape in ('"problem_concepts"', '"decision": "continue"', '"decision": "stop"', '"evidence_ids"'):
             self.assertIn(shape, self.skill)
+        # Without the schemas the Agent needs the argument wrappers; the v0.10.1 live run once
+        # passed hypothesis fields at the top level of muse_iterate.
+        for call in ("muse_iterate({search_id, hypothesis})", "muse_rank({search_id, selection, no_recommendation})",
+                     "muse_supply({search_id, repositories, reason})", "muse_search({request, mode, refresh})"):
+            self.assertIn(call, self.skill)
         # The live run hit this ContractError; the rule covers aliases and every ordinary field.
         self.assertIn("Do not repeat the host term or its aliases in an ordinary field", self.skill)
         hypothesis = (REFERENCES / "hypothesis-contract.md").read_text(encoding="utf-8")
