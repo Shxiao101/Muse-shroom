@@ -43,7 +43,7 @@ Over MCP, `muse_status` is enough. For the CLI, establish a credential-bearing h
  "artifact_types": ["application"], "constraints": {"language": "Python"}, "exclusions": ["awesome list"]}
 ```
 
-`request` and one `problem_concepts` entry are required; weights run from 0 to 1. The initial request may contain only the user's actual problem and constraints, direct paraphrases and GitHub-common aliases (at most four per concept), mechanisms stated or tightly implied by the request, and exploration directions the user explicitly asked for. Do not place world-knowledge leaps in the initial request. Keep generic words such as skill, tool, AI, and agent out of concepts and put the form in `artifact_types` (`application`, `mcp`, `skill`, `mod`, `plugin`, `library`). Keep concise Chinese capability phrases verbatim with at least one GitHub-common English alias, and English concepts to one to three words. Omit constraints the user did not state, never invent a minimum star count, and do not write GitHub query syntax.
+`request` and one `problem_concepts` entry are required; weights run from 0 to 1. The initial request may contain only the user's actual problem and constraints, direct paraphrases and GitHub-common aliases (at most four per concept), mechanisms stated or tightly implied by the request, and exploration directions the user explicitly asked for. Do not place world-knowledge leaps in the initial request. Keep generic words such as skill, tool, AI, and agent out of concepts and put the form in `artifact_types` (`application`, `mcp`, `skill`, `mod`, `plugin`, `library`). Keep concise Chinese capability phrases verbatim with at least one GitHub-common English alias, and English concepts to one to three words. Omit constraints the user did not state, never invent a minimum star count, and do not write GitHub query syntax. Set `constraints.include_previously_presented: true` only when the user asks to see repositories they were shown before; otherwise Muse-shroom marks those repositories and gives their places to new ones (§8).
 
 ## 5. Search
 
@@ -96,6 +96,8 @@ Pass every repository in the draft, core-need anchors and boundary finds alike, 
 
 Build the selection from the draft outward. Keep every draft repository whose evidence was recorded, whichever source it came through; omit one only when that evidence shows it does not fit the need. Then add the Muse-shroom finds that bring what the draft lacks: a mechanism, direction, or boundary role it does not cover. Do not trim the draft to make room; a longer list is fine.
 
+A candidate or supplied repository with `previously_presented` (`times`, `last_at`) was in a list this user already received, so it is no longer a find. Leave it out of the selection, draft repositories included; this overrides keeping every draft repository. Select it only when the request set `include_previously_presented`.
+
 ```json
 {"repo": "owner/name", "rationale": "why it serves the need", "mechanism_label": "your label",
  "source_term": "exact wording inside the quote", "quote": "exact text from a cited evidence item",
@@ -113,6 +115,8 @@ Call `muse_rank` with `search_id` and the ordered `selection` (CLI: `muse-shroom
 ## 10. Present
 
 Follow `display_order`. For each item give its name, one-line use, boundary role, rationale, and `New mechanism: <comma-separated new_mechanisms>`, or `New mechanism: none` when the array is empty, translated when appropriate. When `source` is `host_supplied`, say that the repository came from outside Muse-shroom's recall. Do not append a second priority, recommendation, or best-first order after the list.
+
+If you left repositories out because of `previously_presented`, name them after the list on one line in the user's language, for example `之前给你看过、这次略去：owner/a、owner/b`. That line lists names only, with no rationale, because it is not a recommendation.
 
 Only validated semantic mechanisms in final items count as formal new mechanisms. Distinguish `proposed`, `searched`, `evidence_found`, `validated`, `rejected`, and `inconclusive` in `semantic_hypotheses`; summarize rejected and inconclusive ones briefly in deep mode.
 

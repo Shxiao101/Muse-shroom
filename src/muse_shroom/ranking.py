@@ -261,6 +261,8 @@ def rank_search(
     selections, no_recommendation_reason = _selection_payload(
         selection_payload, strict=strict,
     )
+    # Read at rank time, so a list another session presented meanwhile still counts.
+    history = store.presented_history(exclude_search_id=search_id)
     previous_snapshot = store.latest_boundary_snapshot(
         search_id, ("search", "expand", "iterate")
     ) or {}
@@ -295,9 +297,11 @@ def rank_search(
             new_mechanisms = [selection.mechanism_label]
             introduced.append(selection.mechanism_label)
             presented_keys.add(label_key)
-        items.append(_raw_item(
-            store, candidate, selection, verification or {}, new_mechanisms,
-        ))
+        item = _raw_item(store, candidate, selection, verification or {}, new_mechanisms)
+        # Allowed when the user asked to see such repositories again; the flag says so.
+        if history.get(selection.repo):
+            item["previously_presented"] = dict(history[selection.repo])
+        items.append(item)
 
     display_order = [str(item["repo"]) for item in items]
     # Build the post-selection view in memory first. A recoverable rank with
@@ -369,6 +373,7 @@ def rank_search(
             "rejected": len(rejected),
             "evidence_verified": len(items),
             "presented_mechanism_count": len(boundary["presented_mechanisms"]),
+            "previously_presented_count": sum(1 for item in items if item.get("previously_presented")),
             **{f"{role}_count": count for role, count in role_counts.items()},
         },
     }

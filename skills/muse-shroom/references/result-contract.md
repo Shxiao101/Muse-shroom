@@ -54,6 +54,15 @@ but they never count toward `new_mechanisms`, `newly_presented_mechanisms`, or
 `boundary.recalled_mechanisms`; `boundary_summary.host_supplied_count` reports how many
 were accepted. Disclose the source when presenting them.
 
+`previously_presented` (`times`, `last_at`) marks a candidate, supplied repository, or rank
+item that an earlier ranked list in the same data directory already presented: `times`
+counts those sessions and `last_at` is the latest date. The search response reports
+`coverage.previously_presented_in_pool`, and rank reports `coverage.previously_presented_count`.
+Leave such repositories out of the selection unless the request set
+`include_previously_presented`, and name them after the list on one line instead. Rank
+accepts them either way. A search whose request matches an already ranked session starts
+a new session instead of reusing it.
+
 Boundary roles are Agent assignments:
 
 - `anchor`: mainstream, reliable reference

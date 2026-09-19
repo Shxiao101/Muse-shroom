@@ -17,6 +17,7 @@ SEARCH_REQUEST_FIELDS = frozenset({
 SEARCH_REQUEST_LEGACY_FIELDS = frozenset({"core_concepts", "adjacent_concepts"})
 SEARCH_REQUEST_CONSTRAINT_FIELDS = frozenset({
     "language", "pushed_after", "include_archived", "min_stars", "max_stars",
+    "include_previously_presented",
 })
 CONCEPT_OBJECT_FIELDS = frozenset({"term", "weight", "aliases"})
 EXPLORATION_ADDITION_FIELDS = frozenset({
@@ -284,8 +285,9 @@ class SearchRequest:
         if strict:
             if "language" in constraints and not isinstance(constraints["language"], str):
                 raise ContractError("constraints.language must be a string")
-            if "include_archived" in constraints and not isinstance(constraints["include_archived"], bool):
-                raise ContractError("constraints.include_archived must be a boolean")
+            for key in ("include_archived", "include_previously_presented"):
+                if key in constraints and not isinstance(constraints[key], bool):
+                    raise ContractError(f"constraints.{key} must be a boolean")
             if "pushed_after" in constraints:
                 pushed_after = constraints["pushed_after"]
                 if not isinstance(pushed_after, str) or not re.fullmatch(

@@ -4,7 +4,7 @@ import math
 import re
 from collections import Counter
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any, Collection, Iterable
 
 from .analyze import age_days
 from .boundary_score import (
@@ -379,6 +379,7 @@ def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest
                     max_per_owner: int | None = None, mode: str = "deep",
                     mechanism_aware: bool = True, rescore: bool = True,
                     reference_time: str | datetime | None = None,
+                    deferred: Collection[str] = (),
                     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     items = (
         score_candidates(
@@ -424,10 +425,20 @@ def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest
         red = redundancy_penalty(item, presented, presented_counts=presented_counts)
         return base + contrib * weights["contribution"] + novelty * weights["novelty"] - red * weights["redundancy"]
 
+    # Deferred candidates (repositories the user was already shown) only take the
+    # places the others leave empty. `active` is the phase's candidate list.
+    phases = [items]
+    if deferred:
+        phases = [
+            [item for item in items if repo_key(item) not in deferred],
+            [item for item in items if repo_key(item) in deferred],
+        ]
+    active = items
+
     def take(lane: str, quota: int, *, allow_repeat: bool, identity_only: bool) -> None:
         while counts.get(lane, 0) < quota:
             pool = [
-                item for item in items
+                item for item in active
                 if repo_key(item) not in selected_names
                 and lane in item.get("selection_lanes", [])
             ]
@@ -458,7 +469,7 @@ def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest
 
     def backfill(*, identity_only: bool) -> None:
         leftover = [
-            item for item in items
+            item for item in active
             if repo_key(item) not in selected_names
             and (identity_concept_evidence(item) if identity_only else True)
         ]
@@ -469,10 +480,11 @@ def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest
             add(item, fallback_lane(item))
 
     target = sum(quotas.values())
-    fill(identity_only=True)
-    backfill(identity_only=True)
-    fill(identity_only=False)
-    backfill(identity_only=False)
+    for active in phases:
+        fill(identity_only=True)
+        backfill(identity_only=True)
+        fill(identity_only=False)
+        backfill(identity_only=False)
     counts["fallback"] = max(0, len(selected) - sum(counts.get(lane, 0) for lane in quotas))
     for item in items:
         item.pop("_lane_scores", None)
@@ -577,6 +589,7 @@ def probe_select(candidates: Iterable[dict[str, Any]], request: SearchRequest,
 def shortlist_select(candidates: Iterable[dict[str, Any]], request: SearchRequest,
                      *, mode: str = "deep",
                      reference_time: str | datetime | None = None,
+                     deferred: Collection[str] = (),
                      ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     items = list(candidates)
     scored = score_candidates(
@@ -585,7 +598,7 @@ def shortlist_select(candidates: Iterable[dict[str, Any]], request: SearchReques
     quotas = shortlist_quotas(scored, mode=mode)
     selected, counts = balanced_select(
         scored, request, quotas, enriched=True, max_per_owner=SHORTLIST_MAX_OWNER, mode=mode,
-        rescore=False, reference_time=reference_time,
+        rescore=False, reference_time=reference_time, deferred=deferred,
     )
     return selected[:SHORTLIST_LIMIT], counts
 

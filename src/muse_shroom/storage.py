@@ -426,6 +426,29 @@ class Store:
         row = self.db.execute("SELECT ranking_json FROM rankings WHERE search_id=?", (search_id,)).fetchone()
         return json.loads(row[0]) if row else None
 
+    def presented_history(self, exclude_search_id: str | None = None) -> dict[str, dict[str, Any]]:
+        """Repositories the user was already shown, from the saved rankings of other sessions.
+
+        A saved ranking is the list the Agent presented, so its display order is what the
+        user saw. `times` counts sessions, and `last_at` is the date of the latest one.
+        """
+        history: dict[str, dict[str, Any]] = {}
+        rows = self.db.execute(
+            "SELECT search_id, ranking_json, created_at FROM rankings ORDER BY created_at"
+        ).fetchall()
+        for search_id, ranking_json, created_at in rows:
+            if search_id == exclude_search_id:
+                continue
+            try:
+                order = json.loads(ranking_json).get("display_order") or []
+            except (ValueError, AttributeError):
+                continue
+            for name in dict.fromkeys(str(value).lower() for value in order if value):
+                entry = history.setdefault(name, {"times": 0, "last_at": None})
+                entry["times"] += 1
+                entry["last_at"] = str(created_at)[:10]
+        return history
+
     def save_boundary_snapshot(self, search_id: str, stage: str,
                                boundary: dict[str, Any], *,
                                iteration: int | None = None,
