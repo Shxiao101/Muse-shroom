@@ -15,6 +15,11 @@ from .sidecar import (
 from .storage import Store
 
 
+# The presenting line names what the user already saw; a long tail of pool repositories
+# would turn it into a second list.
+PREVIOUSLY_PRESENTED_LIMIT = 20
+
+
 def _collapsed(value: Any) -> str:
     """Collapse whitespace runs only.
 
@@ -327,6 +332,20 @@ def rank_search(
             item["previously_presented"] = dict(history[selection.repo])
         items.append(item)
 
+    selected_keys = {str(item["repo"]).casefold() for item in items}
+    already_shown = sorted(
+        (
+            {
+                "repo": candidate.get("full_name") or name,
+                "url": candidate.get("html_url") or f"https://github.com/{candidate.get('full_name') or name}",
+                **history[name],
+            }
+            for name, candidate in by_name.items()
+            if name in history and name not in selected_keys
+        ),
+        key=lambda item: (-int(item.get("times") or 0), str(item["repo"]).casefold()),
+    )[:PREVIOUSLY_PRESENTED_LIMIT]
+
     display_order = [str(item["repo"]) for item in items]
     # Build the post-selection view in memory first. A recoverable rank with
     # rejected items must not persist a partial decision; the Agent can resubmit
@@ -385,6 +404,7 @@ def rank_search(
         "boundary_delta": delta,
         "boundary_summary": summary,
         "newly_presented_mechanisms": introduced,
+        "previously_presented": already_shown,
         "semantic_hypotheses": [public_hypothesis(item) for item in proposed_records],
         "sidecar_metrics": {
             **dict(metrics),

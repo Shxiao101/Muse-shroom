@@ -10,6 +10,7 @@ from ..search import public_candidate
 from ..storage import Store
 
 MAX_GRAPH_REPOS = 12
+MAX_HISTORY_REPOS = 500
 MAX_EXTRA_RECALLED = 8
 ADVISORY_SIGNALS = ("no_new_mechanism", "no_boundary_gain", "directions_covered")
 
@@ -352,6 +353,48 @@ class ExplorerReadModel:
                     "incomplete_phase": row.get("incomplete_phase"),
                 })
             return {"searches": items, "count": len(items)}
+        finally:
+            store.close()
+
+    def presented_history(self) -> dict[str, Any]:
+        """Every repository an earlier ranked list showed this user, most recent first.
+
+        Reads saved rankings only, so it says what was presented, never what was recalled.
+        Search sessions make the same list searchable again: this page is the reason a
+        repository is left out of a later list.
+        """
+        store = self._store()
+        try:
+            counts = store.presented_history()
+            repos: dict[str, dict[str, Any]] = {}
+            for row in store.list_search_index():
+                if not row["ranked"]:
+                    continue
+                ranking = store.get_ranking(row["id"]) or {}
+                request = _parse_request(row["request"]).request
+                for item in ranking.get("items") or []:
+                    name = str(item.get("repo") or "")
+                    key = _key(name)
+                    if not key:
+                        continue
+                    entry = repos.setdefault(key, {
+                        "repo": name,
+                        "url": item.get("url") or f"https://github.com/{name}",
+                        "description": item.get("description"),
+                        "times": int((counts.get(key) or {}).get("times") or 0),
+                        "last_at": (counts.get(key) or {}).get("last_at"),
+                        "searches": [],
+                    })
+                    entry["searches"].append({
+                        "search_id": row["id"],
+                        "request": request,
+                        "at": str(row["updated_at"] or "")[:10],
+                        "boundary_role": item.get("boundary_role"),
+                    })
+            items = sorted(repos.values(), key=lambda item: _key(item["repo"]))
+            items.sort(key=lambda item: (str(item.get("last_at") or ""), int(item["times"])), reverse=True)
+            items = items[:MAX_HISTORY_REPOS]
+            return {"repos": items, "count": len(repos), "returned": len(items)}
         finally:
             store.close()
 

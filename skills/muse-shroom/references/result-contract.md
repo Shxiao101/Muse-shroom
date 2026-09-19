@@ -59,8 +59,9 @@ item that an earlier ranked list in the same data directory already presented: `
 counts those sessions and `last_at` is the latest date. The search response reports
 `coverage.previously_presented_in_pool`, and rank reports `coverage.previously_presented_count`.
 Leave such repositories out of the selection unless the request set
-`include_previously_presented`, and name them after the list on one line instead. Rank
-accepts them either way. A search whose request matches an already ranked session starts
+`include_previously_presented`. Rank accepts them either way, and its `previously_presented`
+array lists the session's already-shown repositories that the selection left out, each with
+`repo`, `url`, `times` and `last_at`, at most 20, so the closing line can link them. A search whose request matches an already ranked session starts
 a new session instead of reusing it.
 
 Boundary roles are Agent assignments:

@@ -126,6 +126,23 @@ class PresentedAcrossSessionsTests(unittest.TestCase):
         timer = next(item for item in again["candidates"] if item["full_name"] == "tools/timer")
         self.assertEqual(timer["previously_presented"]["times"], 1)
 
+    def test_rank_links_the_repositories_left_out(self):
+        first = self.core.search(REQUEST, "quick")
+        self._rank_timer(first)
+        again = self.core.search(REQUEST, "quick")
+        blocker = next(item for item in again["candidates"] if item["full_name"] == "labs/blocker")
+        ranked = self.core.rank(again["search_id"], {
+            "selection": [_selection(blocker, "distraction blocking", _readme_evidence(blocker))],
+        })
+        self.assertEqual(ranked["next_action"], "done")
+        self.assertEqual(ranked["previously_presented"], [{
+            "repo": "tools/timer", "url": "https://github.com/tools/timer",
+            "times": 1, "last_at": ranked["previously_presented"][0]["last_at"],
+        }])
+        self.assertRegex(ranked["previously_presented"][0]["last_at"], r"^\d{4}-\d{2}-\d{2}$")
+        # A repository the selection keeps is not listed again as left out.
+        self.assertNotIn("labs/blocker", [item["repo"] for item in ranked["previously_presented"]])
+
     def test_supply_and_rank_carry_the_mark(self):
         first = self.core.search(REQUEST, "quick")
         ranked = self._rank_timer(first)

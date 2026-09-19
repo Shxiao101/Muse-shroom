@@ -116,7 +116,7 @@ Call `muse_rank` with `search_id` and the ordered `selection` (CLI: `muse-shroom
 
 Follow `display_order`. For each item give its name, one-line use, boundary role, rationale, and `New mechanism: <comma-separated new_mechanisms>`, or `New mechanism: none` when the array is empty, translated when appropriate. When `source` is `host_supplied`, say that the repository came from outside Muse-shroom's recall. Do not append a second priority, recommendation, or best-first order after the list.
 
-If you left repositories out because of `previously_presented`, name them after the list on one line in the user's language, for example `之前给你看过、这次略去：owner/a、owner/b`. That line lists names only, with no rationale, because it is not a recommendation.
+The rank result's `previously_presented` lists this session's repositories the user has already been shown, each with `url`, `times` and `last_at`. Give them after the list on one line in the user's language, every repository as a link, for example `之前给你看过、这次略去：[owner/a](url)、[owner/b](url)`. That line carries links and names only, with no rationale, because it is not a recommendation.
 
 Only validated semantic mechanisms in final items count as formal new mechanisms. Distinguish `proposed`, `searched`, `evidence_found`, `validated`, `rejected`, and `inconclusive` in `semantic_hypotheses`; summarize rejected and inconclusive ones briefly in deep mode.
 
