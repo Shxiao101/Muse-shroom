@@ -91,6 +91,36 @@ class SkillInterfaceTests(unittest.TestCase):
         self.assertIn(f"at most {SUPPLY_SESSION_LIMIT} per session", MUSE_SUPPLY_DESCRIPTION)
         self.assertNotIn("Web verification", MUSE_SUPPLY_DESCRIPTION)
 
+    def test_boundary_reach_rules_are_stated_in_every_channel(self):
+        from muse_shroom.mcp_schema import (
+            EXPLORATION_ADDITION_SCHEMA, HOST_INSTRUCTIONS, MUSE_SUPPLY_DESCRIPTION,
+        )
+        from muse_shroom.models import HOST_HYPOTHESIS_ALIAS_LIMIT
+
+        # Host recall reaches boundary finds, not only the core need, in both channels.
+        for text in (self.skill, HOST_INSTRUCTIONS):
+            self.assertIn("boundary finds included", text)
+            self.assertIn("core-need anchors and boundary finds alike", text)
+            self.assertNotIn("directly serve the core need", text)
+        self.assertIn("boundary finds included", MUSE_SUPPLY_DESCRIPTION)
+        # Host hypotheses carry searchable phrasings.
+        hypothesis = (REFERENCES / "hypothesis-contract.md").read_text(encoding="utf-8")
+        self.assertIn('"aliases": [', hypothesis)
+        for text in (self.skill, hypothesis):
+            self.assertIn("At least one of `term` or `aliases` must be in English", text)
+        addition = next(
+            item for item in EXPLORATION_ADDITION_SCHEMA["anyOf"] if item.get("type") == "object"
+        )
+        self.assertEqual(addition["properties"]["aliases"]["maxItems"], HOST_HYPOTHESIS_ALIAS_LIMIT)
+        # A wildcard must say what transfers.
+        assessment = (REFERENCES / "assessment-contract.md").read_text(encoding="utf-8")
+        self.assertIn("For `wildcard`, the rationale must name", assessment)
+        self.assertIn("A `wildcard` needs a rationale that names the transferring mechanism", self.skill)
+        self.assertIn(
+            "a named mechanism transfers",
+            (REFERENCES / "result-contract.md").read_text(encoding="utf-8"),
+        )
+
     def test_hypothesis_contract_keeps_expand_as_compatibility_only(self):
         hypothesis = (REFERENCES / "hypothesis-contract.md").read_text(encoding="utf-8")
         self.assertIn("iterate", hypothesis)

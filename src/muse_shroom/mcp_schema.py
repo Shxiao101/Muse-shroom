@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .models import BOUNDARY_ROLES, SEARCH_ARTIFACT_TYPES
+from .models import BOUNDARY_ROLES, HOST_HYPOTHESIS_ALIAS_LIMIT, SEARCH_ARTIFACT_TYPES
 
 CONCEPT_SCHEMA: dict[str, Any] = {
     "anyOf": [
@@ -148,6 +148,16 @@ EXPLORATION_ADDITION_SCHEMA: dict[str, Any] = {
                     ),
                 },
                 "source_iteration": {"type": "integer"},
+                "aliases": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": HOST_HYPOTHESIS_ALIAS_LIMIT,
+                    "description": (
+                        "host_hypothesis only: up to three other common phrasings. At least "
+                        "one of term or aliases must be English; the sidecar searches "
+                        "GitHub literally."
+                    ),
+                },
             },
         },
     ]
@@ -224,7 +234,8 @@ SEARCH_HYPOTHESIS_SCHEMA: dict[str, Any] = {
             "description": (
                 "New positive directions. Evidence is discovered_term, a term's "
                 "own evidence ID, user_request, or host_hypothesis. host_hypothesis "
-                "requires request_anchor and is routed to the semantic sidecar."
+                "requires request_anchor, may carry aliases, and is routed to the "
+                "semantic sidecar."
             ),
         },
         "strategies": {
@@ -341,11 +352,13 @@ HOST_INSTRUCTIONS = (
     '"使用 Muse-shroom", "use Muse-shroom", or "search with Muse-shroom", combine two '
     "recall sources and let Muse-shroom own the evidence. Muse-shroom recall is muse_search, "
     "plus muse_observe and muse_iterate in deep mode. Host recall is what you would find for "
-    "the core need without Muse-shroom: repositories you already know and your normal Web "
-    "search. Do not skip host recall because Muse-shroom is available, and do not replace "
-    "muse_search with Web search. Before muse_rank, pass the host-recall repositories that "
-    "directly serve the core need to muse_supply (owner/repo, at most 8 per call and 16 per "
-    "session); it records their evidence itself and rank labels them source=host_supplied. "
+    "this request without Muse-shroom, boundary finds included: repositories you already know "
+    "and your normal Web search, for the core need and for adjacent or cross-domain "
+    "directions. Do not skip host recall because Muse-shroom is available, and do not replace "
+    "muse_search with Web search. Before muse_rank, pass the host-recall repositories worth "
+    "recommending, core-need anchors and boundary finds alike, to muse_supply (owner/repo, at "
+    "most 8 per call and 16 per session); it records their evidence itself and rank labels "
+    "them source=host_supplied. "
     "Select across both sources on merit. Never recommend a repository whose evidence was "
     "not recorded. Default flow: muse_status, muse_search, then (deep mode) muse_observe and "
     "muse_iterate as next_action requires, then host recall through muse_supply, then "
@@ -381,7 +394,8 @@ MUSE_ITERATE_DESCRIPTION = (
 
 MUSE_SUPPLY_DESCRIPTION = (
     "Add host-recall repositories to an existing search_id: repositories the host already knows "
-    "or found through its normal Web search for the core need. repositories is 1-8 owner/repo "
+    "or found through its normal Web search for this request, boundary finds included. "
+    "repositories is 1-8 owner/repo "
     "names, at most 16 per session; "
     "reason is single-line, up to 500 characters. Muse-shroom fetches metadata and README "
     "itself, records evidence at the README SHA, and returns evidence IDs usable in rank. "

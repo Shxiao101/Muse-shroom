@@ -55,7 +55,7 @@ Boundary roles are Agent assignments:
 - `anchor`: mainstream, reliable reference
 - `edge`: near the current approach, with a mechanism change
 - `leap`: steps off the main solution path
-- `wildcard`: not obviously on-topic, but the mechanism can transfer
+- `wildcard`: not obviously on-topic, but a named mechanism transfers; the rationale says how
 
 Read `next_action` after rank. `done` means the rank is terminal. Do not call search, observe, inspect, or diagnostics afterward. Present accepted items in `display_order` and explain any rejected items when relevant. When `items` is empty, `next_action` is `done`, and `no_recommendation.reason` is present, present that reason: the Agent judged that no candidate was worth recommending, and the ranking was saved. That is not a crash and is not the same as every submitted item failing verification.
 

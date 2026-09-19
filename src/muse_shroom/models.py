@@ -20,7 +20,7 @@ SEARCH_REQUEST_CONSTRAINT_FIELDS = frozenset({
 })
 CONCEPT_OBJECT_FIELDS = frozenset({"term", "weight", "aliases"})
 EXPLORATION_ADDITION_FIELDS = frozenset({
-    "term", "reason", "evidence", "source_iteration", "request_anchor",
+    "term", "reason", "evidence", "source_iteration", "request_anchor", "aliases",
 })
 HYPOTHESIS_FIELDS = frozenset({
     "decision", "target_direction", "target_mechanism", "concepts", "adjacent_concepts",
@@ -445,6 +445,7 @@ DEFAULT_SEMANTIC_QUERY_BUDGET = 4
 DEFAULT_SEMANTIC_HYPOTHESIS_LIMIT = 2
 DEFAULT_SEMANTIC_CANDIDATE_CAP = 40
 HOST_HYPOTHESIS_EVIDENCE = "host_hypothesis"
+HOST_HYPOTHESIS_ALIAS_LIMIT = 3
 HARD_STOP_REASONS = (
     "agent_stop", "max_iterations", "query_budget_exhausted",
     "duplicate_queries", "consecutive_no_gain",
@@ -458,6 +459,7 @@ class ExplorationAddition:
     evidence: str = ""
     source_iteration: int | None = None
     request_anchor: str = ""
+    aliases: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         payload = {"term": self.term}
@@ -469,6 +471,8 @@ class ExplorationAddition:
             payload["source_iteration"] = self.source_iteration
         if self.request_anchor:
             payload["request_anchor"] = self.request_anchor
+        if self.aliases:
+            payload["aliases"] = list(self.aliases)
         return payload
 
     @classmethod
@@ -502,6 +506,7 @@ class ExplorationAddition:
             raise ContractError("add_exploration_directions reason/evidence is too long")
         if len(request_anchor) > 160 or "\n" in request_anchor or "\r" in request_anchor:
             raise ContractError("add_exploration_directions request_anchor must be a single-line string up to 160 characters")
+        aliases = _host_hypothesis_aliases(value.get("aliases"), term=term, evidence=evidence)
         source = value.get("source_iteration")
         if source is not None:
             if strict:
@@ -514,7 +519,33 @@ class ExplorationAddition:
                     raise ContractError("add_exploration_directions source_iteration must be an integer") from exc
         elif strict and "source_iteration" in value:
             raise ContractError("add_exploration_directions source_iteration must be an integer")
-        return cls(term, reason, evidence, source, request_anchor)
+        return cls(term, reason, evidence, source, request_anchor, aliases)
+
+
+def _host_hypothesis_aliases(raw: Any, *, term: str, evidence: str) -> list[str]:
+    """Other phrasings of a host hypothesis term; the sidecar searches them literally."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        raise ContractError("add_exploration_directions aliases must be an array of strings")
+    if len(raw) > HOST_HYPOTHESIS_ALIAS_LIMIT:
+        raise ContractError(
+            f"add_exploration_directions aliases allow at most {HOST_HYPOTHESIS_ALIAS_LIMIT} entries"
+        )
+    aliases: list[str] = []
+    seen = {term.casefold()}
+    for item in raw:
+        alias = item.strip()
+        if not alias or len(alias) > 160 or "\n" in alias or "\r" in alias:
+            raise ContractError(
+                "add_exploration_directions aliases must be single-line strings up to 160 characters"
+            )
+        if alias.casefold() not in seen:
+            seen.add(alias.casefold())
+            aliases.append(alias)
+    if aliases and evidence != HOST_HYPOTHESIS_EVIDENCE:
+        raise ContractError("add_exploration_directions aliases are only accepted with evidence host_hypothesis")
+    return aliases
 
 
 @dataclass(slots=True)

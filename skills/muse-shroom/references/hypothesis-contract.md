@@ -33,6 +33,7 @@ Host world-knowledge hypothesis (semantic sidecar, iterations 1-2 only):
   "add_exploration_directions": [
     {
       "term": "<hypothesized mechanism>",
+      "aliases": ["<another common phrasing>"],
       "request_anchor": "<existing problem concept or alias>",
       "reason": "This may transfer because <concise causal connection>.",
       "evidence": "host_hypothesis"
@@ -43,6 +44,8 @@ Host world-knowledge hypothesis (semantic sidecar, iterations 1-2 only):
 ```
 
 Do not repeat the host term in `target_direction`, `target_mechanism`, `concepts`, or `adjacent_concepts`. Ordinary fields remain available for simultaneous evidence-driven refinement. The core routes `host_hypothesis` to a separate sidecar with its own query and README budgets.
+
+Write `term` as the short phrase repositories actually use for the mechanism, usually two or three words, and list up to three other common phrasings in `aliases`. At least one of `term` or `aliases` must be in English. The sidecar searches only phrasings without CJK characters, shortest first, and a repository counts as evidence when its README, description, or Topics contain any phrasing verbatim.
 
 ## Stop
 
@@ -102,7 +105,7 @@ If `stop.should_stop` is true, stop iterating. `stop.signals` (`no_new_mechanism
 
 Hard stops recorded in `stop.reasons`: `agent_stop`, `max_iterations`, `query_budget_exhausted`, `duplicate_queries`, `consecutive_no_gain`.
 
-Default deep-mode budget: 3 iterations after the initial search, 6 keyword queries per iteration, 30 session search queries, 15 README enrichments per iteration, a 250-candidate pool. The semantic sidecar is extra: up to 2 host hypotheses, 2 queries each, 4 README enrichments. Every recalled candidate whose recorded text matches the hypothesis term is offered in the same response as a selectable assessment candidate carrying its `mechanism_match` evidence; code picks none of them, and the round stays within the output cap by publishing those candidates in a lean cite-and-quote form. Quick mode stays at 100 candidates and does not iterate or invoke the sidecar.
+Default deep-mode budget: 3 iterations after the initial search, 6 keyword queries per iteration, 30 session search queries, 15 README enrichments per iteration, a 250-candidate pool. The semantic sidecar is extra: up to 2 host hypotheses, 2 queries each, 4 README enrichments. Every recalled candidate whose recorded text matches the hypothesis term or one of its aliases is offered in the same response as a selectable assessment candidate carrying its `mechanism_match` evidence; code picks none of them, and the round stays within the output cap by publishing those candidates in a lean cite-and-quote form. Quick mode stays at 100 candidates and does not iterate or invoke the sidecar.
 
 Follow `next_action` from the CLI: after deep `search` it is `iterate`; after iterate it is `iterate` or `rank`.
 
