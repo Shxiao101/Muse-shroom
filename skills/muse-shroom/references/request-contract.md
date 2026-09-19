@@ -25,7 +25,7 @@ Iterate hypotheses use [hypothesis-contract.md](hypothesis-contract.md). Assessm
 }
 ```
 
-`request` and at least one `problem_concepts` entry are required. Weights and `exploration_level` range from 0 to 1. Omit constraints the user did not state; do not invent minimum Star counts because low exposure is part of hidden-gem discovery.
+`request` and at least one `problem_concepts` entry are required. Weights and `exploration_level` range from 0 to 1. Omit constraints the user did not state; do not invent minimum Star counts because low exposure is part of hidden-gem discovery. `include_previously_presented` (boolean, default false) is set only when the user asks to see repositories they were shown before. Without it, repositories that an earlier ranked list in the same data directory presented are marked `previously_presented` and take README and shortlist places only when new candidates leave some empty.
 
 `term` is the concept the user understands. Terms and aliases are single-line strings up to 160 characters. `aliases` are GitHub-common expressions, English terms, or domain words for the same concept; at most four per concept. Aliases in one group count as one concept and must not be used to stack scores. Keep generic artifact words such as `skill`, `tool`, `AI`, and `agent` out of problem/mechanism concepts and aliases when a specific term is available. Put the desired form in `artifact_types`. The CLI ignores standalone generic problem terms and will not emit an isolated `"Skill"` query.
 

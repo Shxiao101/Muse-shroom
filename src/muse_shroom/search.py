@@ -60,7 +60,7 @@ PUBLIC_CANDIDATE_FIELDS = {
     "discovery_paths", "matched_kinds", "evidence", "selection_lanes",
     "selection_score_components",
     "concept_matches", "selection_reason",
-    "mechanisms",
+    "mechanisms", "previously_presented",
 }
 
 CONCEPT_MATCH_CHARS = 240
@@ -508,11 +508,14 @@ def _public_semantic_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
                 "id": item.get("id"), "kind": "mechanism_match",
                 "facts": {"mechanisms": matches, "untrusted_source": True},
             })
-    return {
+    projection = {
         "full_name": candidate.get("full_name"),
         "html_url": candidate.get("html_url"),
         "evidence": evidence,
     }
+    if candidate.get("previously_presented"):
+        projection["previously_presented"] = candidate["previously_presented"]
+    return projection
 
 
 def _quote_grade_candidate(item: dict[str, Any]) -> dict[str, Any]:
@@ -552,6 +555,8 @@ def _quote_grade_candidate(item: dict[str, Any]) -> dict[str, Any]:
         minimal["description"] = description[:96]
     if keep:
         minimal["evidence"] = keep
+    if item.get("previously_presented"):
+        minimal["previously_presented"] = item["previously_presented"]
     return minimal
 
 
@@ -589,6 +594,29 @@ class SearchEngine:
         self.search_page_size = search_page_size
         self.initial_query_limit = initial_query_limit
         self._pool_cap = candidate_limit or DEFAULT_QUICK_CANDIDATE_LIMIT
+        self._presented: dict[str, dict[str, Any]] = {}
+        self._defer_presented = False
+
+    def _load_presented(self, search_id: str, request: SearchRequest) -> None:
+        """Read which repositories other sessions already presented to the user.
+
+        Those repositories are no longer unexpected, so they are marked and only take
+        the README and shortlist places others leave empty, unless the user asked to
+        see them again. They stay in the pool, so they can still be supplied or ranked.
+        """
+        self._presented = self.store.presented_history(exclude_search_id=search_id)
+        self._defer_presented = not request.constraints.get("include_previously_presented", False)
+
+    def _mark_presented(self, candidates: Iterable[dict[str, Any]]) -> None:
+        for candidate in candidates:
+            seen = self._presented.get(repo_key(candidate))
+            if seen:
+                candidate["previously_presented"] = dict(seen)
+            else:
+                candidate.pop("previously_presented", None)
+
+    def _deferred(self) -> set[str]:
+        return set(self._presented) if self._defer_presented else set()
 
     def _limit_for(self, mode: str | None = None, state: dict[str, Any] | None = None) -> int:
         if self.candidate_limit is not None:
@@ -786,10 +814,17 @@ class SearchEngine:
             wanted = {str(name).lower() for name in targets}
             pending = [item for item in missing if repo_key(item).lower() in wanted]
         else:
-            selected, _ = probe_select(
-                missing, request, limit=limit or self.enrich_limit,
-                reference_time=self.reference_time,
-            )
+            budget = limit or self.enrich_limit
+            deferred = self._deferred()
+            fresh = [item for item in missing if repo_key(item) not in deferred]
+            selected = probe_select(
+                fresh, request, limit=budget, reference_time=self.reference_time,
+            )[0] if fresh else []
+            if len(selected) < budget and len(fresh) < len(missing):
+                selected += probe_select(
+                    [item for item in missing if repo_key(item) in deferred], request,
+                    limit=budget - len(selected), reference_time=self.reference_time,
+                )[0]
             pending = selected
 
         def fetch(candidate: dict[str, Any]) -> tuple[dict[str, Any], ApiResult | None | str]:
@@ -1149,12 +1184,14 @@ class SearchEngine:
         fingerprint = request.fingerprint(mode)
         if not refresh:
             existing = self.store.find_complete_search(fingerprint, mode)
-            if existing:
+            # The user has seen a ranked session's list; the same request again asks for more.
+            if existing and not self.store.get_ranking(existing):
                 return self._reused_output(existing, mode)
         search_id = uuid.uuid4().hex
         self.store.create_search(search_id, request.to_dict(), mode, fingerprint)
         state = default_session_state()
         self._pool_cap = self._limit_for(mode)
+        self._load_presented(search_id, request)
         state["candidate_limit"] = self._pool_cap
         state["max_iterations"] = self.max_iterations
         state["session_query_budget"] = self.session_query_budget
@@ -1240,6 +1277,7 @@ class SearchEngine:
                 f"a search session accepts at most {SUPPLY_SESSION_LIMIT} supplied repositories"
             )
         request = SearchRequest.from_dict(session["request"])
+        self._load_presented(search_id, request)
         candidates = {repo_key(item): item for item in session["candidates"]}
         iteration = int(state.get("iteration") or 0)
         accepted: list[str] = []
@@ -1279,6 +1317,7 @@ class SearchEngine:
                 artifact_types=request.artifact_types,
             ))
             annotate_candidate_mechanisms(candidate, request)
+            self._mark_presented([candidate])
             self.store.save_candidate(search_id, candidate)
         state["host_supplied"] = [
             *previous,
@@ -1398,6 +1437,7 @@ class SearchEngine:
         session = self.store.load_search(search_id)
         state = self.store.get_session_state(search_id)
         request = SearchRequest.from_dict(session["request"])
+        self._load_presented(search_id, request)
         candidates = {repo_key(item): item for item in session["candidates"]}
         previous_snapshot = self.store.latest_boundary_snapshot(search_id) or {}
         previous_boundary = previous_snapshot.get("boundary") or {}
@@ -1903,6 +1943,7 @@ class SearchEngine:
                             existing["evidence"].append(evidence)
                             seen_ids.add(str(evidence.get("id")))
                 else:
+                    self._mark_presented([candidate])
                     public_item = _public_semantic_candidate(candidate)
                     output.setdefault("candidates", []).append(public_item)
                     published[repo_key(candidate)] = public_item
@@ -2097,6 +2138,7 @@ class SearchEngine:
         for candidate in candidates.values():
             candidate["matched_kinds"] = sorted(set(candidate.get("matched_kinds", [])))
             candidate["selected_for_assessment"] = False
+        self._mark_presented(candidates.values())
         assessable = [item for item in candidates.values() if "readme" in item]
         mode = "quick"
         try:
@@ -2105,6 +2147,7 @@ class SearchEngine:
             pass
         selected, lane_counts = shortlist_select(
             assessable, request, mode=mode, reference_time=self.reference_time,
+            deferred=self._deferred(),
         )
         selected = selected[:SHORTLIST_LIMIT]
         try:
@@ -2139,6 +2182,9 @@ class SearchEngine:
         ).to_dict()
         coverage.update({
             "iteration": iteration,
+            "previously_presented_in_pool": sum(
+                1 for item in candidates.values() if item.get("previously_presented")
+            ),
             "mechanism_count": len(boundary["recalled_mechanisms"]),
             "presented_mechanism_count": len(boundary["presented_mechanisms"]),
             "direction_coverage": round(

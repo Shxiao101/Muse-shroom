@@ -111,6 +111,16 @@ class SkillInterfaceTests(unittest.TestCase):
         )
         self.assertIn("Supply the whole draft", MUSE_SUPPLY_DESCRIPTION)
 
+    def test_previously_presented_repositories_are_left_out_and_named(self):
+        # In the boundary rounds, items the maintainer had seen before were mostly marked known.
+        from muse_shroom.mcp_schema import HOST_INSTRUCTIONS, MUSE_RANK_DESCRIPTION
+
+        self.assertIn("this overrides keeping every draft repository", self.skill)
+        self.assertIn("name them after the list on one line", self.skill)
+        self.assertIn("`constraints.include_previously_presented: true` only when the user asks", self.skill)
+        for text in (HOST_INSTRUCTIONS, MUSE_RANK_DESCRIPTION):
+            self.assertIn("previously_presented", " ".join(text.split()))
+
     def test_startup_reads_one_file_and_tool_names_only(self):
         # Every model request re-reads the startup context. The references and the full
         # tool schemas repeat what SKILL.md states, so the Skill carries the shapes itself.
