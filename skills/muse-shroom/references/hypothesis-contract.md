@@ -43,7 +43,7 @@ Host world-knowledge hypothesis (semantic sidecar, iterations 1-2 only):
 }
 ```
 
-Do not repeat the host term in `target_direction`, `target_mechanism`, `concepts`, or `adjacent_concepts`. Ordinary fields remain available for simultaneous evidence-driven refinement. The core routes `host_hypothesis` to a separate sidecar with its own query and README budgets.
+Do not repeat the host term or its aliases in `target_direction`, `target_mechanism`, `concepts`, `adjacent_concepts`, `aliases`, or `promote_discovered_terms`. Ordinary fields remain available for simultaneous evidence-driven refinement. The core routes `host_hypothesis` to a separate sidecar with its own query and README budgets.
 
 Write `term` as the short phrase repositories actually use for the mechanism, usually two or three words, and list up to three other common phrasings in `aliases`. At least one of `term` or `aliases` must be in English. The sidecar searches only phrasings without CJK characters, shortest first, and a repository counts as evidence when its README, description, or Topics contain any phrasing verbatim.
 

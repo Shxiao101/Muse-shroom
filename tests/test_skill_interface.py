@@ -111,6 +111,19 @@ class SkillInterfaceTests(unittest.TestCase):
         )
         self.assertIn("Supply the whole draft", MUSE_SUPPLY_DESCRIPTION)
 
+    def test_startup_reads_one_file_and_tool_names_only(self):
+        # Every model request re-reads the startup context. The references and the full
+        # tool schemas repeat what SKILL.md states, so the Skill carries the shapes itself.
+        self.assertIn("do not load the references up front", self.skill)
+        self.assertIn("List names only", self.skill)
+        for shape in ('"problem_concepts"', '"decision": "continue"', '"decision": "stop"', '"evidence_ids"'):
+            self.assertIn(shape, self.skill)
+        # The live run hit this ContractError; the rule covers aliases and every ordinary field.
+        self.assertIn("Do not repeat the host term or its aliases in an ordinary field", self.skill)
+        hypothesis = (REFERENCES / "hypothesis-contract.md").read_text(encoding="utf-8")
+        for field in ("adjacent_concepts", "aliases", "promote_discovered_terms"):
+            self.assertIn(f"`{field}`", hypothesis.split("Do not repeat the host term")[1].split(".")[0])
+
     def test_boundary_reach_rules_are_stated_in_every_channel(self):
         from muse_shroom.mcp_schema import (
             EXPLORATION_ADDITION_SCHEMA, HOST_INSTRUCTIONS, MUSE_SUPPLY_DESCRIPTION,
