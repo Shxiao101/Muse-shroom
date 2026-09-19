@@ -116,7 +116,8 @@ class SkillInterfaceTests(unittest.TestCase):
         from muse_shroom.mcp_schema import HOST_INSTRUCTIONS, MUSE_RANK_DESCRIPTION
 
         self.assertIn("this overrides keeping every draft repository", self.skill)
-        self.assertIn("name them after the list on one line", self.skill)
+        self.assertIn("Give them after the list on one line", self.skill)
+        self.assertIn("every repository as a link", self.skill)
         self.assertIn("`constraints.include_previously_presented: true` only when the user asks", self.skill)
         for text in (HOST_INSTRUCTIONS, MUSE_RANK_DESCRIPTION):
             self.assertIn("previously_presented", " ".join(text.split()))

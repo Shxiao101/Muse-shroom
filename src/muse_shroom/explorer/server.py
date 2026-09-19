@@ -93,6 +93,8 @@ class ExplorerHandler(BaseHTTPRequestHandler):
                 })
             finally:
                 store.close()
+        if path == "/api/history":
+            return _json_bytes(self._model().presented_history())
         if path == "/api/searches":
             return _json_bytes(self._model().list_searches())
         parts = [item for item in path.split("/") if item]
@@ -115,7 +117,7 @@ class ExplorerHandler(BaseHTTPRequestHandler):
 
     def _static(self, path: str) -> tuple[int, bytes, str]:
         relative = path.lstrip("/") or "index.html"
-        if path.startswith("/s/") or path == "/s":
+        if path.startswith("/s/") or path in ("/s", "/history"):
             relative = "index.html"
         candidate = (STATIC_DIR / relative).resolve()
         root = STATIC_DIR.resolve()

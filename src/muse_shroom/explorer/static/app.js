@@ -29,6 +29,11 @@ const STRINGS = {
     listTitle: "本地搜索",
     listSub: "选择一个 session，看它探索到哪里、又漏掉了什么。Explorer 只读，不会调用 GitHub。",
     listEmpty: "还没有 search session。用 CLI / MCP / Skill 跑完一次 search 后再打开 Explorer。",
+    historyLink: "看过的仓库 →",
+    historyTitle: "看过的仓库",
+    historySub: "这些仓库以前的清单已经给过你。后来的搜索会把它们标出来、往后放，不再重复推荐。",
+    historyEmpty: "还没有排过名，所以没有看过的仓库。",
+    colRepo: "仓库", colTimes: "出现次数", colLastAt: "最近一次", colFromSearch: "来自搜索",
     colRequest: "请求", colMode: "模式", colStatus: "状态",
     colIteration: "轮次", colMechanism: "机制", colResult: "结果", colTime: "时间",
 
@@ -89,6 +94,11 @@ const STRINGS = {
     listTitle: "Local searches",
     listSub: "Pick a session to see where it explored and what it missed. The Explorer is read-only and never calls GitHub.",
     listEmpty: "No search sessions yet. Run a search through the CLI, MCP or Skill first.",
+    historyLink: "Already shown →",
+    historyTitle: "Repositories you were already shown",
+    historySub: "An earlier list gave you these. Later searches mark them, fill their places last, and do not recommend them again.",
+    historyEmpty: "Nothing has been ranked yet, so nothing has been shown.",
+    colRepo: "Repository", colTimes: "Times shown", colLastAt: "Last shown", colFromSearch: "From searches",
     colRequest: "Request", colMode: "Mode", colStatus: "Status",
     colIteration: "Rounds", colMechanism: "Mechanisms", colResult: "Results", colTime: "Updated",
 
@@ -258,6 +268,7 @@ function parseRoute() {
   current.debug = query.get("debug") === "1" || new URLSearchParams(location.search).get("debug") === "1";
   debugFlag.classList.toggle("hidden", !current.debug);
   const parts = path.split("/").filter(Boolean).map(decodeURIComponent);
+  if (parts[0] === "history") return { view: "history" };
   if (parts[0] === "s" && parts[1]) {
     const id = parts[1];
     // Snapshot time-travel lives in the route so it survives navigation between
@@ -347,6 +358,7 @@ async function render() {
   const route = parseRoute();
   try {
     if (route.view === "list") await renderList();
+    else if (route.view === "history") await renderHistory();
     else if (route.view === "results") await renderResults(route.id, route.role);
     else if (route.view === "repo") await renderRepo(route.id, route.repo);
     else if (route.view === "frontier") await renderFrontier(route.id);
@@ -362,12 +374,13 @@ async function renderList() {
   current.searchId = null;
   const data = await api("/api/searches");
   if (!data.searches.length) {
-    main.innerHTML = `<h1>${esc(t("listTitle"))}</h1><p class="sub">${esc(t("listEmpty"))}</p>`;
+    main.innerHTML = `<h1>${esc(t("listTitle"))}</h1><p class="sub">${esc(t("listEmpty"))} `
+      + `<a href="#/history">${esc(t("historyLink"))}</a></p>`;
     return;
   }
   main.innerHTML = `
     <h1>${esc(t("listTitle"))}</h1>
-    <p class="sub">${esc(t("listSub"))}</p>
+    <p class="sub">${esc(t("listSub"))} <a href="#/history">${esc(t("historyLink"))}</a></p>
     <div class="scroller">
     <table class="table">
       <thead><tr>
@@ -385,6 +398,43 @@ async function renderList() {
             <td class="num">${item.mechanism_count}</td>
             <td class="num">${item.result_count}</td>
             <td class="num">${esc((item.updated_at || "").replace("T", " ").slice(0, 16))}</td>
+          </tr>`).join("")}
+      </tbody>
+    </table>
+    </div>`;
+}
+
+/* ---- repositories already shown ------------------------------------------ */
+
+async function renderHistory() {
+  current.searchId = null;
+  const data = await api("/api/history");
+  const head = `<p><a class="back" href="#/">${esc(t("backToList"))}</a></p>
+    <h1>${esc(t("historyTitle"))}</h1>`;
+  if (!data.repos.length) {
+    main.innerHTML = `${head}<p class="sub">${esc(t("historyEmpty"))}</p>`;
+    return;
+  }
+  main.innerHTML = `
+    ${head}
+    <p class="sub">${esc(t("historySub"))}</p>
+    <div class="scroller">
+    <table class="table">
+      <thead><tr>
+        <th>${esc(t("colRepo"))}</th><th class="num">${esc(t("colTimes"))}</th>
+        <th class="num">${esc(t("colLastAt"))}</th><th>${esc(t("colFromSearch"))}</th>
+      </tr></thead>
+      <tbody>
+        ${data.repos.map((item) => `
+          <tr>
+            <td>
+              <a class="external" href="${esc(item.url)}" target="_blank" rel="noreferrer noopener">${esc(item.repo)}</a>
+              ${item.description ? `<p class="muted">${esc(item.description)}</p>` : ""}
+            </td>
+            <td class="num">${item.times}</td>
+            <td class="num">${esc(item.last_at || t("none"))}</td>
+            <td>${item.searches.map((entry) => `
+              <a href="#/s/${encodeURIComponent(entry.search_id)}/results">${esc(entry.request)}</a>`).join("、")}</td>
           </tr>`).join("")}
       </tbody>
     </table>

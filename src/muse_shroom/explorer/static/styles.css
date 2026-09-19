@@ -169,6 +169,7 @@ p { margin: 0 0 10px; }
 .table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); min-width: 620px; }
 .table th, .table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: .96rem; }
 .table th { color: var(--muted); font-weight: 500; }
+.table th.num { white-space: nowrap; }
 .table tr:hover td { background: var(--row-hover); }
 .table a { color: var(--text); }
 

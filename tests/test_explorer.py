@@ -199,6 +199,31 @@ class ExplorerReadModelTests(unittest.TestCase):
                 self.assertIn("mechanism_label", item)
                 self.assertNotIn("scores", item)
 
+    def test_history_page_lists_what_earlier_rankings_showed(self):
+        # The presented repositories are why a later list leaves them out, so the Explorer
+        # shows them with their links instead of only naming them in the reply.
+        with tempfile.TemporaryDirectory() as directory:
+            store, _github, search_id = _session(directory, rank=True)
+            try:
+                shown = store.get_ranking(search_id)["display_order"]
+            finally:
+                store.close()
+            history = ExplorerReadModel(data_dir=directory).presented_history()
+            self.assertEqual([item["repo"] for item in history["repos"]], shown)
+            first = history["repos"][0]
+            self.assertEqual(first["url"], f"https://github.com/{first['repo']}")
+            self.assertEqual(first["times"], 1)
+            self.assertRegex(first["last_at"], r"^\d{4}-\d{2}-\d{2}$")
+            self.assertEqual([entry["search_id"] for entry in first["searches"]], [search_id])
+            self.assertEqual(first["searches"][0]["request"], REQUEST["request"])
+        app = (
+            Path(__file__).resolve().parents[1] / "src" / "muse_shroom" / "explorer" / "static" / "app.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("renderHistory", app)
+        self.assertIn('"#/history"', app)
+        for key in ("historyTitle", "historyEmpty", "colTimes", "colLastAt"):
+            self.assertEqual(app.count(f"{key}:"), 2, key)
+
     def test_historical_result_view_does_not_expose_final_rank(self):
         with tempfile.TemporaryDirectory() as directory:
             store, _github, search_id = _session(directory, iterate=True, rank=True)
@@ -450,6 +475,10 @@ class ExplorerHttpTests(unittest.TestCase):
                 self.assertFalse(historical["ranked"])
                 self.assertEqual(historical["display_order"], [])
                 self.assertEqual(historical["items"], [])
+                history = json.loads(urllib.request.urlopen(base + "/api/history", timeout=5).read())
+                self.assertEqual(history["repos"][0]["searches"][0]["search_id"], search_id)
+                page = urllib.request.urlopen(base + "/history", timeout=5).read().decode("utf-8")
+                self.assertIn("Muse-shroom Explorer", page)
                 request = urllib.request.Request(base + "/api/searches", method="POST")
                 with self.assertRaises(urllib.error.HTTPError) as raised:
                     urllib.request.urlopen(request, timeout=5)

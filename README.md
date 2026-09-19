@@ -1,4 +1,4 @@
-# Muse-shroom 0.11.1
+# Muse-shroom 0.12.0
 
 探索一个需求在 GitHub 上的解法边界，找能激发新思路的项目，而不只是最直接的答案。每条结果带一个边界角色和 README 原文证据：
 
@@ -39,7 +39,7 @@ MCP 是可选 extra。安装后用 `muse-shroom-mcp` 或 `python -m muse_shroom.
 
 宿主 Agent 使用 [`skills/muse-shroom`](skills/muse-shroom/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → 宿主像没有 Muse-shroom 时那样自己搜，列出草稿清单（只找仓库，不为核实去翻页面）→ 草稿清单经 `supply` 取证 → `rank`：草稿全部保留，再补上 Muse-shroom 找到而草稿没有的。快搜跳过 iterate。MCP 可用时优先 `muse_search` / `muse_observe` / `muse_iterate` / `muse_supply` / `muse_rank`，否则走 CLI，策略相同。契约在 Skill 的 `references/`。
 
-记住看过的：以前排序给你看过的仓库会标上 `previously_presented`，取 README 和进短名单时排在新候选后面，最终清单不再重复推荐，只在清单后列一行名字。同一需求再搜一次，看到的大多是新东西。想连以前看过的一起看，就跟 Agent 说"包括以前看过的"（请求里设 `constraints.include_previously_presented`）。历史存在数据目录里，换一个 `--data-dir` 就是一份干净的历史。
+记住看过的：以前排序给你看过的仓库会标上 `previously_presented`，取 README 和进短名单时排在新候选后面，最终清单不再重复推荐，只在清单后用一行列出它们的链接（rank 返回的 `previously_presented` 带 `url`、看过几次和最近日期）。Explorer 里有一页专门列出所有看过的仓库（`#/history`）。同一需求再搜一次，看到的大多是新东西。想连以前看过的一起看，就跟 Agent 说"包括以前看过的"（请求里设 `constraints.include_previously_presented`）。历史存在数据目录里，换一个 `--data-dir` 就是一份干净的历史。
 
 ```console
 muse-shroom search --request examples/music-ai.request.json --mode quick --output search.json
