@@ -3,6 +3,7 @@
 CLI, MCP, and Explorer implementation notes. Agent Skills should follow `skills/muse-shroom/` instead of this file. MCP is a stdio adapter over the same Core; Explorer is a local read-only UI over SQLite. Session state stays in SQLite and `search_id` is always explicit. Explorer does not search, iterate, rank, or call GitHub.
 
 - Quick mode: at most 12 controlled queries; aliases do not expand the API budget. RRF is capped per concept group.
+- The queries take turns rank by rank when the pool is filled, so a full pool costs every query its deepest results instead of leaving the last queries unread.
 - Search output is schema v2: `candidate_count` is full recall, `candidates` is the assessment shortlist of at most 12 rows.
 - `boundary.recalled_mechanisms` covers the full pool; `presented_mechanisms` covers the shortlist or final ranking. Mechanism labels need description, Topics, or README evidence.
 - `discovered_terms` stay unconfirmed until a hypothesis promotes them and later evidence matches.
