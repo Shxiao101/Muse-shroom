@@ -122,6 +122,19 @@ class SkillInterfaceTests(unittest.TestCase):
         for text in (HOST_INSTRUCTIONS, MUSE_RANK_DESCRIPTION):
             self.assertIn("previously_presented", " ".join(text.split()))
 
+    def test_rules_the_live_runs_needed_are_stated(self):
+        # Each line here is a call the 2026-09-20 Codex runs got wrong or skipped.
+        from muse_shroom.mcp_schema import MUSE_SUPPLY_DESCRIPTION
+
+        self.assertIn("muse_inspect({repo, search_id})", self.skill)
+        self.assertIn("never a mechanism or direction", self.skill)
+        self.assertIn("Send no `site:github.com/owner/name` query", self.skill)
+        self.assertIn("supply the corrected name once", self.skill)
+        self.assertIn("did_you_mean", " ".join(MUSE_SUPPLY_DESCRIPTION.split()))
+        hypothesis = (REFERENCES / "hypothesis-contract.md").read_text(encoding="utf-8")
+        self.assertIn("never a mechanism or exploration term", hypothesis)
+        self.assertIn("did_you_mean", (REFERENCES / "result-contract.md").read_text(encoding="utf-8"))
+
     def test_startup_reads_one_file_and_tool_names_only(self):
         # Every model request re-reads the startup context. The references and the full
         # tool schemas repeat what SKILL.md states, so the Skill carries the shapes itself.

@@ -86,7 +86,7 @@ Do not write a new positive preference into `negative_directions` or `rejected_d
 `add_exploration_directions` item must cite `discovered_term`, that term's
 own candidate evidence ID, `user_request` when the user explicitly introduced the
 direction, or `host_hypothesis` for a world-knowledge leap. `host_hypothesis`
-requires `request_anchor` matching an original problem concept or alias. It is
+requires `request_anchor` matching an original problem concept or alias, never a mechanism or exploration term. It is
 provenance, not repository evidence. Unsupported high-priority directions are rejected.
 
 At most two `host_hypothesis` additions are allowed in the whole session, and only during post-search iterations one and two. After iteration two, or after two host hypotheses have been submitted, all further refinements must be evidence-derived. Failed hypotheses do not create extra allowance.

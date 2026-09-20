@@ -43,7 +43,7 @@ from .sidecar import (
 )
 from .queries import (
     build_queries, code_filename_query, confirmation_queries, hypothesis_queries,
-    indexed_groups, query_fingerprint, reverse_reference_query, unplanned_terms,
+    indexed_groups, query_fingerprint, quote_term, reverse_reference_query, unplanned_terms,
 )
 from .selection import (
     SHORTLIST_LIMIT, candidate_allowed, covered_core_ids, probe_select,
@@ -62,6 +62,12 @@ PUBLIC_CANDIDATE_FIELDS = {
     "concept_matches", "selection_reason",
     "mechanisms", "previously_presented",
 }
+
+# A host drafts repository names from memory or a Web result, so an owner can be a
+# guess: a 2026-09-20 run lost brunosimon/folio-2019 as "bruno-simon/folio-2019".
+# One name search per miss corrects that; the cap keeps a batch of typos bounded.
+SUPPLY_LOOKUP_LIMIT = 3
+SUPPLY_SUGGESTION_LIMIT = 3
 
 CONCEPT_MATCH_CHARS = 240
 HOWTO_EXCERPT_CHARS = 220
@@ -1256,6 +1262,25 @@ class SearchEngine:
     def iterate(self, search_id: str, refinement: dict[str, Any]) -> dict[str, Any]:
         return self._run_iteration(search_id, SearchHypothesis.from_dict(refinement), stage="iterate")
 
+    def _name_suggestions(self, name: str) -> list[str]:
+        """Repositories whose name matches a missing one, best match first."""
+        bare = str(name).rsplit("/", 1)[-1].strip()
+        if not bare:
+            return []
+        query = f"{quote_term(bare)} in:name is:public"
+        try:
+            result = self.github.search_repositories(query, per_page=SUPPLY_SUGGESTION_LIMIT)
+        except GitHubAuthenticationError:
+            raise
+        except GitHubError:
+            return []
+        suggestions = []
+        for item in self._items(result):
+            full_name = str(item.get("full_name") or "")
+            if full_name and full_name.lower() != str(name).lower():
+                suggestions.append(full_name)
+        return suggestions[:SUPPLY_SUGGESTION_LIMIT]
+
     def supply(self, search_id: str, repositories: Any, reason: Any) -> dict[str, Any]:
         """Bring repositories the host found elsewhere into the evidence of this session.
 
@@ -1281,13 +1306,20 @@ class SearchEngine:
         candidates = {repo_key(item): item for item in session["candidates"]}
         iteration = int(state.get("iteration") or 0)
         accepted: list[str] = []
-        rejected: list[dict[str, str]] = []
+        rejected: list[dict[str, Any]] = []
         stale = bool(session["stale"])
+        lookups = 0
         for name in names:
             try:
                 result = self.github.repository(name)
             except GitHubNotFoundError:
-                rejected.append({"repo": name, "reason": "not_found"})
+                miss: dict[str, Any] = {"repo": name, "reason": "not_found"}
+                if lookups < SUPPLY_LOOKUP_LIMIT:
+                    lookups += 1
+                    suggestions = self._name_suggestions(name)
+                    if suggestions:
+                        miss["did_you_mean"] = suggestions
+                rejected.append(miss)
                 continue
             stale = stale or bool(result.stale)
             repo = result.data if isinstance(result.data, dict) else {}

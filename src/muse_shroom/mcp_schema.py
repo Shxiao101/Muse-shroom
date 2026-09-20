@@ -396,7 +396,9 @@ MUSE_SUPPLY_DESCRIPTION = (
     "reason is single-line, up to 500 characters. Muse-shroom fetches metadata and README "
     "itself, records evidence at the README SHA, and returns evidence IDs usable in rank. "
     "Supplied repositories never change the shortlist, boundary, or iteration budget, and rank "
-    "labels them source=host_supplied. Returns supplied, rejected, next_action, can_iterate."
+    "labels them source=host_supplied. Returns supplied, rejected, next_action, can_iterate. "
+    "A not_found rejection carries did_you_mean when a name lookup found candidates; supply "
+    "the corrected name once."
 )
 
 MUSE_RANK_DESCRIPTION = (
