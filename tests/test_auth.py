@@ -47,9 +47,9 @@ class AuthTests(unittest.TestCase):
         deleter.assert_called_once_with("Muse-shroom", "github.com")
 
     def test_validation_returns_login_without_returning_token(self):
-        with patch("urllib.request.urlopen", return_value=Response({"login": "Shxiao101"})):
+        with patch("urllib.request.urlopen", return_value=Response({"login": "octocat"})):
             result = validate_token("secret-token")
-        self.assertEqual(result, {"login": "Shxiao101"})
+        self.assertEqual(result, {"login": "octocat"})
         self.assertNotIn("secret-token", json.dumps(result))
 
     def test_invalid_token_is_rejected(self):
@@ -62,7 +62,7 @@ class AuthTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             stdout, stderr = io.StringIO(), io.StringIO()
             with patch("sys.stdin", io.StringIO("secret-token\n")), \
-                 patch("muse_shroom.cli.validate_token", return_value={"login": "Shxiao101"}), \
+                 patch("muse_shroom.cli.validate_token", return_value={"login": "octocat"}), \
                  patch("muse_shroom.cli.save_token") as save, redirect_stdout(stdout), redirect_stderr(stderr):
                 code = main(["--data-dir", directory, "auth", "login", "--no-browser", "--token-stdin"])
         self.assertEqual(code, 0)

@@ -57,7 +57,11 @@ The probe and shortlist stages cap a single repository owner at two entries. Thi
 Eight development/regression Golden Cases live in
 `evaluation/boundary-golden-cases.json`; their matching requests are isolated in
 `evaluation/boundary-prompts.json`. Six separately reported holdout cases live
-under `evaluation/holdout/`. They define concept IDs and aliases for
+under `evaluation/holdout/`. **They are committed, so they are not blind to anything
+that can read this repository** — including the host Agent under evaluation. Treat
+them as a second development set. A measurement that needs a genuine holdout needs
+fresh cases kept outside the repository; deleting these would not restore them,
+because they stay in the published history. They define concept IDs and aliases for
 mainstream coverage, acceptable new mechanisms, repetition groups, required
 cross-mechanism directions, and release thresholds. They deliberately require
 neither a particular repository nor an exact output phrase. Holdout expected
