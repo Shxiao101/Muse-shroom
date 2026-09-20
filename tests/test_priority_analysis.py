@@ -17,9 +17,18 @@ from evaluation.analyze_priority import (
 )
 
 
+# The v0.4.6 cassette and release directory are local evaluation artifacts and are
+# not committed. Without them the analysis cannot be built, but the pure functions
+# beside it can still be tested.
+ARTIFACTS = DEFAULT_CASSETTE.exists() and DEFAULT_RELEASE.exists()
+
+
 class PriorityAnalysisTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if not ARTIFACTS:
+            cls.analysis = None
+            return
         root = Path(__file__).resolve().parents[1]
         cls.analysis = analyze(
             DEFAULT_RELEASE,
@@ -30,6 +39,14 @@ class PriorityAnalysisTests(unittest.TestCase):
             root / "evaluation" / "boundary-golden-cases.json",
             root / "evaluation" / "holdout" / "boundary-golden-cases.json",
         )
+
+    def recorded_analysis(self):
+        if self.analysis is None:
+            self.skipTest(
+                f"needs {DEFAULT_CASSETTE.name} and {DEFAULT_RELEASE.name}, "
+                "local evaluation artifacts that are not committed"
+            )
+        return self.analysis
 
     def test_canonical_normalizes_browser_surface(self):
         self.assertEqual(canonical("web automation"), "browser automation")
@@ -55,6 +72,7 @@ class PriorityAnalysisTests(unittest.TestCase):
         self.assertEqual(query_stage('"candidate" "one/source"', item, request), "stage3")
 
     def test_real_v046_analysis_inputs_are_available_and_bounded(self):
+        self.recorded_analysis()
         self.assertTrue(DEFAULT_CASSETTE.exists())
         self.assertTrue(DEFAULT_LABELS.exists())
         self.assertTrue((DEFAULT_RELEASE / "boundary-development-agentic.raw.json").exists())
@@ -78,14 +96,14 @@ class PriorityAnalysisTests(unittest.TestCase):
         self.assertEqual(metrics["queries_with_same_repo_overlap"], 1)
 
     def test_real_analysis_meets_bounded_delivery_contract(self):
-        dev = self.analysis["metrics"]["development"]
-        holdout = self.analysis["metrics"]["holdout"]
+        dev = self.recorded_analysis()["metrics"]["development"]
+        holdout = self.recorded_analysis()["metrics"]["holdout"]
         self.assertEqual(dev["total_executed_queries"], 35)
         self.assertEqual(holdout["total_executed_queries"], 26)
         self.assertEqual(dev["queries_on_eventual_rejects"] + holdout["queries_on_eventual_rejects"], 55)
-        self.assertEqual(self.analysis["holdout_taxonomy_counts"], {"A": 0, "B": 3, "C": 1})
-        self.assertLessEqual(len(self.analysis["root_causes"]), 3)
-        self.assertLessEqual(len(self.analysis["recommended_directions"]), 2)
+        self.assertEqual(self.recorded_analysis()["holdout_taxonomy_counts"], {"A": 0, "B": 3, "C": 1})
+        self.assertLessEqual(len(self.recorded_analysis()["root_causes"]), 3)
+        self.assertLessEqual(len(self.recorded_analysis()["recommended_directions"]), 2)
 
     def test_candidate_records_have_required_trace_fields(self):
         required = {
@@ -97,13 +115,14 @@ class PriorityAnalysisTests(unittest.TestCase):
             "skip_reason", "query_count", "query_stages", "confirmation_repos",
             "confirmation_evidence", "frozen_taxonomy_match", "human_diagnostic_label",
         }
-        for suite_records in self.analysis["records"].values():
+        for suite_records in self.recorded_analysis()["records"].values():
             for record in suite_records:
                 self.assertTrue(required <= record.keys())
                 self.assertIsNotNone(record["evidence_relevance_score"])
                 self.assertIsNotNone(record["mechanism_specificity"])
 
     def test_candidate_status_and_query_count_trace_to_confirmation_analysis(self):
+        self.recorded_analysis()
         source = json.loads((DEFAULT_RELEASE / "confirmation-analysis.json").read_text(encoding="utf-8"))
         for suite in ("development", "holdout"):
             expected = {
@@ -116,12 +135,12 @@ class PriorityAnalysisTests(unittest.TestCase):
                 (record["case_id"], record["candidate"]): (
                     record["confirmation_status"], record["query_count"]
                 )
-                for record in self.analysis["records"][suite]
+                for record in self.recorded_analysis()["records"][suite]
             }
             self.assertEqual(actual, expected)
             for case_id in {key[0] for key in actual}:
                 ranks = sorted(
-                    record["raw_queue_rank"] for record in self.analysis["records"][suite]
+                    record["raw_queue_rank"] for record in self.recorded_analysis()["records"][suite]
                     if record["case_id"] == case_id
                 )
                 self.assertEqual(ranks, list(range(1, len(ranks) + 1)))
@@ -132,7 +151,7 @@ class PriorityAnalysisTests(unittest.TestCase):
             "new_repo_count", "independent_repo_count", "same_repo_overlap",
             "new_core_evidence", "final_candidate_label",
         }
-        for suite_records in self.analysis["records"].values():
+        for suite_records in self.recorded_analysis()["records"].values():
             for record in suite_records:
                 for detail in record["query_details"]:
                     self.assertTrue(required <= detail.keys())
@@ -145,17 +164,17 @@ class PriorityAnalysisTests(unittest.TestCase):
             "confirmation_priority_reason", "attempted", "confirmation_status",
             "skip_reason", "human_diagnostic_label", "release_verdict", "golden",
         }
-        for packet in self.analysis["blind_review_development"] + self.analysis["blind_review_holdout"]:
+        for packet in self.recorded_analysis()["blind_review_development"] + self.recorded_analysis()["blind_review_holdout"]:
             self.assertFalse(forbidden & packet.keys())
 
     def test_top_three_development_skipped_candidates_are_labeled(self):
-        self.assertEqual(len(self.analysis["top_skipped_development"]), 8)
-        for records in self.analysis["top_skipped_development"].values():
+        self.assertEqual(len(self.recorded_analysis()["top_skipped_development"]), 8)
+        for records in self.recorded_analysis()["top_skipped_development"].values():
             self.assertEqual(len(records), 3)
             self.assertTrue(all(record.get("human_diagnostic_label") for record in records))
 
     def test_markdown_is_rendered_from_analysis(self):
-        markdown = render_markdown(self.analysis)
+        markdown = render_markdown(self.recorded_analysis())
         self.assertIn("Queries on eventual rejects: 55/61", markdown)
         self.assertIn("A/B/C = 0 / 3 / 1", markdown)
 

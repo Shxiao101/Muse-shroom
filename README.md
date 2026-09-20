@@ -1,4 +1,4 @@
-# Muse-shroom 0.12.1
+# Muse-shroom 0.12.2
 
 探索一个需求在 GitHub 上的解法边界，找能激发新思路的项目，而不只是最直接的答案。每条结果带一个边界角色和 README 原文证据：
 
@@ -108,6 +108,8 @@ python -m pip install -e ".[test]"
 ```
 
 Core 测试不强制 MCP extra。专项 MCP 测试缺依赖应失败而非 skip。`MUSE_SHROOM_LIVE_SMOKE=1` 才跑实时 API smoke。
+
+刚 clone 的仓库能跑完整套测试。少数测试要读本机的评测产物（`evaluation/cassettes/`、`evaluation/results/`，都不入库），没有就自动 skip，不会报错。
 
 人工盲测与 Boundary gate 在 `evaluation/`。`replay --ci` 用已提交的 synthetic fixture 离线回归。`discovery_verdict: not_measured` 与整体 `needs_review` 是确定性 harness 的设计结果，不是回退。发布判断见 `evaluation/ab-protocol.md`。
 
