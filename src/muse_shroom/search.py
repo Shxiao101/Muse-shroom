@@ -697,6 +697,9 @@ class SearchEngine:
         A query that fails is recorded with its reason and returned in ``failed`` while the
         other queries keep their results. Only when every query fails does the first
         failure propagate, as before.
+
+        Results are taken rank by rank across the queries, so a pool that fills up costs
+        every query its deepest ranks rather than costing the last queries everything.
         """
         stale = False
         cached_at = None
@@ -723,6 +726,10 @@ class SearchEngine:
         if failures and not results:
             raise failures[0][1]
         executed = [spec for spec, _result in results]
+        # Every executed query is recorded before anything is taken from it. Filling the
+        # pool used to return as soon as it was full, which left the queries after that
+        # point out of the history although their call had already been paid for.
+        batches: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
         for query_spec, result in results:
             stale = stale or result.stale
             cached_at = cached_at or result.cached_at
@@ -732,11 +739,21 @@ class SearchEngine:
                 search_id, query_spec["query"], query_spec["kind"], len(items),
                 iteration=iteration, fingerprint=query_spec["fingerprint"], skipped=False,
             )
-            for position, repo in enumerate(items, 1):
+            batches.append((query_spec, items))
+        depth = max((len(items) for _spec, items in batches), default=0)
+        for position in range(1, depth + 1):
+            for query_spec, items in batches:
+                if position > len(items):
+                    continue
+                repo = items[position - 1]
                 if repo.get("private") or repo.get("visibility") not in {None, "public"}:
                     continue
                 key = repo_key(repo)
                 if not key:
+                    continue
+                # A full pool takes no new candidate, but the queries still to come
+                # record their own rank against the candidates it already holds.
+                if key not in candidates and len(candidates) >= self._pool_cap:
                     continue
                 candidate = candidates.setdefault(key, dict(repo))
                 if "first_seen_iteration" not in candidate:
@@ -764,8 +781,6 @@ class SearchEngine:
                 lane_kind = query_spec.get("lane_kind", query_spec["kind"])
                 if lane_kind not in kinds:
                     kinds.append(lane_kind)
-                if len(candidates) >= self._pool_cap:
-                    return stale, cached_at, executed, skipped, failed
         return stale, cached_at, executed, skipped, failed
 
     @staticmethod
