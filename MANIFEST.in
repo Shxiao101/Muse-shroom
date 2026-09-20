@@ -1,0 +1,4 @@
+# The wheel never carried tests; the sdist did, by setuptools' default. Those copies
+# could not run anyway: eight of the test modules import `evaluation/`, which is not
+# part of any distribution. Tests live in the repository, for people who clone it.
+prune tests
