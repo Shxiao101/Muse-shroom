@@ -4,12 +4,9 @@ build/
 dist/
 *.egg-info/
 .pytest_cache/
-evaluation/cassettes/
-evaluation/results/
-evaluation/host-*-bundle/
-evaluation/host-*-bundle.case-map.json
-evaluation/host-*-bundle.leakage.json
+# The test suite and the evaluation harness stay on the maintainer's machine.
+tests/
+evaluation/
 blackbox-*/
 chat*.md
 muse-shroom-v0.4.7-three-run-raw-data.json
-evaluation/host-*-bundle.superseded-*/

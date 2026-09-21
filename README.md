@@ -1,4 +1,4 @@
-# Muse-shroom 0.12.1
+# Muse-shroom 0.12.2
 
 探索一个需求在 GitHub 上的解法边界，找能激发新思路的项目，而不只是最直接的答案。每条结果带一个边界角色和 README 原文证据：
 
@@ -98,18 +98,11 @@ Cursor（`.cursor/mcp.json`）：
 - **Boundary 分析**：机制、相关性、新颖性、覆盖等信号；不决定最终顺序或语义结论。
 - **宿主 Agent**：理解目标、提出方向、选择候选、安排展示顺序、解释跨域迁移。
 
-## 开发验证
+## 仓库内容
 
-```console
-python -m unittest discover -s tests -v
-python -m pip install -e ".[mcp]"
-python -m unittest tests.test_mcp -v
-python -m pip install -e ".[test]"
-```
+这个仓库就是产品本身：`src/muse_shroom` 是包，[`skills/muse-shroom`](skills/muse-shroom/SKILL.md) 是宿主 Agent 用的 Skill，`examples/` 是可直接运行的请求样例，[`docs/search-internals.md`](docs/search-internals.md) 是实现细节。
 
-Core 测试不强制 MCP extra。专项 MCP 测试缺依赖应失败而非 skip。`MUSE_SHROOM_LIVE_SMOKE=1` 才跑实时 API smoke。
-
-人工盲测与 Boundary gate 在 `evaluation/`。`replay --ci` 用已提交的 synthetic fixture 离线回归。`discovery_verdict: not_measured` 与整体 `needs_review` 是确定性 harness 的设计结果，不是回退。发布判断见 `evaluation/ab-protocol.md`。
+测试套件和 A/B / Boundary 评测 harness 留在维护者本机，不随仓库发布。
 
 ## 范围
 
