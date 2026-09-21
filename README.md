@@ -24,7 +24,7 @@ Python 3.10+，以及一个支持 MCP 的宿主 Agent。
 ## 安装与登录
 
 ```console
-pipx install .
+pipx install "muse-shroom[mcp] @ git+https://github.com/Shxiao101/Muse-shroom"
 muse-shroom auth login
 muse-shroom doctor
 ```
@@ -38,12 +38,6 @@ muse-shroom doctor
 使用 `auth status` 查看状态，`auth logout` 删除。
 
 ## 在 Agent 中使用
-
-先安装 MCP 依赖。
-
-```console
-python -m pip install -e ".[mcp]"
-```
 
 Codex 的配置写进 `~/.codex/config.toml`。
 
@@ -96,7 +90,7 @@ muse-shroom explorer
 
 ## 范围
 
-内部实现见 [`docs/search-internals.md`](docs/search-internals.md)。[`skills/muse-shroom`](skills/muse-shroom/SKILL.md) 可以单独复制到其他支持 Skills 的宿主。
+内部实现见 [`docs/search-internals.md`](docs/search-internals.md)。[`skills/muse-shroom`](skills/muse-shroom/SKILL.md) 可以单独复制到其他支持 Skills 的宿主。每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)，提 issue 或改动见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 许可
 
