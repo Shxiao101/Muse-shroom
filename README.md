@@ -1,21 +1,27 @@
 # Muse-shroom 0.12.2
 
-探索一个需求在 GitHub 上的解法边界，找能激发新思路的项目，而不只是最直接的答案。每条结果带一个边界角色和 README 原文证据：
+```
+灵感菇哩菇哩菇哩哇擦灵感菇灵感菇
+```
 
-- `anchor`：主流、可靠的参照
-- `edge`：贴近现有做法，但机制有变化
-- `leap`：离开主要的解法路径
-- `wildcard`：表面不相关，但能说清哪个机制可以迁移
+探索一个需求在 GitHub 上的解法边界，找能激发新思路的项目，而不只是最直接的答案。每条结果带一个边界角色和 README 原文证据。
 
-找边界要用深搜：宿主 Agent 读每轮观察结果决定往哪走，前两轮可以提出跨领域的假设。快搜不迭代，也不提跨领域假设。
+- `anchor` 是这类需求下的常见选择，用作参照。
+- `edge` 解决相近的问题，实现方式不同。
+- `leap` 已经不在常见的解法路线上。
+- `wildcard` 表面与需求无关，某个机制可以迁移。
 
-本地 GitHub 搜索内核：CLI 负责可复现的 API 调用、SQLite 缓存和机械校验；需求理解和最终选择留给宿主 Agent（Codex、Claude、Cursor 等）。
+后两类需要 ⌈深搜/deep⌋ 模式才能找到。⌈深搜⌋ 依据每一轮的结果决定下一步方向，前两轮允许提出一个跨领域的假设。⌈快搜/quick⌋ 模式下只搜索一轮。
 
-不克隆、不运行候选仓库。Token 不写入数据库或日志，默认存进系统凭据存储。
+搜索、缓存和取证都由本地 GitHub 搜索内核完成，CLI 负责可复现的 API 调用、SQLite 缓存和机械校验。宿主 Agent 读懂需求并挑出结果，决定展示顺序。
 
-## 安装
+GitHub token 默认存放在系统的凭据管理中。
 
-Python 3.10+：
+## 环境要求
+
+Python 3.10+，以及一个支持 MCP 的宿主 Agent。
+
+## 安装与登录
 
 ```console
 pipx install .
@@ -23,58 +29,36 @@ muse-shroom auth login
 muse-shroom doctor
 ```
 
-`auth login` 打开 GitHub Fine-grained Token 页，验证后写入 Windows Credential Manager、macOS Keychain 或 Linux Secret Service。`auth status` / `auth logout` 查看或删除。自动化环境可用 `GITHUB_TOKEN`，优先级更高。
+使用 `auth login` 打开 GitHub 的 Fine-grained Token 创建页，名称和用途已经预填，默认九十天到期。将生成的 token 贴回终端，验证通过后写入 Windows 凭据管理器、macOS Keychain 或 Linux Secret Service。
 
-开发安装：
+使用 `doctor` 输出一行 JSON，包含 Python 版本、数据库位置以及 token 状态。出现 `"github_token":"missing"` 表示尚未登录。
+
+自动化环境可以直接设置 `GITHUB_TOKEN` 环境变量，它的优先级高于已保存的凭据。
+
+使用 `auth status` 查看状态，`auth logout` 删除。
+
+## 在 Agent 中使用
+
+先安装 MCP 依赖。
 
 ```console
-python -m pip install -e .
 python -m pip install -e ".[mcp]"
-muse-shroom --help
 ```
 
-MCP 是可选 extra。安装后用 `muse-shroom-mcp` 或 `python -m muse_shroom.mcp_server` 以 stdio 启动。MCP 与 CLI 共用同一凭据和 SQLite 目录。
-
-## 工作流
-
-宿主 Agent 使用 [`skills/muse-shroom`](skills/muse-shroom/SKILL.md)：解释需求 → `search` →（深搜）按 `observation` `iterate` → 宿主像没有 Muse-shroom 时那样自己搜，列出草稿清单（只找仓库，不为核实去翻页面）→ 草稿清单经 `supply` 取证 → `rank`：草稿全部保留，再补上 Muse-shroom 找到而草稿没有的。快搜跳过 iterate。MCP 可用时优先 `muse_search` / `muse_observe` / `muse_iterate` / `muse_supply` / `muse_rank`，否则走 CLI，策略相同。契约在 Skill 的 `references/`。
-
-记住看过的：以前排序给你看过的仓库会标上 `previously_presented`，取 README 和进短名单时排在新候选后面，最终清单不再重复推荐，只在清单后用一行列出它们的链接（rank 返回的 `previously_presented` 带 `url`、看过几次和最近日期）。Explorer 里有一页专门列出所有看过的仓库（`#/history`）。同一需求再搜一次，看到的大多是新东西。想连以前看过的一起看，就跟 Agent 说"包括以前看过的"（请求里设 `constraints.include_previously_presented`）。历史存在数据目录里，换一个 `--data-dir` 就是一份干净的历史。
-
-```console
-muse-shroom search --request examples/music-ai.request.json --mode quick --output search.json
-muse-shroom observe --search-id SEARCH_ID --output observe.json
-muse-shroom iterate --search-id SEARCH_ID --refinement examples/focus-tools.hypothesis.json --output iterate.json
-muse-shroom supply --search-id SEARCH_ID --repositories repositories.json --reason "found by host web search" --output supply.json
-muse-shroom rank --search-id SEARCH_ID --selection selection.json --output rank.json
-```
-
-默认输出 JSON。输入请用 UTF-8 文件；Windows 不要 `Get-Content | muse-shroom`。`--output` 写完整 JSON，控制台只打回执。相同 request 和 mode 默认复用已完成但还没排序的 `search_id`，新召回加 `--refresh`；已经排序过的不复用。`--data-dir` 覆盖数据目录。多轮必须显式传 `search_id`。
-
-只读浏览已有 session：
-
-```console
-muse-shroom explorer
-```
-
-默认 `http://127.0.0.1:8765/`，只绑 loopback。非本机地址必须加 `--allow-remote`（无认证）。`rank` 会后台启动 Explorer 并返回 `explorer_url`，不自动开浏览器；`--no-explore` 或 `MUSE_SHROOM_NO_EXPLORER=1` 可关。没有 Explorer 时 Skill / MCP / CLI 功能不变。
-
-## MCP 宿主配置
-
-Codex（`~/.codex/config.toml`）：
+Codex 的配置写进 `~/.codex/config.toml`。
 
 ```toml
 [mcp_servers.muse-shroom]
 command = "muse-shroom-mcp"
 ```
 
-Claude Code：
+Claude Code 用一条命令注册。
 
 ```console
 claude mcp add muse-shroom -- muse-shroom-mcp
 ```
 
-Cursor（`.cursor/mcp.json`）：
+Cursor 写进 `.cursor/mcp.json`。
 
 ```json
 {
@@ -86,24 +70,34 @@ Cursor（`.cursor/mcp.json`）：
 }
 ```
 
-## 结果
+配置完成后用日常语言提出需求即可，比如「用 Muse-shroom 找能让本地 AI 记忆可查看的工具」。
 
-快搜：`search` 然后 `rank`。深搜中间按 `observation` 有限次 `iterate`。`rank` 接收宿主 Agent 的有序 `selection`，只校验证据归属和原文引用，生成 `items` 与 `display_order`，保留该顺序。代码不重排。`popular` / `gems` / `adjacent` 是主列表确定后的兼容投影。
+## 工作流
 
-`candidate_count` 是完整召回池，`candidates` 是评估 shortlist，可能不含池中每一项。返回给 Agent 的结果里同一信息只出现一次：MCP 下 `iterate` 只返回新的或有变化的候选，其余列在 `unchanged_candidates`；`rank` 不再重复完整证据和发现路径，保存的排序和 Explorer 里仍有。`rank` 前可用 `candidates --scope all` 或 `inspect` 看未进 shortlist 的证据。细节见 [`docs/search-internals.md`](docs/search-internals.md)。
+Agent 按 [`skills/muse-shroom`](skills/muse-shroom/SKILL.md) 执行，问一次会经过这些步骤。
 
-### 职责边界
+1. Agent 把你的话整理成问题概念和机制，发起搜索。
+2. 程序发出十二条查询，回收七十余个候选，取回 README 作为证据，交出十二条待评估。⌈快搜⌋ 到此为止。
+3. ⌈深搜⌋ 时 Agent 读完每轮结果再决定下一步方向，最多三轮。
+4. Agent 按平常方式自己也搜一遍，把找到的仓库交回程序取证。
+5. 程序逐条核对引用是否与记录下来的 README 原文一致，通过的进入最终清单，顺序由 Agent 给出。
 
-- **GitHub 内核**：查询、去重、缓存、README 与元数据、关系扩散、证据记录、预算。
-- **Boundary 分析**：机制、相关性、新颖性、覆盖等信号；不决定最终顺序或语义结论。
-- **宿主 Agent**：理解目标、提出方向、选择候选、安排展示顺序、解释跨域迁移。
+## 已经展示过的仓库
 
-## 仓库内容
+排序过的仓库会被记录下来。同一需求再次搜索时，结果以新项目为主，此前给出过的只在清单末尾列出链接，不再重复推荐。需要一并查看时，告诉 Agent「包括以前看过的」。记录保存在数据目录中，宿主配置里设置 `MUSE_SHROOM_DATA_DIR` 即可换一份新的记录。
 
-这个仓库就是产品本身：`src/muse_shroom` 是包，[`skills/muse-shroom`](skills/muse-shroom/SKILL.md) 是宿主 Agent 用的 Skill，`examples/` 是可直接运行的请求样例，[`docs/search-internals.md`](docs/search-internals.md) 是实现细节。
+## 浏览结果（可选）
 
-测试套件和 A/B / Boundary 评测 harness 留在维护者本机，不随仓库发布。
+```console
+muse-shroom explorer
+```
+
+默认地址 `http://127.0.0.1:8765/`，只监听本机。允许其他机器访问需要加 `--allow-remote`，该模式没有认证。`rank` 完成后会在后台启动 Explorer 并返回地址，不会自动打开浏览器，`--no-explore` 可以关闭。
 
 ## 范围
 
-没有远程 MCP 服务、独立模型 API、云端 UI、账号或自动安装。`skills/muse-shroom` 可单独复制到支持 Skills 的宿主。
+内部实现见 [`docs/search-internals.md`](docs/search-internals.md)。[`skills/muse-shroom`](skills/muse-shroom/SKILL.md) 可以单独复制到其他支持 Skills 的宿主。
+
+## 许可
+
+[MIT LICENSE](LICENSE)。
