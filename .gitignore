@@ -4,9 +4,3 @@ build/
 dist/
 *.egg-info/
 .pytest_cache/
-# The test suite and the evaluation harness stay on the maintainer's machine.
-tests/
-evaluation/
-blackbox-*/
-chat*.md
-muse-shroom-v0.4.7-three-run-raw-data.json
