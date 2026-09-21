@@ -110,7 +110,7 @@ def plan_confirmation_candidates(boundary: dict[str, Any],
                                  *, limit: int = 2,
                                  attempt_budget: int | None = None
                                  ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Order, deduplicate, and budget candidates without consulting Golden data."""
+    """Order, deduplicate, and budget candidates from this run's own records alone."""
     existing = list(existing_records)
     completed = {
         normalize(str(item.get("candidate") or ""))
