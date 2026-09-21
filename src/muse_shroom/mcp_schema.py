@@ -129,7 +129,24 @@ SEARCH_REQUEST_SCHEMA: dict[str, Any] = {
             "artifact_types": ["application"],
             "exclusions": ["awesome list", "course"],
             "exploration_level": 0.6,
-        }
+        },
+        {
+            "request": "Find tools that keep a local photo library searchable without a cloud service.",
+            "problem_concepts": [
+                {"term": "photo library", "aliases": ["image library"], "weight": 1.0}
+            ],
+            "mechanisms": [
+                {"term": "semantic image search", "aliases": ["clip embedding"], "weight": 0.8},
+                {"term": "face clustering", "weight": 0.6},
+            ],
+            "exploration_directions": [
+                {"term": "on-device indexing", "weight": 0.5}
+            ],
+            "artifact_types": ["application"],
+            "constraints": {"include_archived": False},
+            "exclusions": ["awesome list", "dataset"],
+            "exploration_level": 0.35,
+        },
     ],
 }
 

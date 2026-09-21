@@ -46,8 +46,9 @@ def _github_hit_term(terms: list[str]) -> str:
     Switch from the primary to the first non-CJK alias only when the primary is a
     long CJK phrase (CJK character count > 8). Contract examples such as 正文配图 /
     文章配图 / 专注管理 / 自控训练 are four characters and must keep matching GitHub
-    text; the observed need-08 failure is a twelve-character CJK sentence. Eight is
-    twice the contract examples and still blocks that failure shape.
+    text. What fails is a whole request sentence handed over as one term, twelve
+    characters or more. Eight is twice the contract examples and still blocks that
+    shape.
     """
     if not terms:
         return ""
