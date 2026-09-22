@@ -12,6 +12,19 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Muse-shroom contributors" }]
 dependencies = ["keyring>=25,<26"]
+keywords = ["github", "discovery", "search", "mcp", "agent", "skill"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/Shxiao101/Muse-shroom"
+Issues = "https://github.com/Shxiao101/Muse-shroom/issues"
+Changelog = "https://github.com/Shxiao101/Muse-shroom/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 mcp = ["mcp>=2.0.0,<3"]
