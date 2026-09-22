@@ -13,6 +13,7 @@ from .models import (
     DEFAULT_QUERIES_PER_ITERATION,
     DEFAULT_README_ENRICH_PER_ITERATION,
     DEFAULT_SESSION_QUERY_BUDGET,
+    HARD_STOP_REASONS,
     HOST_HYPOTHESIS_EVIDENCE,
     Concept,
     SearchHypothesis,
@@ -69,6 +70,26 @@ def meaningful_gain(delta: dict[str, Any] | None,
         return names
 
     return bool(origin_names(current_origins) - origin_names(previous_origins))
+
+
+def blocked_iteration_reason(*, mode: str | None, remaining: dict[str, Any],
+                             stop_reason: str | None) -> str | None:
+    """Why this session may not iterate again, or None when it may.
+
+    `observe` answers this as `can_iterate`. The iterate entry point has to ask the
+    same question: it used to look only at the counters and at this call's own
+    decision, so a quick session — which can never iterate — and a session that had
+    already stopped both ran another iteration for a caller who went ahead anyway.
+    """
+    if str(mode or "") != "deep":
+        return "not_deep_mode"
+    if stop_reason in HARD_STOP_REASONS:
+        return str(stop_reason)
+    if int(remaining.get("iterations") or 0) <= 0:
+        return "max_iterations"
+    if int(remaining.get("queries") or 0) <= 0:
+        return "query_budget_exhausted"
+    return None
 
 
 def hard_stop_reason(*, iteration: int, queries_used: int, max_iterations: int,

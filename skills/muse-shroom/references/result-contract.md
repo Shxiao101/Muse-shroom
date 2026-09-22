@@ -54,6 +54,13 @@ but they never count toward `new_mechanisms`, `newly_presented_mechanisms`, or
 `boundary.recalled_mechanisms`; `boundary_summary.host_supplied_count` reports how many
 were accepted. Disclose the source when presenting them.
 
+A candidate whose README request failed carries `readme_failed` and no `readme`: the
+request did not answer, so it may be asked again. `incomplete_phase` is
+`enrichment_partial_failure` when that happened in this phase. Such a candidate has no
+verifiable evidence yet; naming it in `muse_supply` fetches it again, and
+`readme_recorded` says whether that worked. A repository that simply has no README
+carries an empty `readme` instead and is not retried.
+
 `muse_supply` rejects a name it cannot fetch with `not_found`, `not_public` or
 `excluded_by_constraints`. A `not_found` entry carries `did_you_mean`, up to three
 repositories whose name matches, when a lookup found any: a drafted owner is often a
