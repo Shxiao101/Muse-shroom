@@ -85,7 +85,7 @@ At the first iteration of a deep search, record a decision about the cross-domai
 
 Call `muse_iterate({search_id, hypothesis})` with the object above as `hypothesis`, never its fields at the top level (CLI: `muse-shroom iterate --search-id ID --refinement HYPOTHESIS`).
 
-If the user later says “还有吗”, “再找一些”, or “换点不同的”, reuse this `search_id`: first call `muse_observe` (CLI: `muse-shroom observe --search-id ID`; read-only, no GitHub calls). `next_action=done` means do not continue on your own. If the user asked for more and `can_iterate` is true, iterate the same session; otherwise explain that the budget or a hard stop is exhausted. Start a new search only when the need itself changed.
+If the user later says “还有吗”, “再找一些”, or “换点不同的”, first call `muse_observe` on this `search_id` (CLI: `muse-shroom observe --search-id ID`; read-only, no GitHub calls). When `can_iterate` is true, iterate the same session: it is the cheapest way further. Otherwise — the session is ranked, its budget is spent, or a hard stop ended it — call `muse_search` again with the same request. Muse-shroom opens a fresh session and gives the shortlist places to repositories this user has not been shown, marking the rest `previously_presented` (§8). A quick-mode session can never iterate, so this is the ordinary path after a quick search. Say there is nothing more only when that search comes back with nothing new. Do none of this unasked: `next_action=done` means the default flow has finished, and a second search spends a full round of queries.
 
 ## 7. Host recall
 
