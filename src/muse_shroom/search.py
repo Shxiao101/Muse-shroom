@@ -16,8 +16,8 @@ from .github import (
     GitHubNotFoundError, describe_error,
 )
 from .iteration import (
-    apply_hypothesis_to_request, build_observation, default_session_state,
-    evidence_anchors,
+    apply_hypothesis_to_request, blocked_iteration_reason, build_observation,
+    default_session_state, evidence_anchors,
     hard_stop_reason, iteration_stop_reasons, meaningful_gain, merge_unique,
     remaining_budget, validate_hypothesis_evidence,
 )
@@ -865,12 +865,21 @@ class SearchEngine:
             fetched = []
         for candidate, result in fetched:
             if result == "error":
+                # A request that failed is not a repository without a README. Writing
+                # an empty one here recorded the failure as an answer: `missing` looks
+                # for the key, so the candidate was never asked about again, and it
+                # carried no verifiable evidence for the rest of the session while
+                # every later call reported success.
                 failed = True
-                result = None
+                candidate["readme_failed"] = True
+                continue
+            candidate.pop("readme_failed", None)
             if result is not None:
                 stale = stale or result.stale
                 cached_at = cached_at or result.cached_at
             self._apply_readme(candidate, result, request)
+        # The count is what the fetches cost, failures included; the ledger budgets
+        # calls, not results.
         return stale, cached_at, failed, len(pending)
 
     def _enrich_releases(self, selected: list[dict[str, Any]]) -> tuple[bool, str | None, bool]:
@@ -1450,12 +1459,9 @@ class SearchEngine:
             consecutive_no_gain=int(state.get("consecutive_no_gain") or 0),
         )
         mode = str(session.get("mode") or "quick")
-        can_iterate = (
-            mode == "deep"
-            and remaining["iterations"] > 0
-            and remaining["queries"] > 0
-            and not hard
-        )
+        can_iterate = blocked_iteration_reason(
+            mode=mode, remaining=remaining, stop_reason=stop_reason,
+        ) is None
         if self.store.get_ranking(search_id):
             next_action = "done"
         elif mode != "deep":
@@ -1506,6 +1512,13 @@ class SearchEngine:
             max_iterations=self.max_iterations,
             session_query_budget=self.session_query_budget,
             decision=hypothesis.decision,
+        )
+        # Whatever observe reports as `can_iterate` has to hold here too. A decision
+        # to stop is answered above first, so recording the end of a session still
+        # works in a mode that may not iterate.
+        hard = hard or blocked_iteration_reason(
+            mode=session.get("mode"), remaining=remaining,
+            stop_reason=state.get("stop_reason"),
         )
         if hard:
             event = "stop" if hypothesis.decision == "stop" else "refuse"
