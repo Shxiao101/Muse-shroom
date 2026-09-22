@@ -904,10 +904,12 @@ class SearchEngine:
         else:
             fetched = []
         for candidate, result in fetched:
-            candidate["release_checked"] = True
             if result == "error":
+                # Not "this repository has no release" -- nobody got an answer. Leaving
+                # it unchecked is what lets the next round ask again.
                 failed = True
-                result = None
+                continue
+            candidate["release_checked"] = True
             if result is None:
                 continue
             stale = stale or result.stale
@@ -1380,6 +1382,11 @@ class SearchEngine:
             *(candidates[key]["full_name"] for key in accepted if key not in known),
         ]
         self.store.save_session_state(search_id, state)
+        incomplete = session.get("incomplete_phase") or (
+            "enrichment_partial_failure" if enrich_failed else None
+        )
+        if stale != bool(session["stale"]) or incomplete != session.get("incomplete_phase"):
+            self.store.mark_search(search_id, stale=stale, incomplete_phase=incomplete)
         observed = self.observe(search_id)
         return {
             "schema_version": 2,
@@ -1391,7 +1398,7 @@ class SearchEngine:
             "rejected": rejected,
             "host_supplied_count": len(state["host_supplied"]),
             "stale": stale,
-            "incomplete_phase": "enrichment_partial_failure" if enrich_failed else None,
+            "incomplete_phase": incomplete,
             "next_action": observed["next_action"],
             "can_iterate": observed["can_iterate"],
         }
@@ -1953,6 +1960,8 @@ class SearchEngine:
             for candidate in targets:
                 try:
                     result = self.github.readme(candidate["full_name"])
+                    stale = stale or result.stale
+                    cached_at = cached_at or result.cached_at
                     self._apply_readme(candidate, result, request)
                     metrics["semantic_readme_enrichments"] = int(
                         metrics.get("semantic_readme_enrichments") or 0
@@ -2037,6 +2046,11 @@ class SearchEngine:
         state["semantic_sidecar"] = sidecar
         if stale:
             output["stale"] = True
+            # The session is what observe and rank read afterwards; saying it here
+            # only meant the next call reported fresh evidence.
+            self.store.mark_search(
+                search_id, stale=True, incomplete_phase=output.get("incomplete_phase"),
+            )
         if cached_at and not output.get("cache_time"):
             output["cache_time"] = cached_at
         self._attach_sidecar_observation(output, state)

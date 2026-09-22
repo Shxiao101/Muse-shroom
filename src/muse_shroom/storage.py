@@ -12,6 +12,11 @@ from .boundary import boundary_delta
 from .iteration import default_session_state
 
 
+# A session carries this until it finishes. `find_complete_search` looks for the
+# absence of a phase, so a row that is still NULL reads as a completed search.
+IN_PROGRESS = "in_progress"
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -143,12 +148,19 @@ class Store:
         self.db.execute(
             """INSERT INTO searches
                (id, request_json, mode, created_at, updated_at, stale, incomplete_phase, fingerprint)
-               VALUES (?, ?, ?, ?, ?, 0, NULL, ?)""",
-            (search_id, json.dumps(request, ensure_ascii=False), mode, now, now, fingerprint),
+               VALUES (?, ?, ?, ?, ?, 0, ?, ?)""",
+            (search_id, json.dumps(request, ensure_ascii=False), mode, now, now,
+             IN_PROGRESS, fingerprint),
         )
         self.db.commit()
 
     def find_complete_search(self, fingerprint: str, mode: str) -> str | None:
+        """The newest finished session for this request, or None.
+
+        Only a session that reached the end clears `incomplete_phase`, so one that
+        was interrupted -- a dropped connection, a rejected credential, a crash --
+        is never handed back as a finished search.
+        """
         row = self.db.execute(
             """SELECT id FROM searches
                WHERE fingerprint=? AND mode=? AND incomplete_phase IS NULL
