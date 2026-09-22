@@ -14,6 +14,7 @@ from .boundary_score import (
 )
 from .models import Concept, SearchRequest, repo_key
 from .queries import indexed_groups, is_generic_term
+from .text import contains_normalized, normalize
 
 
 QUERY_WEIGHTS = {
@@ -642,22 +643,24 @@ def uncovered_core_terms(selected: Iterable[dict[str, Any]], request: SearchRequ
 
 def _contains_blocked_term(surfaces: Iterable[str], terms: Iterable[str], *,
                            contiguous: bool = True) -> bool:
-    haystack = " ".join(str(value).casefold() for value in surfaces)
-    phrase_tokens = re.compile(r"[A-Za-z0-9_+#]+|[\u3400-\u9fff]+")
-    haystack_tokens = phrase_tokens.findall(haystack)
-    normalized_haystack = " ".join(haystack_tokens)
-    token_set = set(haystack_tokens)
+    """Whether a blocked term appears in these surfaces as a whole word or phrase.
+
+    This used to be a plain substring test, which turned every exclusion into a
+    trap: excluding `course` also threw away discourse/discourse, and anything
+    else whose name merely contains those letters. `contains_normalized` requires
+    word boundaries for Latin text and still matches a CJK term inside a longer
+    run, which has no separators to stand on.
+    """
+    haystack = normalize(" ".join(str(value) for value in surfaces))
+    token_set = set(haystack.split())
     for value in terms:
-        term = str(value).casefold().strip()
+        term = normalize(str(value))
         if not term:
             continue
-        normalized_term = " ".join(phrase_tokens.findall(term))
-        if term in haystack or normalized_term and normalized_term in normalized_haystack:
+        if contains_normalized(haystack, term):
             return True
-        if not contiguous:
-            term_tokens = phrase_tokens.findall(term)
-            if term_tokens and all(token in token_set for token in term_tokens):
-                return True
+        if not contiguous and all(token in token_set for token in term.split()):
+            return True
     return False
 
 
