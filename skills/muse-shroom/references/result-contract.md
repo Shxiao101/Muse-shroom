@@ -64,7 +64,9 @@ iteration left stays until the next iteration. A repository that simply has no R
 carries an empty `readme` instead and is not retried.
 
 `muse_supply` rejects a name it cannot fetch with `not_found`, `not_public` or
-`excluded_by_constraints`. A `not_found` entry carries `did_you_mean`, up to three
+`excluded_by_constraints`. A name an earlier call accepted before its README could be
+read, and now rejected by that README, leaves the session and `host_supplied_count`
+drops. A `not_found` entry carries `did_you_mean`, up to three
 repositories whose name matches, when a lookup found any: a drafted owner is often a
 guess. Supply the corrected name once. At most three names are looked up per call.
 
