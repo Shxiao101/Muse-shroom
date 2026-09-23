@@ -469,9 +469,11 @@ class ExplorerReadModel:
         store = self._store()
         try:
             session = store.load_search(search_id)
-            request = _parse_request(session["request"])
             snapshots = store.boundary_snapshots(search_id)
             snapshot = _snapshot_at(snapshots, at)
+            # The request this stage actually ran with. Without it a view of an
+            # earlier round showed directions that were added after it.
+            request = _parse_request((snapshot or {}).get("request") or session["request"])
             ranking = store.get_ranking(search_id)
             boundary = (snapshot or {}).get("boundary") or {}
             delta = (snapshot or {}).get("boundary_delta") or {}

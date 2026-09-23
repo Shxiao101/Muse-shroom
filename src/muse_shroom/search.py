@@ -2318,6 +2318,10 @@ class SearchEngine:
                 "assessment_repos": [str(item.get("full_name")) for item in selected],
                 "pool_repos": [str(item.get("full_name")) for item in candidates.values()],
             },
+            # The request as it stood at this stage. Every iteration rewrites the
+            # session's copy, so a later view of this moment drew the directions and
+            # the graph from a request this round never had.
+            request=request.to_dict(),
         )
         budget = remaining or remaining_budget(
             iteration=iteration,
