@@ -58,7 +58,9 @@ A candidate whose README request failed carries `readme_failed` and no `readme`:
 request did not answer, so it may be asked again. `incomplete_phase` is
 `enrichment_partial_failure` when that happened in this phase. Such a candidate has no
 verifiable evidence yet; naming it in `muse_supply` fetches it again, and
-`readme_recorded` says whether that worked. A repository that simply has no README
+`readme_recorded` says whether that worked. Once every supplied README is recorded,
+`incomplete_phase` stops reporting the failure supply caused; a failure the search or an
+iteration left stays until the next iteration. A repository that simply has no README
 carries an empty `readme` instead and is not retried.
 
 `muse_supply` rejects a name it cannot fetch with `not_found`, `not_public` or

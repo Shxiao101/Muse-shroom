@@ -969,21 +969,32 @@ class SearchEngine:
 
     def _expand_relations(self, search_id: str, candidates: dict[str, dict[str, Any]],
                           request: SearchRequest, seed_names: list[str] | None = None,
-                          *, iteration: int = 0) -> tuple[bool, str | None, int, bool]:
+                          *, iteration: int = 0, call_limit: int, query_limit: int,
+                          ) -> tuple[bool, str | None, int, bool, list[dict[str, Any]]]:
+        """Follow links, reverse references, forks and owners from a few seeds.
+
+        `call_limit` is the relationship allowance. A reverse README search is also a
+        search query, counted in the session's query total like any other, so it
+        waits for `query_limit` as well; it used to watch the call allowance alone.
+        Returns stale, cache time, calls made, whether any failed, and the reverse
+        searches held back.
+        """
         stale = False
         cached_at = None
         calls = 0
         failed = False
+        searches = 0
+        held: list[dict[str, Any]] = []
         if seed_names:
             seeds = [candidates[name.lower()] for name in seed_names if name.lower() in candidates][:8]
         else:
             seeds = sorted(candidates.values(), key=lambda item: item.get("stargazers_count", 0), reverse=True)[:5]
         for seed in seeds:
-            if calls >= self.relation_budget:
+            if calls >= call_limit:
                 break
             full_name = seed["full_name"]
             for linked in seed.get("readme_links", [])[:8]:
-                if calls >= self.relation_budget:
+                if calls >= call_limit:
                     break
                 try:
                     calls += 1
@@ -1000,29 +1011,45 @@ class SearchEngine:
                     raise
                 except GitHubError:
                     failed = True
-            if calls < self.relation_budget:
+            if calls < call_limit:
                 query = reverse_reference_query(full_name, request)
-                try:
-                    calls += 1
-                    result = self.github.search_repositories(query, per_page=self.search_page_size)
-                    stale = stale or result.stale
-                    cached_at = cached_at or result.cached_at
-                    items = self._items(result)
-                    self.store.add_query(search_id, query, "reverse_readme", len(items))
+                if searches >= query_limit:
                     self.store.add_query_history(
-                        search_id, query, "reverse_readme", len(items),
-                        iteration=iteration, fingerprint=query_fingerprint(query), skipped=False,
+                        search_id, query, "reverse_readme", 0, iteration=iteration,
+                        fingerprint=query_fingerprint(query), skipped=True,
+                        skip_reason="query_budget_exhausted",
                     )
-                    for item in items:
-                        self._add_related(
-                            candidates, item, full_name, "reverse_readme", query, request,
-                            iteration=iteration,
+                    held.append({
+                        "query": query, "kind": "reverse_readme",
+                        "fingerprint": query_fingerprint(query),
+                        "skip_reason": "query_budget_exhausted",
+                    })
+                else:
+                    try:
+                        calls += 1
+                        searches += 1
+                        result = self.github.search_repositories(
+                            query, per_page=self.search_page_size,
                         )
-                except GitHubAuthenticationError:
-                    raise
-                except GitHubError:
-                    failed = True
-            if calls < self.relation_budget:
+                        stale = stale or result.stale
+                        cached_at = cached_at or result.cached_at
+                        items = self._items(result)
+                        self.store.add_query(search_id, query, "reverse_readme", len(items))
+                        self.store.add_query_history(
+                            search_id, query, "reverse_readme", len(items),
+                            iteration=iteration, fingerprint=query_fingerprint(query),
+                            skipped=False,
+                        )
+                        for item in items:
+                            self._add_related(
+                                candidates, item, full_name, "reverse_readme", query, request,
+                                iteration=iteration,
+                            )
+                    except GitHubAuthenticationError:
+                        raise
+                    except GitHubError:
+                        failed = True
+            if calls < call_limit:
                 try:
                     calls += 1
                     result = self.github.forks(full_name, per_page=5)
@@ -1037,7 +1064,7 @@ class SearchEngine:
                     raise
                 except GitHubError:
                     failed = True
-            if calls < self.relation_budget:
+            if calls < call_limit:
                 try:
                     owner = full_name.split("/", 1)[0]
                     calls += 1
@@ -1053,7 +1080,7 @@ class SearchEngine:
                     raise
                 except GitHubError:
                     failed = True
-        return stale, cached_at, calls, failed
+        return stale, cached_at, calls, failed, held
 
     @staticmethod
     def _query_summary(executed: list[dict[str, Any]], skipped: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1363,9 +1390,9 @@ class SearchEngine:
             )
             accepted.append(repo_key(repo))
         accepted = list(dict.fromkeys(accepted))
-        enrich_failed = False
         if accepted:
-            enrich_stale, _cached_at, enrich_failed, _count = self._enrich(
+            # A failed README is marked on the candidate, which is what is read below.
+            enrich_stale, _cached_at, _failed, _count = self._enrich(
                 candidates, request, targets=accepted,
             )
             stale = stale or enrich_stale
@@ -1398,9 +1425,24 @@ class SearchEngine:
             *previous,
             *(candidates[key]["full_name"] for key in accepted if key not in known),
         ]
+        # Supply may clear the failure it reported, and nothing else. Keeping whatever
+        # the session already said made one failed README permanent: the same name
+        # supplied again was fetched and recorded, and the session still reported
+        # the enrichment as failed. What the last search or round left is kept aside
+        # the first time supply changes it, until another round replaces it.
+        since = state.get("supply_incomplete") or {}
+        phase_incomplete = (
+            since.get("phase") if since.get("iteration") == iteration
+            else session.get("incomplete_phase")
+        )
+        unrecorded = any(
+            (candidates.get(str(name).lower()) or {}).get("readme_failed")
+            for name in state["host_supplied"]
+        )
+        state["supply_incomplete"] = {"iteration": iteration, "phase": phase_incomplete}
         self.store.save_session_state(search_id, state)
-        incomplete = session.get("incomplete_phase") or (
-            "enrichment_partial_failure" if enrich_failed else None
+        incomplete = phase_incomplete or (
+            "enrichment_partial_failure" if unrecorded else None
         )
         if stale != bool(session["stale"]) or incomplete != session.get("incomplete_phase"):
             self.store.mark_search(search_id, stale=stale, incomplete_phase=incomplete)
@@ -1420,27 +1462,30 @@ class SearchEngine:
             "can_iterate": observed["can_iterate"],
         }
 
-    def _session_budget(self, search_id: str, state: dict[str, Any]) -> dict[str, Any]:
-        """What this session has left, by the limits it was created with.
+    def _session_limits(self, state: dict[str, Any]) -> dict[str, int]:
+        """The limits this session was created with; this engine's apply only if unsaved.
 
         observe read the saved limits and the iterate entry point read this
         process's own, so a session restored by a differently configured engine was
-        told it could not continue and then continued anyway when asked.
+        told it could not continue and then continued anyway when asked. The end of
+        a round did the same, and closed a session that had rounds left.
         """
-        def saved(name: str, fallback: int) -> int:
-            return int(state[name]) if name in state else fallback
+        own = {
+            "max_iterations": self.max_iterations,
+            "queries_per_iteration": self.queries_per_iteration,
+            "session_query_budget": self.session_query_budget,
+            "readme_enrich_per_iteration": self.readme_enrich_per_iteration,
+            "relation_budget": self.relation_budget,
+        }
+        return {name: int(state[name]) if name in state else value for name, value in own.items()}
 
+    def _session_budget(self, search_id: str, state: dict[str, Any]) -> dict[str, Any]:
+        """What this session has left, by the limits it was created with."""
         return remaining_budget(
             iteration=int(state.get("iteration") or 0),
             queries_used=self.store.normal_query_count(search_id),
             relation_calls_used=int(state.get("relation_calls_used") or 0),
-            max_iterations=saved("max_iterations", self.max_iterations),
-            queries_per_iteration=saved("queries_per_iteration", self.queries_per_iteration),
-            session_query_budget=saved("session_query_budget", self.session_query_budget),
-            readme_enrich_per_iteration=saved(
-                "readme_enrich_per_iteration", self.readme_enrich_per_iteration,
-            ),
-            relation_budget=saved("relation_budget", self.relation_budget),
+            **self._session_limits(state),
         )
 
     def observe(self, search_id: str) -> dict[str, Any]:
@@ -1525,14 +1570,13 @@ class SearchEngine:
         previous_boundary = previous_snapshot.get("boundary") or {}
         previous_origins = previous_boundary.get("mechanism_origins") or {}
         queries_used = self.store.normal_query_count(search_id)
+        limits = self._session_limits(state)
         remaining = self._session_budget(search_id, state)
         self._pool_cap = self._limit_for(session.get("mode"), state)
         hard = hard_stop_reason(
             iteration=state["iteration"], queries_used=queries_used,
-            max_iterations=int(state.get("max_iterations") or self.max_iterations),
-            session_query_budget=int(
-                state.get("session_query_budget") or self.session_query_budget
-            ),
+            max_iterations=limits["max_iterations"],
+            session_query_budget=limits["session_query_budget"],
             decision=hypothesis.decision,
         )
         # Whatever observe reports as `can_iterate` has to hold here too. A decision
@@ -1674,7 +1718,9 @@ class SearchEngine:
                     raise
                 except GitHubError:
                     code_failed = True
-        readme_budget = self.enrich_limit if stage == "expand" else self.readme_enrich_per_iteration
+        readme_budget = (
+            self.enrich_limit if stage == "expand" else remaining["readme_enrich_this_round"]
+        )
         s, cache_time, first_enrich_failed, first_enriched = self._enrich(
             candidates, request, limit=readme_budget,
         )
@@ -1683,16 +1729,17 @@ class SearchEngine:
         relation_failed = False
         want_relations = any(name in strategies for name in ("relationship", "seed", "owner"))
         if want_relations and remaining["relation_calls"]:
-            original_budget = self.relation_budget
-            if stage == "iterate":
-                self.relation_budget = remaining["relation_calls"]
-            try:
-                s, cache_time, calls, relation_failed = self._expand_relations(
-                    search_id, candidates, request,
-                    hypothesis.seeds or None, iteration=iteration,
-                )
-            finally:
-                self.relation_budget = original_budget
+            s, cache_time, calls, relation_failed, relation_skipped = self._expand_relations(
+                search_id, candidates, request,
+                hypothesis.seeds or None, iteration=iteration,
+                call_limit=(
+                    remaining["relation_calls"] if stage == "iterate"
+                    else limits["relation_budget"]
+                ),
+                # Whatever keyword and code search left of this round's queries.
+                query_limit=max(0, query_limit - len(executed) - code_calls),
+            )
+            skipped.extend(relation_skipped)
             stale, cached_at = stale or s, cached_at or cache_time
         leftover = max(0, readme_budget - first_enriched)
         second_enrich_failed = False
@@ -1750,7 +1797,7 @@ class SearchEngine:
         state["confirmation_records"] = all_confirmation_records
         state["confirmed_directions"] = confirmed_directions
         self.store.update_search_request(search_id, request.to_dict())
-        if calls >= self.relation_budget:
+        if calls >= limits["relation_budget"]:
             incomplete = "relationship_budget_reached"
         elif recall_failed or code_failed:
             incomplete = "refinement_partial_failure"
@@ -1767,16 +1814,7 @@ class SearchEngine:
         state["exploration_additions"] = additions
         state["confirmed_directions"] = confirmed_directions
         state["relation_calls_used"] = int(state.get("relation_calls_used") or 0) + calls
-        after_remaining = remaining_budget(
-            iteration=iteration,
-            queries_used=self.store.normal_query_count(search_id),
-            relation_calls_used=state["relation_calls_used"],
-            max_iterations=self.max_iterations,
-            queries_per_iteration=self.queries_per_iteration,
-            session_query_budget=self.session_query_budget,
-            readme_enrich_per_iteration=self.readme_enrich_per_iteration,
-            relation_budget=self.relation_budget,
-        )
+        after_remaining = self._session_budget(search_id, state)
         output = self._finish(
             search_id, candidates, request, stale, cached_at, incomplete,
             enriched_count=first_enriched + second_enriched + confirmation_enriched,
@@ -1871,6 +1909,19 @@ class SearchEngine:
     ) -> dict[str, Any]:
         sidecar = state.setdefault("semantic_sidecar", empty_sidecar_state())
         metrics = sidecar.setdefault("metrics", {})
+        negatives = list(negatives)
+        rejected = list(rejected)
+
+        def allowed(item: dict[str, Any]) -> bool:
+            return candidate_allowed(
+                item, request, include_readme="readme" in item,
+                negative_terms=negatives, rejected_terms=rejected,
+            )
+
+        # rank selects from this list, not from the reply. Filtering only the reply
+        # left an excluded repository inspectable and rankable, and a direction
+        # rejected in a later round left what the sidecar had found under it.
+        sidecar["candidates"] = [item for item in sidecar.get("candidates") or [] if allowed(item)]
         stage = str((output.get("observation") or {}).get("stage") or "")
         if not stage:
             stage = str(
@@ -2013,13 +2064,7 @@ class SearchEngine:
                 )
             # Recall applies this after enrichment; the sidecar reached the session
             # without it, so an excluded repository arrived by the other door.
-            recalled = [
-                item for item in recalled
-                if candidate_allowed(
-                    item, request, include_readme="readme" in item,
-                    negative_terms=negatives, rejected_terms=rejected,
-                )
-            ]
+            recalled = [item for item in recalled if allowed(item)]
             for candidate in recalled:
                 if not apply_semantic_mechanism(
                     candidate, record["term"], record["id"], record.get("aliases") or (),
@@ -2064,7 +2109,16 @@ class SearchEngine:
                     and metrics.get("semantic_release_lookups", 0) < SEMANTIC_RELEASE_LIMIT
                 ):
                     try:
-                        self._enrich_releases([candidate])
+                        # What the lookup says about itself counts like any other
+                        # evidence; it used to be dropped here, so a release read
+                        # from an old cache left the session reporting fresh.
+                        release_stale, release_cache, release_failed = self._enrich_releases(
+                            [candidate],
+                        )
+                        stale = stale or release_stale
+                        cached_at = cached_at or release_cache
+                        if release_failed:
+                            record["incomplete"] = True
                         metrics["semantic_release_lookups"] = int(
                             metrics.get("semantic_release_lookups") or 0
                         ) + 1
@@ -2080,7 +2134,9 @@ class SearchEngine:
         )
         refresh_statuses(new_records)
         sidecar["hypotheses"] = records + new_records
-        sidecar["candidates"] = list(sink.values())[:SEMANTIC_CANDIDATE_CAP]
+        sidecar["candidates"] = [item for item in sink.values() if allowed(item)][
+            :SEMANTIC_CANDIDATE_CAP
+        ]
         metrics["semantic_candidate_count"] = len(sidecar["candidates"])
         metrics["base_semantic_overlap"] = sum(
             1 for item in sidecar["candidates"] if repo_key(item) in base_candidates
@@ -2388,16 +2444,7 @@ class SearchEngine:
             session.get("updated_at"), session.get("incomplete_phase"), coverage,
             boundary, snapshot.get("boundary_delta", {}),
         )
-        remaining = remaining_budget(
-            iteration=int(state.get("iteration") or 0),
-            queries_used=self.store.normal_query_count(search_id),
-            relation_calls_used=int(state.get("relation_calls_used") or 0),
-            max_iterations=self.max_iterations,
-            queries_per_iteration=self.queries_per_iteration,
-            session_query_budget=self.session_query_budget,
-            readme_enrich_per_iteration=self.readme_enrich_per_iteration,
-            relation_budget=self.relation_budget,
-        )
+        remaining = self._session_budget(search_id, state)
         output["iteration"] = int(state.get("iteration") or 0)
         output["observation"] = build_observation(
             iteration=output["iteration"], boundary=boundary,

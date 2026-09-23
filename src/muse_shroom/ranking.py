@@ -296,14 +296,18 @@ def rank_search(
         search_id, ("search", "expand", "iterate")
     ) or {}
     boundary = deepcopy(previous_snapshot.get("boundary") or {})
-    # What this session has already shown the user, which is its earlier ranked
-    # lists -- not the shortlist it was handed to assess. Reading the shortlist here
-    # meant the first genuine selection of a mechanism introduced nothing, and an
-    # empty selection still reported mechanisms as presented.
-    presented_before = _unique_labels([
-        str(item.get("mechanism_label") or "")
-        for item in (store.get_ranking(search_id) or {}).get("items") or []
-    ])
+    # What this session has already shown the user, which is every list it ranked
+    # before -- not the shortlist it was handed to assess, and not the latest list
+    # alone. The shortlist made the first genuine selection introduce nothing; the
+    # latest list forgot the one before it, so A, B, A introduced A twice. Each
+    # final rank records its own selection, and a replaced ranking does not erase it.
+    presented_before = _unique_labels(
+        str(label)
+        for snapshot in store.boundary_snapshots(search_id) if snapshot["stage"] == "rank"
+        for label in (
+            (snapshot["boundary"].get("mechanism_origins") or {}).get("agent_selection") or []
+        )
+    )
     presented_keys = {value.casefold() for value in presented_before}
 
     items: list[dict[str, Any]] = []

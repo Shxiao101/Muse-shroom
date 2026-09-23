@@ -15,4 +15,4 @@ CLI, MCP, and Explorer implementation notes. Agent Skills should follow `skills/
 - `candidate_count` is the full recall pool size; `candidates` is the assessment shortlist and may omit recalled candidates. Before rank, the Agent can use `candidates --scope all` or `inspect` to assess an omitted candidate and obtain its evidence. `selection` is the Agent's ordered input; validated `items` and `display_order` preserve that order.
 - Probe stage: at most 2 repos per owner. Deep shortlist uses a boundary lane so one mechanism cannot fill the list.
 - Search JSON is capped at 30KB. Public evidence is at most 3 items per candidate; Release lives on `latest_release`.
-- Relationship expansion runs only when the hypothesis selects `relationship`, `seed`, or `owner`.
+- Relationship expansion runs only when the hypothesis selects `relationship`, `seed`, or `owner`. Its reverse README search is a search query and waits for room in the round's query allowance, after keyword and code search; a held-back one is recorded with `query_budget_exhausted`.

@@ -325,14 +325,17 @@ function atQuery() {
   return current.at && current.at !== "final" ? `?at=${encodeURIComponent(current.at)}` : "";
 }
 
+function sessionHref(searchId, view = "") {
+  // The stage lives in the route so it survives moving between the pages of one
+  // session. Links built by hand kept dropping it, so picking Initial and then
+  // Results, or going back to the overview, quietly showed the final state under a
+  // heading that said otherwise. `view` arrives already encoded.
+  return `#/s/${encodeURIComponent(searchId)}${view ? `/${view}` : ""}${atQuery()}`;
+}
+
 function sessionNav(searchId, active) {
-  // The stage lives in the route so it survives moving between these pages. These
-  // links used to drop it, so picking Initial and then Results quietly showed the
-  // final state under a heading that said otherwise.
-  const at = atQuery();
   const item = (view, label) => {
-    const base = view === "overview" ? `#/s/${encodeURIComponent(searchId)}` : `#/s/${encodeURIComponent(searchId)}/${view}`;
-    const href = `${base}${at}`;
+    const href = sessionHref(searchId, view === "overview" ? "" : view);
     const isActive = active === view;
     return `<a class="navlink ${isActive ? "active" : ""}" href="${href}"${isActive ? ' aria-current="page"' : ""}>${esc(label)}</a>`;
   };
@@ -485,10 +488,10 @@ async function renderOverview(searchId) {
     </div>
     ${sessionNav(searchId, "overview")}
     <div class="jump">
-      <a class="jumpcard" href="#/s/${encodeURIComponent(searchId)}/results">
+      <a class="jumpcard" href="${sessionHref(searchId, "results")}">
         <strong>${esc(t("navResults"))}</strong><span class="num">${resultCount}</span>
       </a>
-      <a class="jumpcard" href="#/s/${encodeURIComponent(searchId)}/frontier">
+      <a class="jumpcard" href="${sessionHref(searchId, "frontier")}">
         <strong>${esc(t("navFrontier"))}</strong><span class="num">${unexploredCount}</span>
       </a>
     </div>
@@ -516,7 +519,7 @@ async function renderOverview(searchId) {
 /* ---- results ------------------------------------------------------------- */
 
 function resultCard(item, searchId) {
-  const href = `#/s/${encodeURIComponent(searchId)}/repo/${item.repo.split("/").map(encodeURIComponent).join("/")}`;
+  const href = sessionHref(searchId, `repo/${item.repo.split("/").map(encodeURIComponent).join("/")}`);
   const meta = [
     item.stars != null ? `${item.stars} ${t("stars")}` : "",
     item.language || "",
@@ -565,7 +568,7 @@ async function renderResults(searchId, role) {
   const result = await api(`/api/searches/${searchId}/result${atParam}`);
   current.result = result;
   const header = `
-    <p><a class="back" href="#/s/${encodeURIComponent(searchId)}">${esc(t("backToOverview"))}</a></p>
+    <p><a class="back" href="${sessionHref(searchId)}">${esc(t("backToOverview"))}</a></p>
     ${sessionNav(searchId, "results")}
     <h1>${esc(role ? roleName(role) : t("resultsTitle"))}</h1>`;
   // A historical snapshot never carries the final ranking: read_model returns
@@ -651,7 +654,7 @@ async function renderRepo(searchId, repo) {
     release || "",
   ].filter(Boolean);
   main.innerHTML = `
-    <p><a class="back" href="#/s/${encodeURIComponent(searchId)}/results">${esc(t("backToResults"))}</a></p>
+    <p><a class="back" href="${sessionHref(searchId, "results")}">${esc(t("backToResults"))}</a></p>
     <article class="repo">
       <header class="repo-head">
         <h1>${esc(detail.repo)}</h1>
@@ -701,7 +704,7 @@ async function renderFrontier(searchId) {
   const overview = boundary.overview || {};
   const unexplored = overview.unexplored || [];
   main.innerHTML = `
-    <p><a class="back" href="#/s/${encodeURIComponent(searchId)}">${esc(t("backToOverview"))}</a></p>
+    <p><a class="back" href="${sessionHref(searchId)}">${esc(t("backToOverview"))}</a></p>
     ${sessionNav(searchId, "frontier")}
     <h1>${esc(t("frontierTitle"))}</h1>
     <p class="sub">${esc(t("frontierSub"))}</p>
@@ -846,7 +849,7 @@ function drawGraph(boundary) {
     group.addEventListener("click", () => {
       const kind = group.getAttribute("data-kind");
       if (kind === "repository") {
-        location.hash = `#/s/${encodeURIComponent(current.searchId)}/repo/${group.getAttribute("data-label").split("/").map(encodeURIComponent).join("/")}`;
+        location.hash = sessionHref(current.searchId, `repo/${group.getAttribute("data-label").split("/").map(encodeURIComponent).join("/")}`);
       }
       if (kind === "mechanism") openMechanism(group.getAttribute("data-id"));
     });
