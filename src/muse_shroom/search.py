@@ -1402,6 +1402,7 @@ class SearchEngine:
         # The request's own constraints apply; the Agent's negative and rejected
         # directions do not, because naming this repository is the later decision.
         kept: list[str] = []
+        dropped: set[str] = set()
         for key in accepted:
             if candidate_allowed(candidates[key], request, include_readme=True):
                 kept.append(key)
@@ -1410,7 +1411,20 @@ class SearchEngine:
                     "repo": candidates[key]["full_name"], "reason": "excluded_by_constraints",
                 })
                 candidates.pop(key, None)
+                dropped.add(key)
         accepted = kept
+        if dropped:
+            # Refusing it in this call is not enough when an earlier one kept it: a
+            # README that failed then and arrived now left the stored candidate, its
+            # name in host_supplied and any sidecar copy, all still selectable, while
+            # the session reported nothing left to fetch.
+            self.store.drop_search_candidates(search_id, dropped)
+            previous = [name for name in previous if name.lower() not in dropped]
+            sidecar = state.get("semantic_sidecar") or {}
+            if sidecar.get("candidates"):
+                sidecar["candidates"] = [
+                    item for item in sidecar["candidates"] if repo_key(item) not in dropped
+                ]
         concept_terms = self._concept_terms(request)
         for key in accepted:
             candidate = candidates[key]

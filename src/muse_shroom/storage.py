@@ -6,7 +6,7 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .boundary import boundary_delta
 from .iteration import default_session_state
@@ -337,6 +337,15 @@ class Store:
             (full_name, now, int(candidate.get("stargazers_count", 0))),
         )
         self.db.commit()
+
+    def drop_search_candidates(self, search_id: str, full_names: Iterable[str]) -> None:
+        """Remove these candidates from one session; the repository cache is untouched."""
+        rows = [(search_id, str(name).lower()) for name in full_names]
+        if rows:
+            self.db.executemany(
+                "DELETE FROM search_candidates WHERE search_id=? AND full_name=?", rows,
+            )
+            self.db.commit()
 
     def retain_search_candidates(self, search_id: str, full_names: list[str]) -> None:
         names = [name.lower() for name in full_names]
