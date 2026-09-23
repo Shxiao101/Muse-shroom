@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import base64
+import http.client
 import json
 import re
 import time
@@ -150,7 +151,8 @@ class GitHubClient:
                 if exc.code == 422:
                     raise GitHubError("GitHub rejected the generated query (422)") from exc
                 raise GitHubError(f"GitHub API request failed ({exc.code})") from exc
-            except (urllib.error.URLError, TimeoutError) as exc:
+            except (urllib.error.URLError, TimeoutError,
+                    http.client.HTTPException, ConnectionError) as exc:
                 if remaining_retries > 0:
                     remaining_retries -= 1
                     with self._metrics_lock:
