@@ -296,7 +296,14 @@ def rank_search(
         search_id, ("search", "expand", "iterate")
     ) or {}
     boundary = deepcopy(previous_snapshot.get("boundary") or {})
-    presented_before = _unique_labels(boundary.get("presented_mechanisms") or [])
+    # What this session has already shown the user, which is its earlier ranked
+    # lists -- not the shortlist it was handed to assess. Reading the shortlist here
+    # meant the first genuine selection of a mechanism introduced nothing, and an
+    # empty selection still reported mechanisms as presented.
+    presented_before = _unique_labels([
+        str(item.get("mechanism_label") or "")
+        for item in (store.get_ranking(search_id) or {}).get("items") or []
+    ])
     presented_keys = {value.casefold() for value in presented_before}
 
     items: list[dict[str, Any]] = []
