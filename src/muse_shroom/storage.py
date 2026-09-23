@@ -465,9 +465,10 @@ class Store:
             (search_id, json.dumps(ranking, ensure_ascii=False), now),
         )
         # The ranking is this session's current answer and may be replaced. What the
-        # user has been shown only accumulates, so it is recorded separately.
+        # user has been shown only accumulates, so it is recorded separately: one row
+        # per session and repository, dated by the latest showing.
         self.db.executemany(
-            "INSERT OR IGNORE INTO presented VALUES (?, ?, ?)",
+            "INSERT OR REPLACE INTO presented VALUES (?, ?, ?)",
             [(search_id, str(name).lower(), now)
              for name in ranking.get("display_order") or [] if str(name).strip()],
         )
