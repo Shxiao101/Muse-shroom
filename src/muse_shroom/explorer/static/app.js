@@ -321,9 +321,18 @@ function roleChip(role) {
   return `<span class="pill ${esc(role)}" title="${esc(roleGloss(role))}">${esc(roleName(role))}</span>`;
 }
 
+function atQuery() {
+  return current.at && current.at !== "final" ? `?at=${encodeURIComponent(current.at)}` : "";
+}
+
 function sessionNav(searchId, active) {
+  // The stage lives in the route so it survives moving between these pages. These
+  // links used to drop it, so picking Initial and then Results quietly showed the
+  // final state under a heading that said otherwise.
+  const at = atQuery();
   const item = (view, label) => {
-    const href = view === "overview" ? `#/s/${encodeURIComponent(searchId)}` : `#/s/${encodeURIComponent(searchId)}/${view}`;
+    const base = view === "overview" ? `#/s/${encodeURIComponent(searchId)}` : `#/s/${encodeURIComponent(searchId)}/${view}`;
+    const href = `${base}${at}`;
     const isActive = active === view;
     return `<a class="navlink ${isActive ? "active" : ""}" href="${href}"${isActive ? ' aria-current="page"' : ""}>${esc(label)}</a>`;
   };
@@ -447,7 +456,7 @@ async function renderOverview(searchId) {
   if (current.searchId !== searchId) current.at = "final";
   current.searchId = searchId;
   if (current.routeAt) current.at = current.routeAt;
-  const atParam = current.at && current.at !== "final" ? `?at=${encodeURIComponent(current.at)}` : "";
+  const atParam = atQuery();
   const [summary, boundary, timeline, result] = await Promise.all([
     api(`/api/searches/${searchId}`),
     api(`/api/searches/${searchId}/boundary${atParam}`),
@@ -552,7 +561,7 @@ function roleBar(searchId, items, activeRole) {
 
 async function renderResults(searchId, role) {
   current.searchId = searchId;
-  const atParam = current.at && current.at !== "final" ? `?at=${encodeURIComponent(current.at)}` : "";
+  const atParam = atQuery();
   const result = await api(`/api/searches/${searchId}/result${atParam}`);
   current.result = result;
   const header = `
@@ -687,7 +696,7 @@ function directionRequest(term, searchId) {
 
 async function renderFrontier(searchId) {
   current.searchId = searchId;
-  const boundary = await api(`/api/searches/${searchId}/boundary`);
+  const boundary = await api(`/api/searches/${searchId}/boundary${atQuery()}`);
   current.boundary = boundary;
   const overview = boundary.overview || {};
   const unexplored = overview.unexplored || [];

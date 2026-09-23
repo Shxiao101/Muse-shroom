@@ -436,6 +436,7 @@ def rank_search(
         store.save_boundary_snapshot(
             search_id, "rank", boundary,
             visible_repos={"assessment_repos": display_order, "pool_repos": list(by_name)},
+            request=session["request"],
         )
         store.save_ranking(search_id, result)
     return result

@@ -51,6 +51,8 @@ def served_data_dir(*, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
             payload = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
         return None
+    if not isinstance(payload, dict):
+        return None
     served = payload.get("data_dir")
     return served if payload.get("readonly") and isinstance(served, str) and served else None
 
