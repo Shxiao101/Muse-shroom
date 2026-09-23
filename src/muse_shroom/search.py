@@ -74,6 +74,8 @@ HOWTO_EXCERPT_CHARS = 220
 MECHANISM_EVIDENCE_CHARS = 180
 PUBLIC_MECHANISM_LIMIT = 3
 SEARCH_OUTPUT_MAX_BYTES = 30_000
+# What one expand may spend. It is still bounded by what the session has left.
+EXPAND_QUERY_LIMIT = 10
 
 
 def _compact_excerpt(item: dict[str, Any], limit: int) -> dict[str, Any]:
@@ -1367,6 +1369,21 @@ class SearchEngine:
                 candidates, request, targets=accepted,
             )
             stale = stale or enrich_stale
+        # The README is the surface an exclusion is usually written against, and
+        # supply used to check the metadata alone: a repository whose README says it
+        # is a course came through an `exclusions: ["course"]` request untouched.
+        # The request's own constraints apply; the Agent's negative and rejected
+        # directions do not, because naming this repository is the later decision.
+        kept: list[str] = []
+        for key in accepted:
+            if candidate_allowed(candidates[key], request, include_readme=True):
+                kept.append(key)
+            else:
+                rejected.append({
+                    "repo": candidates[key]["full_name"], "reason": "excluded_by_constraints",
+                })
+                candidates.pop(key, None)
+        accepted = kept
         concept_terms = self._concept_terms(request)
         for key in accepted:
             candidate = candidates[key]
@@ -1403,6 +1420,29 @@ class SearchEngine:
             "can_iterate": observed["can_iterate"],
         }
 
+    def _session_budget(self, search_id: str, state: dict[str, Any]) -> dict[str, Any]:
+        """What this session has left, by the limits it was created with.
+
+        observe read the saved limits and the iterate entry point read this
+        process's own, so a session restored by a differently configured engine was
+        told it could not continue and then continued anyway when asked.
+        """
+        def saved(name: str, fallback: int) -> int:
+            return int(state[name]) if name in state else fallback
+
+        return remaining_budget(
+            iteration=int(state.get("iteration") or 0),
+            queries_used=self.store.normal_query_count(search_id),
+            relation_calls_used=int(state.get("relation_calls_used") or 0),
+            max_iterations=saved("max_iterations", self.max_iterations),
+            queries_per_iteration=saved("queries_per_iteration", self.queries_per_iteration),
+            session_query_budget=saved("session_query_budget", self.session_query_budget),
+            readme_enrich_per_iteration=saved(
+                "readme_enrich_per_iteration", self.readme_enrich_per_iteration,
+            ),
+            relation_budget=saved("relation_budget", self.relation_budget),
+        )
+
     def observe(self, search_id: str) -> dict[str, Any]:
         session = self.store.load_search(search_id)
         request = SearchRequest.from_dict(session["request"])
@@ -1418,25 +1458,7 @@ class SearchEngine:
             confirmed_directions=state.get("confirmed_directions") or [],
             confirmation_records=state.get("confirmation_records") or [],
         ).to_dict()
-        remaining = remaining_budget(
-            iteration=int(state.get("iteration") or 0),
-            queries_used=self.store.normal_query_count(search_id),
-            relation_calls_used=int(state.get("relation_calls_used") or 0),
-            max_iterations=int(state["max_iterations"]) if "max_iterations" in state else self.max_iterations,
-            queries_per_iteration=(
-                int(state["queries_per_iteration"]) if "queries_per_iteration" in state
-                else self.queries_per_iteration
-            ),
-            session_query_budget=(
-                int(state["session_query_budget"]) if "session_query_budget" in state
-                else self.session_query_budget
-            ),
-            readme_enrich_per_iteration=(
-                int(state["readme_enrich_per_iteration"]) if "readme_enrich_per_iteration" in state
-                else self.readme_enrich_per_iteration
-            ),
-            relation_budget=int(state["relation_budget"]) if "relation_budget" in state else self.relation_budget,
-        )
+        remaining = self._session_budget(search_id, state)
         coverage = {
             "queries_executed": self.store.normal_query_count(search_id),
             "confirmation_queries_executed": self.store.confirmation_query_count(search_id),
@@ -1503,21 +1525,14 @@ class SearchEngine:
         previous_boundary = previous_snapshot.get("boundary") or {}
         previous_origins = previous_boundary.get("mechanism_origins") or {}
         queries_used = self.store.normal_query_count(search_id)
-        remaining = remaining_budget(
-            iteration=state["iteration"],
-            queries_used=queries_used,
-            relation_calls_used=int(state.get("relation_calls_used") or 0),
-            max_iterations=self.max_iterations,
-            queries_per_iteration=self.queries_per_iteration,
-            session_query_budget=self.session_query_budget,
-            readme_enrich_per_iteration=self.readme_enrich_per_iteration,
-            relation_budget=self.relation_budget,
-        )
+        remaining = self._session_budget(search_id, state)
         self._pool_cap = self._limit_for(session.get("mode"), state)
         hard = hard_stop_reason(
             iteration=state["iteration"], queries_used=queries_used,
-            max_iterations=self.max_iterations,
-            session_query_budget=self.session_query_budget,
+            max_iterations=int(state.get("max_iterations") or self.max_iterations),
+            session_query_budget=int(
+                state.get("session_query_budget") or self.session_query_budget
+            ),
             decision=hypothesis.decision,
         )
         # Whatever observe reports as `can_iterate` has to hold here too. A decision
@@ -1577,7 +1592,11 @@ class SearchEngine:
         executed: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         recall_failed = False
-        query_limit = 10 if stage == "expand" else remaining["queries_this_round"]
+        # expand had a fixed ten of its own, which the session budget never saw.
+        query_limit = (
+            min(EXPAND_QUERY_LIMIT, remaining["queries"]) if stage == "expand"
+            else remaining["queries_this_round"]
+        )
         if "keyword" in strategies and query_limit:
             planned, blocked = hypothesis_queries(
                 hypothesis, request, negatives=negatives,
@@ -1619,6 +1638,21 @@ class SearchEngine:
                 query = code_filename_query(
                     filename, hypothesis.concepts[0] if hypothesis.concepts else None,
                 )
+                # A code query is counted in the same budget as a keyword one, and
+                # used to ignore it: two rounds of six concepts and five filenames
+                # each put a session past a budget of thirty without a word.
+                if len(executed) + code_calls >= query_limit:
+                    self.store.add_query_history(
+                        search_id, query, "key_file", 0, iteration=iteration,
+                        fingerprint=query_fingerprint(query), skipped=True,
+                        skip_reason="query_budget_exhausted",
+                    )
+                    skipped.append({
+                        "query": query, "kind": "key_file",
+                        "fingerprint": query_fingerprint(query),
+                        "skip_reason": "query_budget_exhausted",
+                    })
+                    continue
                 code_calls += 1
                 try:
                     result = self.github.search_code(query, per_page=10)
@@ -1764,7 +1798,7 @@ class SearchEngine:
         output = self._apply_sidecar(
             search_id, output, request, host_additions, candidates,
             negatives=negatives, iteration=iteration, state=state,
-            stale=stale, cached_at=cached_at,
+            stale=stale, cached_at=cached_at, rejected=rejected,
         )
         delta = output.get("boundary_delta") or {}
         skipped_all = bool(skipped) and not executed_any
@@ -1833,7 +1867,7 @@ class SearchEngine:
         self, search_id: str, output: dict[str, Any], request: SearchRequest,
         host_additions: list[Any], base_candidates: dict[str, dict[str, Any]],
         *, negatives: Iterable[str], iteration: int, state: dict[str, Any],
-        stale: bool, cached_at: str | None,
+        stale: bool, cached_at: str | None, rejected: Iterable[str] = (),
     ) -> dict[str, Any]:
         sidecar = state.setdefault("semantic_sidecar", empty_sidecar_state())
         metrics = sidecar.setdefault("metrics", {})
@@ -1977,6 +2011,15 @@ class SearchEngine:
                 apply_semantic_mechanism(
                     candidate, record["term"], record["id"], record.get("aliases") or (),
                 )
+            # Recall applies this after enrichment; the sidecar reached the session
+            # without it, so an excluded repository arrived by the other door.
+            recalled = [
+                item for item in recalled
+                if candidate_allowed(
+                    item, request, include_readme="readme" in item,
+                    negative_terms=negatives, rejected_terms=rejected,
+                )
+            ]
             for candidate in recalled:
                 if not apply_semantic_mechanism(
                     candidate, record["term"], record["id"], record.get("aliases") or (),
