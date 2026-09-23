@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+from collections import defaultdict
+from contextlib import contextmanager
 from typing import Any
 
 from . import __version__
@@ -15,11 +18,31 @@ from .search import SearchEngine, public_candidate
 from .storage import Store
 
 
+_SESSION_LOCKS: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
+_SESSION_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def session_lock(search_id: str):
+    """Hold one session while a call reads its state, changes it and writes it back.
+
+    An MCP host runs a synchronous tool in a thread, and each call opens its own
+    Store, so two supplies of the same session read the same state and the second
+    write erased the first: both repositories were saved, but the session listed
+    one, and the count it enforces its own limit with was wrong from then on.
+    """
+    with _SESSION_LOCKS_GUARD:
+        lock = _SESSION_LOCKS[str(search_id)]
+    with lock:
+        yield
+
+
 class MuseCore:
     """Open a Store per call so session state lives in SQLite, not process memory.
 
     Outputs are the Agent view (agent_view.py). The only process memory is which
-    candidates this server already returned, so iterate can skip unchanged ones.
+    candidates this server already returned, so iterate can skip unchanged ones,
+    and one lock per session so calls that change it do not overwrite each other.
     """
 
     def __init__(self, *, data_dir: str | None = None, github: Any | None = None) -> None:
@@ -81,28 +104,35 @@ class MuseCore:
 
     def iterate(self, search_id: str, hypothesis: dict[str, Any]) -> dict[str, Any]:
         parsed = SearchHypothesis.from_dict(hypothesis, strict=True)
-        store = self._store()
-        try:
-            result = SearchEngine(store, self._github(store)).iterate(search_id, parsed.to_dict())
-        finally:
-            store.close()
+        with session_lock(search_id):
+            store = self._store()
+            try:
+                result = SearchEngine(store, self._github(store)).iterate(
+                    search_id, parsed.to_dict(),
+                )
+            finally:
+                store.close()
         return self.shown.omit_unchanged(session_view(result))
 
     def supply(self, search_id: str, repositories: Any, reason: Any) -> dict[str, Any]:
-        store = self._store()
-        try:
-            result = SearchEngine(store, self._github(store)).supply(search_id, repositories, reason)
-        finally:
-            store.close()
+        with session_lock(search_id):
+            store = self._store()
+            try:
+                result = SearchEngine(store, self._github(store)).supply(
+                    search_id, repositories, reason,
+                )
+            finally:
+                store.close()
         self.shown.remember(search_id, result.get("supplied"))
         return result
 
     def rank(self, search_id: str, selection: Any) -> dict[str, Any]:
-        store = self._store()
-        try:
-            result = rank_search(store, search_id, selection, strict=True)
-        finally:
-            store.close()
+        with session_lock(search_id):
+            store = self._store()
+            try:
+                result = rank_search(store, search_id, selection, strict=True)
+            finally:
+                store.close()
         from .explorer.launcher import ensure_explorer
         explorer = ensure_explorer(search_id, data_dir=self.data_dir)
         result["explorer_url"] = explorer["url"]

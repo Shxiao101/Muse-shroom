@@ -72,6 +72,10 @@ class Store:
             CREATE TABLE IF NOT EXISTS rankings (
                 search_id TEXT PRIMARY KEY, ranking_json TEXT NOT NULL, created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS presented (
+                search_id TEXT NOT NULL, full_name TEXT NOT NULL, presented_at TEXT NOT NULL,
+                PRIMARY KEY(search_id, full_name)
+            );
             CREATE TABLE IF NOT EXISTS boundary_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 search_id TEXT NOT NULL, stage TEXT NOT NULL,
@@ -136,6 +140,7 @@ class Store:
         history_columns = {row[1] for row in self.db.execute("PRAGMA table_info(query_history)")}
         if "skip_reason" not in history_columns:
             self.db.execute("ALTER TABLE query_history ADD COLUMN skip_reason TEXT")
+        self._backfill_presented()
         self._migrate_search_iterations()
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_search_iterations_search ON search_iterations(search_id, id)"
@@ -427,10 +432,42 @@ class Store:
             row = self.db.execute("SELECT snapshot_json FROM repositories WHERE full_name=?", (full_name.lower(),)).fetchone()
         return json.loads(row[0]) if row else None
 
+    def _backfill_presented(self) -> None:
+        """Seed the presentation record from rankings written before it existed.
+
+        Those rankings are the only surviving trace of what a user was shown, so an
+        upgrade keeps them rather than starting everyone's history over.
+        """
+        if self.db.execute("SELECT 1 FROM presented LIMIT 1").fetchone():
+            return
+        rows = self.db.execute(
+            "SELECT search_id, ranking_json, created_at FROM rankings"
+        ).fetchall()
+        seeded = []
+        for search_id, ranking_json, created_at in rows:
+            try:
+                order = json.loads(ranking_json).get("display_order") or []
+            except (ValueError, AttributeError):
+                continue
+            seeded.extend(
+                (search_id, str(name).lower(), created_at)
+                for name in order if str(name).strip()
+            )
+        if seeded:
+            self.db.executemany("INSERT OR IGNORE INTO presented VALUES (?, ?, ?)", seeded)
+
     def save_ranking(self, search_id: str, ranking: dict[str, Any]) -> None:
+        now = utc_now()
         self.db.execute(
             "INSERT OR REPLACE INTO rankings VALUES (?, ?, ?)",
-            (search_id, json.dumps(ranking, ensure_ascii=False), utc_now()),
+            (search_id, json.dumps(ranking, ensure_ascii=False), now),
+        )
+        # The ranking is this session's current answer and may be replaced. What the
+        # user has been shown only accumulates, so it is recorded separately.
+        self.db.executemany(
+            "INSERT OR IGNORE INTO presented VALUES (?, ?, ?)",
+            [(search_id, str(name).lower(), now)
+             for name in ranking.get("display_order") or [] if str(name).strip()],
         )
         self.db.commit()
 
@@ -439,26 +476,23 @@ class Store:
         return json.loads(row[0]) if row else None
 
     def presented_history(self, exclude_search_id: str | None = None) -> dict[str, dict[str, Any]]:
-        """Repositories the user was already shown, from the saved rankings of other sessions.
+        """Repositories the user was already shown, across every session but this one.
 
-        A saved ranking is the list the Agent presented, so its display order is what the
-        user saw. `times` counts sessions, and `last_at` is the date of the latest one.
+        `times` counts sessions, and `last_at` is the date of the latest one. This
+        reads the append-only record rather than the current rankings: a session that
+        ranked twice replaced its own list, and the repositories in the first one
+        would otherwise be forgotten.
         """
         history: dict[str, dict[str, Any]] = {}
         rows = self.db.execute(
-            "SELECT search_id, ranking_json, created_at FROM rankings ORDER BY created_at"
+            "SELECT search_id, full_name, presented_at FROM presented ORDER BY presented_at"
         ).fetchall()
-        for search_id, ranking_json, created_at in rows:
-            if search_id == exclude_search_id:
+        for search_id, full_name, created_at in rows:
+            if search_id == exclude_search_id or not full_name:
                 continue
-            try:
-                order = json.loads(ranking_json).get("display_order") or []
-            except (ValueError, AttributeError):
-                continue
-            for name in dict.fromkeys(str(value).lower() for value in order if value):
-                entry = history.setdefault(name, {"times": 0, "last_at": None})
-                entry["times"] += 1
-                entry["last_at"] = str(created_at)[:10]
+            entry = history.setdefault(str(full_name).lower(), {"times": 0, "last_at": None})
+            entry["times"] += 1
+            entry["last_at"] = str(created_at)[:10]
         return history
 
     def save_boundary_snapshot(self, search_id: str, stage: str,
