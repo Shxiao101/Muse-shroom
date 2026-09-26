@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -18,9 +17,8 @@ from .github import (
 )
 from .iteration import (
     apply_hypothesis_to_request, blocked_iteration_reason, build_observation,
-    default_session_state, evidence_anchors, evidence_progress, evidence_snapshot,
-    merge_evidence_baseline,
-    hard_stop_reason, iteration_stop_reasons, merge_unique,
+    default_session_state, evidence_anchors,
+    hard_stop_reason, iteration_stop_reasons, meaningful_gain, merge_unique,
     remaining_budget, validate_hypothesis_evidence,
 )
 from .models import (
@@ -44,36 +42,14 @@ from .sidecar import (
     split_additions, validate_host_hypotheses,
 )
 from .queries import (
-    build_queries, code_filename_query, confirmation_queries, credit_shared_discovery,
-    hypothesis_queries, indexed_groups, note_measured_attempts, query_fingerprint,
-    quote_term, reverse_reference_query, schedule_followup_queries,
-    schedule_initial_queries, schedule_iteration_queries, unplanned_terms,
+    build_queries, code_filename_query, confirmation_queries, hypothesis_queries,
+    indexed_groups, query_fingerprint, quote_term, reverse_reference_query, unplanned_terms,
 )
 from .selection import (
-    SHORTLIST_LIMIT, candidate_allowed, covered_core_ids, covered_direction_ids,
-    describe_concept_matches, probe_select, readme_batch_sizes, select_readme_batch,
+    SHORTLIST_LIMIT, candidate_allowed, covered_core_ids, probe_select,
     shortlist_select, uncovered_core_terms,
 )
 from .storage import Store
-
-
-def _initial_target_terms(request: SearchRequest) -> set[str]:
-    terms: set[str] = set()
-    for concept in [*request.problem_concepts, *request.exploration_directions]:
-        for term in concept.terms():
-            terms.add(term.casefold())
-    return terms
-
-
-def _explicit_hypothesis_terms(hypothesis: SearchHypothesis) -> set[str]:
-    terms: set[str] = set()
-    if hypothesis.target_mechanism:
-        terms.add(str(hypothesis.target_mechanism).casefold())
-    if hypothesis.target_direction:
-        terms.add(str(hypothesis.target_direction).casefold())
-    for term in hypothesis.concepts or []:
-        terms.add(str(term).casefold())
-    return terms
 
 
 PUBLIC_CANDIDATE_FIELDS = {
@@ -904,153 +880,9 @@ class SearchEngine:
                 stale = stale or result.stale
                 cached_at = cached_at or result.cached_at
             self._apply_readme(candidate, result, request)
-        # The count is what the fetches cost, failures included. Stop policy must
-        # not treat it as a measured result; a network error acquires no README.
+        # The count is what the fetches cost, failures included; the ledger budgets
+        # calls, not results.
         return stale, cached_at, failed, len(pending)
-
-    def _recall_isolated(self, search_id: str, queries: list[dict[str, Any]],
-                         candidates: dict[str, dict[str, Any]], *,
-                         iteration: int, known_fingerprints: set[str] | None = None,
-                         ) -> tuple[bool, str | None, list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], GitHubError | None]:
-        """Run one batch. A failed batch does not cancel the next; authentication still does."""
-        try:
-            stale, cached_at, executed, skipped, failed = self._recall(
-                search_id, queries, candidates, iteration=iteration,
-                known_fingerprints=known_fingerprints,
-            )
-            return stale, cached_at, executed, skipped, failed, None
-        except GitHubAuthenticationError:
-            raise
-        except GitHubError as exc:
-            return False, None, [], [], [{
-                "error_type": type(exc).__name__,
-                "error": describe_error(exc),
-            }], exc
-
-    def _record_unselected_queries(self, search_id: str, queries: list[dict[str, Any]],
-                                   *, iteration: int) -> list[dict[str, Any]]:
-        skipped: list[dict[str, Any]] = []
-        for item in queries:
-            self.store.add_query_history(
-                search_id, item["query"], item["kind"], 0,
-                iteration=iteration, fingerprint=item["fingerprint"], skipped=True,
-                skip_reason="round_budget",
-            )
-            skipped.append({**item, "skipped": True, "skip_reason": "round_budget"})
-        return skipped
-
-    def _covered_terms(self, candidates: dict[str, dict[str, Any]], request: SearchRequest) -> set[str]:
-        covered = covered_direction_ids(
-            (item for item in candidates.values() if "readme" in item),
-            request, reference_time=self.reference_time,
-        )
-        terms: set[str] = set()
-        groups = [
-            *indexed_groups(request.core_concepts, "core"),
-            *indexed_groups(request.exploration_directions, "adjacent"),
-        ]
-        for concept_id, concept, _search_terms in groups:
-            if concept_id not in covered:
-                continue
-            for term in concept.terms():
-                terms.add(term.casefold())
-        return terms
-
-    def _effective_new_candidate(self, candidate: dict[str, Any], request: SearchRequest) -> bool:
-        if candidate.get("readme_failed") or not str(candidate.get("readme") or "").strip():
-            return False
-        if not candidate_allowed(candidate, request, include_readme=True):
-            return False
-        matches = describe_concept_matches(candidate, request, include_readme=True)
-        return any(
-            str(match.get("source") or "") in {"name", "topics", "description", "readme"}
-            and float(match.get("score") or 0) > 0
-            for match in matches
-        )
-
-    def _apply_query_feedback(self, feedback: dict[str, Any],
-                              candidates: dict[str, dict[str, Any]],
-                              before: set[str], executed: list[dict[str, Any]],
-                              request: SearchRequest) -> dict[str, Any]:
-        updated = note_measured_attempts(feedback, executed)
-        by_query: dict[str, list[dict[str, Any]]] = {}
-        for spec in executed:
-            by_query.setdefault(str(spec.get("query") or ""), []).append(spec)
-        for key, candidate in candidates.items():
-            if key in before or not self._effective_new_candidate(candidate, request):
-                continue
-            finders: list[dict[str, Any]] = []
-            seen: set[str] = set()
-            for path in candidate.get("discovery_paths") or []:
-                if path.get("kind") != "query":
-                    continue
-                for spec in by_query.get(str(path.get("query") or ""), []):
-                    identity = str(spec.get("fingerprint") or spec.get("query") or "")
-                    if not identity or identity in seen:
-                        continue
-                    seen.add(identity)
-                    finders.append(spec)
-            credit_shared_discovery(updated, finders)
-        return updated
-
-    def _fetch_readme_batch(self, candidates: dict[str, dict[str, Any]], request: SearchRequest,
-                            limit: int, *, phase: str, covered: set[str],
-                            owner_counts: dict[str, int],
-                            skip: set[str] | None = None,
-                            ) -> tuple[bool, str | None, bool, int, set[str]]:
-        """Pick and fetch one README batch. `skip` names repos already attempted this round."""
-        if limit <= 0:
-            return False, None, False, 0, set()
-        blocked = {key.lower() for key in (skip or set())}
-        missing = [
-            item for item in candidates.values()
-            if "readme" not in item and repo_key(item) not in blocked
-        ]
-        deferred = self._deferred()
-        fresh = [item for item in missing if repo_key(item) not in deferred]
-        picked = select_readme_batch(
-            fresh, request, limit, phase=phase, covered=covered,
-            owner_counts=owner_counts, reference_time=self.reference_time,
-        )
-        if len(picked) < limit:
-            held = [item for item in missing if repo_key(item) in deferred]
-            picked.extend(select_readme_batch(
-                held, request, limit - len(picked), phase=phase, covered=covered,
-                owner_counts=owner_counts, reference_time=self.reference_time,
-            ))
-        tried = {repo_key(item) for item in picked}
-        if not picked:
-            return False, None, False, 0, tried
-        stale, cached_at, failed, count = self._enrich(
-            candidates, request, targets=[repo_key(item) for item in picked],
-        )
-        return stale, cached_at, failed, count, tried
-
-    def _enrich_readme_budget(self, candidates: dict[str, dict[str, Any]], request: SearchRequest,
-                              budget: int) -> tuple[bool, str | None, bool, int]:
-        """Spend a deep round's README budget in two batches without exceeding it."""
-        if budget <= 0:
-            return False, None, False, 0
-        first_limit, second_planned = readme_batch_sizes(budget)
-        owner_counts: dict[str, int] = {}
-        stale, cached_at, failed, first_count, attempted = self._fetch_readme_batch(
-            candidates, request, first_limit, phase="first", covered=set(),
-            owner_counts=owner_counts,
-        )
-        leftover = max(0, budget - first_count)
-        if second_planned <= 0 or leftover <= 0:
-            return stale, cached_at, failed, first_count
-        covered = covered_direction_ids(
-            (item for item in candidates.values() if "readme" in item),
-            request, reference_time=self.reference_time,
-        )
-        stale2, cached2, failed2, second_count, _tried = self._fetch_readme_batch(
-            candidates, request, leftover, phase="second", covered=covered,
-            owner_counts=owner_counts, skip=attempted,
-        )
-        return (
-            stale or stale2, cached_at or cached2, failed or failed2, first_count + second_count,
-        )
 
     def _enrich_releases(self, selected: list[dict[str, Any]]) -> tuple[bool, str | None, bool]:
         stale = False
@@ -1144,13 +976,12 @@ class SearchEngine:
         `call_limit` is the relationship allowance. A reverse README search is also a
         search query, counted in the session's query total like any other, so it
         waits for `query_limit` as well; it used to watch the call allowance alone.
-        Returns stale, cache time, calls made, whether any failed, the reverse
-        searches held back, and how many calls returned.
+        Returns stale, cache time, calls made, whether any failed, and the reverse
+        searches held back.
         """
         stale = False
         cached_at = None
         calls = 0
-        succeeded = 0
         failed = False
         searches = 0
         held: list[dict[str, Any]] = []
@@ -1168,7 +999,6 @@ class SearchEngine:
                 try:
                     calls += 1
                     result = self.github.repository(linked)
-                    succeeded += 1
                     stale = stale or result.stale
                     cached_at = cached_at or result.cached_at
                     self._add_related(
@@ -1201,7 +1031,6 @@ class SearchEngine:
                         result = self.github.search_repositories(
                             query, per_page=self.search_page_size,
                         )
-                        succeeded += 1
                         stale = stale or result.stale
                         cached_at = cached_at or result.cached_at
                         items = self._items(result)
@@ -1224,7 +1053,6 @@ class SearchEngine:
                 try:
                     calls += 1
                     result = self.github.forks(full_name, per_page=5)
-                    succeeded += 1
                     stale = stale or result.stale
                     cached_at = cached_at or result.cached_at
                     for item in self._items(result):
@@ -1241,7 +1069,6 @@ class SearchEngine:
                     owner = full_name.split("/", 1)[0]
                     calls += 1
                     result = self.github.owner_repositories(owner, per_page=10)
-                    succeeded += 1
                     stale = stale or result.stale
                     cached_at = cached_at or result.cached_at
                     for item in self._items(result):
@@ -1253,7 +1080,7 @@ class SearchEngine:
                     raise
                 except GitHubError:
                     failed = True
-        return stale, cached_at, calls, failed, held, succeeded
+        return stale, cached_at, calls, failed, held
 
     @staticmethod
     def _query_summary(executed: list[dict[str, Any]], skipped: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1441,101 +1268,16 @@ class SearchEngine:
         executed: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         try:
-            full_plan = build_queries(request, limit=max(self.initial_query_limit, 64))
-            feedback = state.get("query_feedback") or {"groups": {}}
-            failed: list[dict[str, Any]] = []
-            enrich_failed = False
-            budget = self.initial_query_limit
-            if mode == "deep" and len(full_plan) > 1 and budget > 1:
-                ordered = schedule_initial_queries(full_plan)
-                first_n, _second_n = readme_batch_sizes(budget)
-                batch1, deferred = ordered[:first_n], ordered[first_n:]
-                round_start = set(candidates)
-                s, cache_time, executed, skipped, failed, batch_error = self._recall_isolated(
-                    search_id, batch1, candidates, iteration=0,
-                )
-                stale, cached_at = stale or s, cached_at or cache_time
-                candidates = {
-                    name: item for name, item in candidates.items()
-                    if candidate_allowed(item, request, include_readme=False)
-                }
-                readme_budget = self.enrich_limit
-                first_readme, second_readme = readme_batch_sizes(readme_budget)
-                owner_counts: dict[str, int] = {}
-                rs, rc, enrich_failed, enriched_count, readme_attempted = self._fetch_readme_batch(
-                    candidates, request, first_readme, phase="first", covered=set(),
-                    owner_counts=owner_counts,
-                )
-                stale, cached_at = stale or rs, cached_at or rc
-                issued = len(batch1) if batch_error else len(executed) + len(failed)
-                slots = max(0, budget - issued)
-                batch2: list[dict[str, Any]] = []
-                if deferred and slots:
-                    provisional = self._apply_query_feedback(
-                        copy.deepcopy(feedback), candidates, round_start, executed, request,
-                    )
-                    batch2 = schedule_followup_queries(
-                        deferred, feedback=provisional,
-                        covered_terms=self._covered_terms(candidates, request),
-                        target_terms=_initial_target_terms(request),
-                    )[:slots]
-                if batch2:
-                    s2, c2, executed2, skipped2, failed2, batch_error2 = self._recall_isolated(
-                        search_id, batch2, candidates, iteration=0,
-                        known_fingerprints=self.store.query_fingerprints(search_id),
-                    )
-                    stale, cached_at = stale or s2, cached_at or c2
-                    executed = [*executed, *executed2]
-                    skipped = [*skipped, *skipped2]
-                    failed = [*failed, *failed2]
-                    batch_error = batch_error or batch_error2
-                    candidates = {
-                        name: item for name, item in candidates.items()
-                        if candidate_allowed(item, request, include_readme=False)
-                    }
-                first_attempts = enriched_count
-                leftover = max(0, readme_budget - enriched_count)
-                if leftover and (second_readme > 0 or first_attempts == 0):
-                    covered = covered_direction_ids(
-                        (item for item in candidates.values() if "readme" in item),
-                        request, reference_time=self.reference_time,
-                    )
-                    rs2, rc2, failed_readme2, n2, _tried = self._fetch_readme_batch(
-                        candidates, request, leftover, phase="second", covered=covered,
-                        owner_counts=owner_counts, skip=readme_attempted,
-                    )
-                    stale, cached_at = stale or rs2, cached_at or rc2
-                    enrich_failed = enrich_failed or failed_readme2
-                    enriched_count += n2
-                feedback = self._apply_query_feedback(
-                    feedback, candidates, round_start, executed, request,
-                )
-                if batch_error and not candidates and not executed:
-                    raise batch_error
-            else:
-                before = set(candidates)
-                s, cache_time, executed, skipped, failed = self._recall(
-                    search_id, full_plan[:budget], candidates, iteration=0,
-                )
-                stale, cached_at = stale or s, cached_at or cache_time
-                candidates = {
-                    name: item for name, item in candidates.items()
-                    if candidate_allowed(item, request, include_readme=False)
-                }
-                if mode == "deep":
-                    s, cache_time, enrich_failed, enriched_count = self._enrich_readme_budget(
-                        candidates, request, self.enrich_limit,
-                    )
-                else:
-                    s, cache_time, enrich_failed, enriched_count = self._enrich(
-                        candidates, request, limit=self.enrich_limit,
-                    )
-                stale, cached_at = stale or s, cached_at or cache_time
-                feedback = self._apply_query_feedback(
-                    feedback, candidates, before, executed, request,
-                )
-            state["query_feedback"] = feedback
-            self.store.save_session_state(search_id, state)
+            s, cache_time, executed, skipped, failed = self._recall(
+                search_id, build_queries(request, limit=self.initial_query_limit), candidates, iteration=0,
+            )
+            stale, cached_at = stale or s, cached_at or cache_time
+            candidates = {
+                name: item for name, item in candidates.items()
+                if candidate_allowed(item, request, include_readme=False)
+            }
+            s, cache_time, enrich_failed, enriched_count = self._enrich(candidates, request)
+            stale, cached_at = stale or s, cached_at or cache_time
             if enrich_failed:
                 incomplete = "enrichment_partial_failure"
             if failed:
@@ -1560,10 +1302,6 @@ class SearchEngine:
             },
             confirmed_directions=[],
         )
-        state["evidence_baseline"] = evidence_snapshot(
-            self.store.load_search(search_id)["candidates"], request,
-        )
-        self.store.save_session_state(search_id, state)
         output["next_action"] = "iterate" if mode == "deep" else "rank"
         if output.get("observation"):
             output["observation"]["stop"]["should_stop"] = False
@@ -1906,21 +1644,6 @@ class SearchEngine:
                 **({"aliases": list(addition.aliases)} if addition.aliases else {}),
             })
         self.store.update_search_request(search_id, request.to_dict())
-        # Repos that already have a located README. Scored again after this round
-        # against the request as it then stands, so a new name for old text is not
-        # this round's evidence.
-        evidence_before_keys = {
-            key for key, item in candidates.items()
-            if str(item.get("readme_sha") or "").strip() and str(item.get("readme") or "").strip()
-        }
-        sidecar_before = copy.deepcopy(
-            list((state.get("semantic_sidecar") or {}).get("candidates") or [])
-        )
-        sidecar_before_keys = {repo_key(item) for item in sidecar_before}
-        readme_known_keys = {
-            repo_key(item) for item in [*candidates.values(), *sidecar_before]
-            if "readme" in item and not item.get("readme_failed")
-        }
         strategies = hypothesis.resolved_strategies()
         stale = bool(session["stale"])
         cached_at = None
@@ -1932,109 +1655,31 @@ class SearchEngine:
             min(EXPAND_QUERY_LIMIT, remaining["queries"]) if stage == "expand"
             else remaining["queries_this_round"]
         )
-        feedback = state.get("query_feedback") or {"groups": {}}
-        feedback_at_start = copy.deepcopy(feedback)
-        query_attempts = 0
-        round_candidates = set(candidates)
-        readme_budget = (
-            self.enrich_limit if stage == "expand" else remaining["readme_enrich_this_round"]
-        )
-        readme_batched = str(session.get("mode") or "") == "deep"
-        owner_counts: dict[str, int] = {}
-        readme_attempted: set[str] = set()
-        first_enrich_failed = False
-        first_enriched = 0
-        readme_first_done = False
         if "keyword" in strategies and query_limit:
-            eligible, blocked = hypothesis_queries(
+            planned, blocked = hypothesis_queries(
                 hypothesis, request, negatives=negatives,
                 known_fingerprints=self.store.query_fingerprints(search_id),
-                limit=max(query_limit, 1000),
+                limit=query_limit,
             )
-            duplicates = [item for item in blocked if item.get("skip_reason") == "duplicate"]
-            for item in duplicates:
+            for item in blocked:
                 self.store.add_query_history(
                     search_id, item["query"], item["kind"], 0,
                     iteration=iteration, fingerprint=item["fingerprint"], skipped=True,
-                    skip_reason="duplicate",
+                    skip_reason=str(item.get("skip_reason") or "duplicate"),
                 )
-            skipped.extend(duplicates)
-            explicit = _explicit_hypothesis_terms(hypothesis)
-            deep_split = str(session.get("mode") or "") == "deep" and query_limit > 1 and len(eligible) > 1
-            if deep_split:
-                ordered = schedule_iteration_queries(eligible, explicit)
-                first_cap = readme_batch_sizes(query_limit)[0]
-                waves = [ordered[:first_cap]]
-                deferred = ordered[first_cap:]
-            else:
-                ordered = eligible
-                if feedback.get("groups"):
-                    ordered = schedule_followup_queries(
-                        ordered, feedback=feedback, covered_terms=set(), target_terms=explicit,
-                    )
-                waves = [ordered[:query_limit]]
-                deferred = ordered[query_limit:]
-            for wave_index, wave in enumerate(waves):
-                if not wave:
-                    continue
-                try:
-                    recalled_stale, recalled_cache, wave_executed, recall_skipped, recall_errors = (
-                        self._recall(
-                            search_id, wave, candidates, iteration=iteration,
-                            known_fingerprints=self.store.query_fingerprints(search_id),
-                        )
-                    )
-                    stale, cached_at = stale or recalled_stale, cached_at or recalled_cache
-                    skipped.extend(recall_skipped)
-                    executed.extend(wave_executed)
-                    query_attempts += len(wave_executed) + len(recall_errors)
-                    recall_failed = recall_failed or bool(recall_errors)
-                except GitHubAuthenticationError:
-                    raise
-                except GitHubError:
-                    recall_failed = True
-                    query_attempts += len(wave)
-                if wave_index == 0 and deferred:
-                    slots = max(0, query_limit - query_attempts)
-                    if deep_split and slots:
-                        candidates = {
-                            name: item for name, item in candidates.items()
-                            if candidate_allowed(
-                                item, request, include_readme="readme" in item,
-                                negative_terms=negatives, rejected_terms=rejected,
-                            )
-                        }
-                        if not readme_first_done:
-                            first_limit, _second_limit = readme_batch_sizes(readme_budget)
-                            (
-                                readme_stale, readme_cache, first_enrich_failed, first_enriched,
-                                readme_attempted,
-                            ) = self._fetch_readme_batch(
-                                candidates, request, first_limit, phase="first", covered=set(),
-                                owner_counts=owner_counts,
-                            )
-                            stale, cached_at = stale or readme_stale, cached_at or readme_cache
-                            readme_first_done = True
-                        provisional = self._apply_query_feedback(
-                            copy.deepcopy(feedback_at_start), candidates, round_candidates,
-                            executed, request,
-                        )
-                        ranked = schedule_followup_queries(
-                            deferred, feedback=provisional,
-                            covered_terms=self._covered_terms(candidates, request),
-                            target_terms=explicit,
-                        )
-                        chosen = ranked[:slots]
-                        if chosen:
-                            waves.append(chosen)
-                        skipped.extend(self._record_unselected_queries(
-                            search_id, ranked[slots:], iteration=iteration,
-                        ))
-                    else:
-                        skipped.extend(self._record_unselected_queries(
-                            search_id, deferred, iteration=iteration,
-                        ))
-                    deferred = []
+            skipped.extend(blocked)
+            try:
+                recalled_stale, recalled_cache, executed, recall_skipped, recall_errors = self._recall(
+                    search_id, planned, candidates, iteration=iteration,
+                    known_fingerprints=self.store.query_fingerprints(search_id),
+                )
+                stale, cached_at = stale or recalled_stale, recalled_cache
+                skipped.extend(recall_skipped)
+                recall_failed = bool(recall_errors)
+            except GitHubAuthenticationError:
+                raise
+            except GitHubError:
+                recall_failed = True
         for candidate in candidates.values():
             annotate_candidate_mechanisms(candidate, request)
         candidates = {
@@ -2046,7 +1691,6 @@ class SearchEngine:
         }
         code_calls = 0
         code_failed = False
-        code_succeeded = False
         if "code" in strategies:
             for filename in hypothesis.filenames:
                 query = code_filename_query(
@@ -2055,7 +1699,7 @@ class SearchEngine:
                 # A code query is counted in the same budget as a keyword one, and
                 # used to ignore it: two rounds of six concepts and five filenames
                 # each put a session past a budget of thirty without a word.
-                if query_attempts + code_calls >= query_limit:
+                if len(executed) + code_calls >= query_limit:
                     self.store.add_query_history(
                         search_id, query, "key_file", 0, iteration=iteration,
                         fingerprint=query_fingerprint(query), skipped=True,
@@ -2070,7 +1714,6 @@ class SearchEngine:
                 code_calls += 1
                 try:
                     result = self.github.search_code(query, per_page=10)
-                    code_succeeded = True
                     stale = stale or result.stale
                     cached_at = cached_at or result.cached_at
                     items = self._items(result)
@@ -2089,29 +1732,18 @@ class SearchEngine:
                     raise
                 except GitHubError:
                     code_failed = True
-        if readme_first_done:
-            s, cache_time = False, None
-        elif readme_batched:
-            first_limit, _second_limit = readme_batch_sizes(readme_budget)
-            s, cache_time, first_enrich_failed, first_enriched, readme_attempted = (
-                self._fetch_readme_batch(
-                    candidates, request, first_limit, phase="first", covered=set(),
-                    owner_counts=owner_counts,
-                )
-            )
-        else:
-            s, cache_time, first_enrich_failed, first_enriched = self._enrich(
-                candidates, request, limit=readme_budget,
-            )
+        readme_budget = (
+            self.enrich_limit if stage == "expand" else remaining["readme_enrich_this_round"]
+        )
+        s, cache_time, first_enrich_failed, first_enriched = self._enrich(
+            candidates, request, limit=readme_budget,
+        )
         stale, cached_at = stale or s, cached_at or cache_time
         calls = 0
         relation_failed = False
-        relation_succeeded = False
         want_relations = any(name in strategies for name in ("relationship", "seed", "owner"))
         if want_relations and remaining["relation_calls"]:
-            (
-                s, cache_time, calls, relation_failed, relation_skipped, relation_hits,
-            ) = self._expand_relations(
+            s, cache_time, calls, relation_failed, relation_skipped = self._expand_relations(
                 search_id, candidates, request,
                 hypothesis.seeds or None, iteration=iteration,
                 call_limit=(
@@ -2119,35 +1751,17 @@ class SearchEngine:
                     else limits["relation_budget"]
                 ),
                 # Whatever keyword and code search left of this round's queries.
-                query_limit=max(0, query_limit - query_attempts - code_calls),
+                query_limit=max(0, query_limit - len(executed) - code_calls),
             )
-            relation_succeeded = relation_hits > 0
             skipped.extend(relation_skipped)
             stale, cached_at = stale or s, cached_at or cache_time
         leftover = max(0, readme_budget - first_enriched)
-        _first_planned, second_planned = (
-            readme_batch_sizes(readme_budget) if readme_batched else (readme_budget, 0)
-        )
         second_enrich_failed = False
         second_enriched = 0
-        # A budget of one plans no second batch. The slot is still unspent when
-        # the first attempt found nobody to fetch.
-        if leftover and (not readme_batched or second_planned > 0 or first_enriched == 0):
-            if readme_batched:
-                covered = covered_direction_ids(
-                    (item for item in candidates.values() if "readme" in item),
-                    request, reference_time=self.reference_time,
-                )
-                s, cache_time, second_enrich_failed, second_enriched, _second_tried = (
-                    self._fetch_readme_batch(
-                        candidates, request, leftover, phase="second", covered=covered,
-                        owner_counts=owner_counts, skip=readme_attempted,
-                    )
-                )
-            else:
-                s, cache_time, second_enrich_failed, second_enriched = self._enrich(
-                    candidates, request, limit=leftover,
-                )
+        if leftover:
+            s, cache_time, second_enrich_failed, second_enriched = self._enrich(
+                candidates, request, limit=leftover,
+            )
             stale, cached_at = stale or s, cached_at or cache_time
         executed_any = bool(executed) or calls > 0 or code_calls > 0
         confirmed_directions = list(state.get("confirmed_directions") or [])
@@ -2240,48 +1854,13 @@ class SearchEngine:
         )
         delta = output.get("boundary_delta") or {}
         skipped_all = bool(skipped) and not executed_any
-        saved = {
-            repo_key(item): item
-            for item in self.store.load_search(search_id)["candidates"]
-        }
-        sidecar_after = list((state.get("semantic_sidecar") or {}).get("candidates") or [])
-        # Old READMEs are scored with the request after this round, so a new name
-        # for text already on disk is in both sets. Sidecar rows are copied at
-        # the start because this round writes mechanisms onto the live objects.
-        before_evidence = merge_evidence_baseline(
-            state.get("evidence_baseline"),
-            evidence_snapshot(
-                [
-                    *(saved[key] for key in evidence_before_keys if key in saved),
-                    *sidecar_before,
-                ],
-                request,
-            ),
+        gained = meaningful_gain(
+            delta, previous_origins, (output.get("boundary") or {}).get("mechanism_origins"),
         )
-        after_evidence = evidence_snapshot([*saved.values(), *sidecar_after], request)
-        gained = evidence_progress(before_evidence, after_evidence)
-        acquired_readme = any(
-            "readme" in item and not item.get("readme_failed") and repo_key(item) not in readme_known_keys
-            for item in [*saved.values(), *sidecar_after]
-        )
-        # A sidecar search that GitHub answered is a measured search even when it
-        # found nothing; leaving it out meant rounds of empty hypotheses never
-        # counted towards stopping. A failed one is recorded as skipped and stays out.
-        semantic_answered = any(
-            str(row.get("kind") or "").startswith("semantic_") and not row.get("skipped")
-            and int(row.get("iteration") or 0) == iteration
-            for row in self.store.query_history(search_id)
-        )
-        measured = (
-            bool(executed) or code_succeeded or relation_succeeded or acquired_readme
-            or semantic_answered
-            or any(item.get("confirmation_queries") for item in confirmation_records)
-        )
-        if measured and not gained:
+        if executed_any and not gained:
             state["consecutive_no_gain"] = int(state.get("consecutive_no_gain") or 0) + 1
-        elif measured and gained:
+        elif executed_any:
             state["consecutive_no_gain"] = 0
-        state["evidence_baseline"] = after_evidence
         pre_hard = None
         if after_remaining["iterations"] <= 0:
             pre_hard = pre_hard or "max_iterations"
@@ -2293,16 +1872,10 @@ class SearchEngine:
             current_origins=(output.get("boundary") or {}).get("mechanism_origins"),
             consecutive_no_gain=int(state.get("consecutive_no_gain") or 0),
             consecutive_limit=self.consecutive_no_gain_limit,
-            boundary_gain=gained,
-            gain_judged=measured,
         )
         hard_after = bool(hard_reasons)
         next_action = "rank" if (stage == "expand" or hard_after) else "iterate"
         stop_reason = hard_reasons[0] if hard_after else None
-        feedback = self._apply_query_feedback(
-            feedback_at_start, candidates, round_candidates, executed, request,
-        )
-        state["query_feedback"] = feedback
         state["stop_reason"] = stop_reason
         self.store.save_session_state(search_id, state)
         self.store.save_iteration(
