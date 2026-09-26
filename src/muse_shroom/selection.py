@@ -9,7 +9,7 @@ from .analyze import age_days
 from .boundary_score import (
     annotate_boundary_signals, candidate_mechanism_names, contribution_score,
     exploration_terms, gated_boundary_value, novelty_score, recalled_mechanism_counts,
-    redundancy_penalty,
+    redundancy_penalty, shortlist_quotas,
 )
 from .models import Concept, SearchRequest, repo_key
 from .bm25 import ReadmeBM25
@@ -35,21 +35,23 @@ PROBE_POPULAR = 4
 PROBE_LOW_EXPOSURE = 5
 PROBE_MAX_OWNER = 2
 SHORTLIST_LIMIT = 12
-CORE_SEATS = 3
 SHORTLIST_MAX_OWNER = 2
-# Earlier lanes win when two category scores are equal, so the recorded
-# reason does not depend on dict order.
-_LANE_TIE = ("core", "boundary", "gems", "adjacent", "concept_bridge", "popular")
 
 
 def _text(candidate: dict[str, Any], include_readme: bool = False) -> dict[str, str]:
+    """A candidate's searchable fields, normalized once.
+
+    Each alias of each concept is matched against every field. Normalizing a
+    README per alias instead of per candidate made one shortlist over a few
+    hundred candidates take seconds.
+    """
     values = {
-        "name": str(candidate.get("full_name", "")).casefold(),
-        "topics": " ".join(map(str, candidate.get("topics", []))).casefold(),
-        "description": str(candidate.get("description", "")).casefold(),
+        "name": normalize(str(candidate.get("full_name", ""))),
+        "topics": normalize(" ".join(map(str, candidate.get("topics", [])))),
+        "description": normalize(str(candidate.get("description", ""))),
     }
     if include_readme:
-        values["readme"] = str(candidate.get("readme", "")).casefold()
+        values["readme"] = normalize(str(candidate.get("readme", "")))
     return values
 
 
@@ -91,6 +93,7 @@ def _term_source(term: str, surfaces: dict[str, str],
     `C++` and `C#` stay distinct. CJK stays a continuous match. Anything short
     of the whole phrase scores the share of complete tokens found, at 70% of
     that field's weight. A BM25 experiment may replace the README field only.
+    `surfaces` are already normalized, as `_text` returns them.
     """
     phrase = normalize(term)
     if not phrase:
@@ -102,11 +105,10 @@ def _term_source(term: str, surfaces: dict[str, str],
         if name == "readme" and readme_score is not None:
             score = readme_score
         else:
-            normalized = normalize(text)
-            if contains_normalized(normalized, phrase):
+            if contains_normalized(text, phrase):
                 score = FIELD_WEIGHTS[name]
             elif tokens:
-                hits = sum(contains_normalized(normalized, token) for token in tokens)
+                hits = sum(contains_normalized(text, token) for token in tokens)
                 score = (hits / len(tokens)) * FIELD_WEIGHTS[name] * .7
             else:
                 score = 0.0
@@ -125,19 +127,21 @@ def readme_concept_score(candidate: dict[str, Any], concept: Concept) -> float:
     readme = str(candidate.get("readme") or "")
     if not readme.strip():
         return 0.0
-    surfaces = {"readme": readme.casefold()}
+    surfaces = {"readme": normalize(readme)}
     best = max((_term_source(term, surfaces)[0] for term in concept.terms()), default=0.0)
     return best * 100.0
 
 
 def concept_coverage(candidate: dict[str, Any], concepts: Iterable[Concept],
                      *, include_readme: bool = False,
-                     bm25: ReadmeBM25 | None = None) -> float:
+                     bm25: ReadmeBM25 | None = None,
+                     surfaces: dict[str, str] | None = None) -> float:
     concepts = _scored_concepts(concepts)
     denominator = sum(concept.weight for concept in concepts)
     if denominator <= 0:
         return 0.0
-    surfaces = _text(candidate, include_readme)
+    if surfaces is None:
+        surfaces = _text(candidate, include_readme)
     total = 0.0
     for concept in concepts:
         group_score = max(
@@ -259,8 +263,10 @@ def nongeneric_query_source(candidate: dict[str, Any]) -> bool:
 
 def describe_concept_matches(candidate: dict[str, Any], request: SearchRequest,
                              *, include_readme: bool,
-                             bm25: ReadmeBM25 | None = None) -> list[dict[str, Any]]:
-    surfaces = _text(candidate, include_readme)
+                             bm25: ReadmeBM25 | None = None,
+                             surfaces: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    if surfaces is None:
+        surfaces = _text(candidate, include_readme)
     matches: list[dict[str, Any]] = []
     for prefix, concepts in (("core", request.core_concepts), ("adjacent", request.adjacent_concepts)):
         for index, concept in enumerate(concepts):
@@ -304,6 +310,13 @@ def describe_concept_matches(candidate: dict[str, Any], request: SearchRequest,
 def lexical_concept_evidence(candidate: dict[str, Any]) -> bool:
     return any(
         str(item.get("source") or "") in {"name", "topics", "description", "readme"}
+        and float(item.get("score") or 0) > 0
+        for item in candidate.get("concept_matches") or []
+    )
+
+def identity_concept_evidence(candidate: dict[str, Any]) -> bool:
+    return any(
+        str(item.get("source") or "") in {"name", "topics", "description"}
         and float(item.get("score") or 0) > 0
         for item in candidate.get("concept_matches") or []
     )
@@ -368,11 +381,16 @@ def score_candidates(candidates: Iterable[dict[str, Any]], request: SearchReques
     popularity = _percentiles(items)
     for item in items:
         key = repo_key(item)
+        surfaces = _text(item, enriched)
         item["concept_matches"] = describe_concept_matches(
-            item, request, include_readme=enriched, bm25=bm25,
+            item, request, include_readme=enriched, bm25=bm25, surfaces=surfaces,
         )
-        core = concept_coverage(item, request.core_concepts, include_readme=enriched, bm25=bm25)
-        adjacent = concept_coverage(item, request.adjacent_concepts, include_readme=enriched, bm25=bm25)
+        core = concept_coverage(
+            item, request.core_concepts, include_readme=enriched, bm25=bm25, surfaces=surfaces,
+        )
+        adjacent = concept_coverage(
+            item, request.adjacent_concepts, include_readme=enriched, bm25=bm25, surfaces=surfaces,
+        )
         relation = relationship_score(item)
         recall = rrf.get(key, 0.0) * .55 + core * .30 + relation * .15
         evidence = _evidence_completeness(item) if enriched else 0.0
@@ -434,43 +452,12 @@ def _owner_limited_add(selected: list[dict[str, Any]], selected_names: set[str],
     return True
 
 
-def _winning_lane(item: dict[str, Any]) -> tuple[float, str]:
-    """Highest score among the lanes this candidate actually qualifies for."""
-    lanes = set(item.get("selection_lanes") or [])
-    scores = item.get("_lane_scores") or {}
-    best_score = None
-    best_lane = None
-    for lane in _LANE_TIE:
-        if lane not in lanes or lane not in scores:
-            continue
-        score = float(scores[lane])
-        if best_score is None or score > best_score:
-            best_score = score
-            best_lane = lane
-    for lane in lanes:
-        if lane in _LANE_TIE or lane not in scores:
-            continue
-        score = float(scores[lane])
-        if best_score is None or score > best_score:
-            best_score = score
-            best_lane = lane
-    if best_lane is None:
-        return 0.0, "fallback"
-    return best_score, best_lane
-
-
-def _new_core_ids(item: dict[str, Any], covered: set[str], request: SearchRequest) -> set[str]:
-    valid = {concept_id for concept_id, _concept, _terms in indexed_groups(request.core_concepts, "core")}
-    found: set[str] = set()
-    for match in item.get("concept_matches") or []:
-        concept_id = str(match.get("concept_id") or "")
-        if concept_id in valid and concept_id not in covered and _match_covers_concept(match, item):
-            found.add(concept_id)
-    return found
+def _unseen_mechanisms(item: dict[str, Any], presented: set[str]) -> list[str]:
+    return [name for name in candidate_mechanism_names(item) if name.casefold() not in presented]
 
 
 def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest,
-                    *, enriched: bool,
+                    quotas: dict[str, int], *, enriched: bool,
                     max_per_owner: int | None = None, mode: str = "deep",
                     mechanism_aware: bool = True, rescore: bool = True,
                     reference_time: str | datetime | None = None,
@@ -487,7 +474,7 @@ def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest
     selected: list[dict[str, Any]] = []
     selected_names: set[str] = set()
     owner_counts: dict[str, int] = {}
-    counts: dict[str, int] = {}
+    counts = {lane: 0 for lane in quotas}
     presented: set[str] = set()
     presented_counts: Counter[str] = Counter()
     pool_counts = recalled_mechanism_counts(items)
@@ -505,7 +492,8 @@ def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest
             presented_counts[name.casefold()] += 1
         return True
 
-    def adjusted(item: dict[str, Any], base: float) -> float:
+    def live_score(item: dict[str, Any], lane: str) -> float:
+        base = float((item.get("_lane_scores") or {}).get(lane) or 0.0)
         if not mechanism_aware:
             return base
         contrib = gated_boundary_value(
@@ -520,68 +508,71 @@ def balanced_select(candidates: Iterable[dict[str, Any]], request: SearchRequest
         red = redundancy_penalty(item, presented, presented_counts=presented_counts)
         return base + contrib * weights["contribution"] + novelty * weights["novelty"] - red * weights["redundancy"]
 
-    # Repositories the user was already shown only take seats the fresh pool
-    # leaves empty. Metadata matches do not fill those seats first: three core
-    # seats are reserved, and every other seat is one competition.
+    # Deferred candidates (repositories the user was already shown) only take the
+    # places the others leave empty. `active` is the phase's candidate list.
     phases = [items]
     if deferred:
         phases = [
             [item for item in items if repo_key(item) not in deferred],
             [item for item in items if repo_key(item) in deferred],
         ]
-    skipped: set[str] = set()
+    active = items
 
-    def waiting(active: list[dict[str, Any]], predicate) -> list[dict[str, Any]]:
-        return [
+    def take(lane: str, quota: int, *, allow_repeat: bool, identity_only: bool) -> None:
+        while counts.get(lane, 0) < quota:
+            pool = [
+                item for item in active
+                if repo_key(item) not in selected_names
+                and lane in item.get("selection_lanes", [])
+            ]
+            if not allow_repeat:
+                unseen = [item for item in pool if _unseen_mechanisms(item, presented) or not candidate_mechanism_names(item)]
+                if unseen:
+                    pool = unseen
+            if identity_only:
+                pool = [item for item in pool if identity_concept_evidence(item)]
+            if not pool:
+                return
+            best = sorted(pool, key=lambda item: (-live_score(item, lane), repo_key(item)))[0]
+            if not add(best, lane):
+                selected_names.add(repo_key(best))
+                continue
+            counts[lane] = counts.get(lane, 0) + 1
+
+    def fill(*, identity_only: bool) -> None:
+        for lane, quota in quotas.items():
+            take(lane, quota, allow_repeat=False, identity_only=identity_only)
+            if counts.get(lane, 0) < quota:
+                take(lane, quota, allow_repeat=True, identity_only=identity_only)
+
+    def fallback_lane(item: dict[str, Any]) -> str:
+        if "core" in item.get("selection_lanes", []):
+            return "core"
+        return next((lane for lane in quotas if lane in item.get("selection_lanes", [])), "core")
+
+    def backfill(*, identity_only: bool) -> None:
+        leftover = [
             item for item in active
             if repo_key(item) not in selected_names
-            and repo_key(item) not in skipped
-            and predicate(item)
+            and (identity_concept_evidence(item) if identity_only else True)
         ]
+        leftover.sort(key=lambda item: (-live_score(item, fallback_lane(item)), repo_key(item)))
+        for item in leftover:
+            if len(selected) >= target:
+                return
+            add(item, fallback_lane(item))
 
-    def take(active: list[dict[str, Any]], predicate, key, lane_for) -> bool:
-        pool = waiting(active, predicate)
-        if not pool:
-            return False
-        best = min(pool, key=key)
-        if not add(best, lane_for(best)):
-            skipped.add(repo_key(best))
-        else:
-            lane = (best.get("selection_reason") or {}).get("lane") or lane_for(best)
-            counts[lane] = counts.get(lane, 0) + 1
-        return True
-
-    def core_key(item: dict[str, Any]) -> tuple:
-        covered = covered_core_ids(selected, request)
-        fresh = 0 if _new_core_ids(item, covered, request) else 1
-        base = float((item.get("_lane_scores") or {}).get("core") or 0.0)
-        return (fresh, -adjusted(item, base), repo_key(item))
-
-    def open_key(item: dict[str, Any]) -> tuple:
-        base, _lane = _winning_lane(item)
-        return (-adjusted(item, base), repo_key(item))
-
-    limit = SHORTLIST_LIMIT
-    core_reserved = 0
+    target = sum(quotas.values())
     for active in phases:
-        while core_reserved < CORE_SEATS and len(selected) < limit:
-            before = len(selected)
-            if not take(
-                active,
-                lambda item: "core" in item.get("selection_lanes", []),
-                core_key,
-                lambda _item: "core",
-            ):
-                break
-            if len(selected) > before:
-                core_reserved += 1
-        while len(selected) < limit:
-            if not take(active, lambda _item: True, open_key, lambda item: _winning_lane(item)[1]):
-                break
+        fill(identity_only=True)
+        backfill(identity_only=True)
+        fill(identity_only=False)
+        backfill(identity_only=False)
+    counts["fallback"] = max(0, len(selected) - sum(counts.get(lane, 0) for lane in quotas))
     for item in items:
         item.pop("_lane_scores", None)
         item.pop("_boundary_weights", None)
-    return selected[:limit], counts
+    return selected[:target], counts
 
 
 def readme_batch_sizes(budget: int) -> tuple[int, int]:
@@ -804,8 +795,9 @@ def shortlist_select(candidates: Iterable[dict[str, Any]], request: SearchReques
         items, request, enriched=True, mode=mode, reference_time=reference_time,
         readme_model=readme_model,
     )
+    quotas = shortlist_quotas(scored, mode=mode)
     selected, counts = balanced_select(
-        scored, request, enriched=True, max_per_owner=SHORTLIST_MAX_OWNER, mode=mode,
+        scored, request, quotas, enriched=True, max_per_owner=SHORTLIST_MAX_OWNER, mode=mode,
         rescore=False, reference_time=reference_time, deferred=deferred,
     )
     return selected[:SHORTLIST_LIMIT], counts
