@@ -1,3 +1,3 @@
 """Muse-shroom public package."""
 
-__version__ = "0.13.2"
+__version__ = "0.12.10"
