@@ -3,9 +3,9 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Iterable
 
-from .boundary import canonical_token_key, mechanism_distribution
+from .boundary import mechanism_distribution
 from .confirmation import confirmation_metrics
-from .selection import COVERAGE_MIN_SCORE, concept_coverage, readme_concept_score
+from .selection import concept_coverage
 from .models import (
     ContractError,
     DEFAULT_CONSECUTIVE_NO_GAIN,
@@ -20,7 +20,6 @@ from .models import (
     SearchRequest,
 )
 from .sidecar import empty_sidecar_state, public_hypothesis
-from .queries import empty_query_feedback, is_generic_term
 from .text import normalize
 
 
@@ -35,8 +34,6 @@ def default_session_state() -> dict[str, Any]:
         "consecutive_no_gain": 0,
         "stop_reason": None,
         "semantic_sidecar": empty_sidecar_state(),
-        "query_feedback": empty_query_feedback(),
-        "evidence_baseline": empty_evidence_baseline(),
     }
 
 
@@ -55,109 +52,6 @@ def remaining_budget(*, iteration: int, queries_used: int, relation_calls_used: 
         "readme_enrich_this_round": readme_enrich_per_iteration,
         "relation_calls": max(0, relation_budget - relation_calls_used),
     }
-
-
-def empty_evidence_baseline() -> dict[str, list[str]]:
-    return {"directions": [], "mechanisms": []}
-
-
-def _located_readme(candidate: dict[str, Any]) -> bool:
-    return bool(str(candidate.get("readme_sha") or "").strip()) and bool(
-        str(candidate.get("readme") or "").strip()
-    )
-
-
-def _names_request_direction(name: str, request: SearchRequest) -> bool:
-    folded = name.casefold()
-    name_key = canonical_token_key(name)
-    for concept in request.exploration_directions:
-        for surface in concept.terms():
-            if surface.casefold() == folded or canonical_token_key(surface) == name_key:
-                return True
-    return False
-
-
-def merge_evidence_baseline(stored: dict[str, Any] | None,
-                            current: dict[str, Any]) -> dict[str, list[str]]:
-    """Keep coverage already recorded, and coverage the current request sees on old READMEs."""
-    stored = stored or {}
-    return {
-        "directions": sorted(set(stored.get("directions") or []) | set(current.get("directions") or [])),
-        "mechanisms": sorted(set(stored.get("mechanisms") or []) | set(current.get("mechanisms") or [])),
-    }
-
-
-def _specific_concept(concept: Any) -> bool:
-    return any(not is_generic_term(term) for term in concept.terms())
-
-
-def mechanism_evidence_key(name: str, request: SearchRequest) -> str:
-    """Collapse a mechanism label onto the request concept it already names.
-
-    Aliases and the existing token normalization count as the same mechanism.
-    Nothing here invents a synonym.
-    """
-    folded = name.casefold()
-    name_key = canonical_token_key(name)
-    for concept in request.mechanisms:
-        for surface in concept.terms():
-            if surface.casefold() == folded or canonical_token_key(surface) == name_key:
-                return canonical_token_key(concept.term)
-    return name_key
-
-
-def evidence_snapshot(candidates: Iterable[dict[str, Any]],
-                      request: SearchRequest) -> dict[str, list[str]]:
-    """README-located coverage of problem concepts, exploration directions, and mechanisms.
-
-    A direction counts when the README itself scores at the usual coverage bar.
-    A mechanism counts only with a README source and a README SHA on that repo.
-    """
-    directions: set[str] = set()
-    mechanisms: set[str] = set()
-    tracked = [
-        *[
-            (f"core:{index}", concept)
-            for index, concept in enumerate(request.problem_concepts)
-            if _specific_concept(concept)
-        ],
-        *[
-            (f"adjacent:{index}", concept)
-            for index, concept in enumerate(request.exploration_directions)
-            if _specific_concept(concept)
-        ],
-    ]
-    for candidate in candidates:
-        if not _located_readme(candidate):
-            continue
-        for concept_id, concept in tracked:
-            if readme_concept_score(candidate, concept) >= COVERAGE_MIN_SCORE:
-                directions.add(concept_id)
-        for mechanism in candidate.get("mechanisms") or []:
-            role = mechanism.get("role")
-            name = str(mechanism.get("name") or "").strip()
-            if not name:
-                continue
-            # A request exploration direction is already a direction id. A sidecar
-            # finding keeps role "exploration" and is not one of those directions.
-            if role == "exploration" and _names_request_direction(name, request):
-                continue
-            if role not in {"mechanism", "exploration"}:
-                continue
-            sources = {str(item) for item in mechanism.get("sources") or []}
-            if "readme" not in sources:
-                continue
-            mechanisms.add(mechanism_evidence_key(name, request))
-    return {"directions": sorted(directions), "mechanisms": sorted(mechanisms)}
-
-
-def evidence_progress(before: dict[str, Any] | None, after: dict[str, Any] | None) -> bool:
-    """True when the later snapshot covers a direction or mechanism the earlier one did not."""
-    before = before or {}
-    after = after or {}
-    new_directions = set(after.get("directions") or []) - set(before.get("directions") or [])
-    new_mechanisms = set(after.get("mechanisms") or []) - set(before.get("mechanisms") or [])
-    return bool(new_directions or new_mechanisms)
 
 
 def meaningful_gain(delta: dict[str, Any] | None,
@@ -214,9 +108,7 @@ def iteration_stop_reasons(*, hard_reason: str | None, delta: dict[str, Any],
                            executed: bool, previous_origins: dict[str, Any] | None,
                            current_origins: dict[str, Any] | None,
                            consecutive_no_gain: int = 0,
-                           consecutive_limit: int = DEFAULT_CONSECUTIVE_NO_GAIN,
-                           boundary_gain: bool | None = None,
-                           gain_judged: bool | None = None,
+                           consecutive_limit: int = DEFAULT_CONSECUTIVE_NO_GAIN
                            ) -> tuple[list[str], list[str]]:
     hard: list[str] = []
     signals: list[str] = []
@@ -228,12 +120,7 @@ def iteration_stop_reasons(*, hard_reason: str | None, delta: dict[str, Any],
         signals.append("duplicate_queries")
     if executed and not (delta.get("new_mechanisms") or []):
         signals.append("no_new_mechanism")
-    judged = executed if gain_judged is None else gain_judged
-    gained = (
-        meaningful_gain(delta, previous_origins, current_origins)
-        if boundary_gain is None else boundary_gain
-    )
-    if judged and not gained:
+    if executed and not meaningful_gain(delta, previous_origins, current_origins):
         signals.append("no_boundary_gain")
     if not (boundary.get("unexplored_directions") or []):
         signals.append("directions_covered")

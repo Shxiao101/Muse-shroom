@@ -240,6 +240,8 @@ def annotate_boundary_signals(items: list[dict[str, Any]], request: SearchReques
             + evidence * 0.10
         )
         item["_boundary_weights"] = weights
+
+
 FALLBACK_QUOTAS = {"core": 3, "gems": 4, "adjacent": 2, "concept_bridge": 3}
 
 
