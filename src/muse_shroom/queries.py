@@ -399,6 +399,131 @@ def unplanned_terms(request: SearchRequest, queries: Iterable[str]) -> list[dict
     return unsearched
 
 
+def query_group(spec: dict[str, Any]) -> str:
+    """Identity of a planned query's group: its kind and concept, not a new phrase."""
+    kind = str(spec.get("kind") or "query")
+    concept = str(spec.get("concept_id") or "")
+    return f"{kind}:{concept}" if concept else kind
+
+
+def concept_identity(term: str, request: SearchRequest) -> str:
+    """The concept a hypothesis term searches for, the same in every round.
+
+    A request concept is named by its place in the request, which only grows at
+    the end, so the place holds across rounds and its aliases share it. Any other
+    term is named by itself. Hypothesis queries used to be named by their slot in
+    this round's lists, and every consumer of the name went wrong: RRF pooled two
+    rounds' different terms as one concept, feedback handed a new term what
+    another had earned, and `adjacent:0` of a hypothesis was read as the request's
+    first direction.
+    """
+    key = normalize(term) or term.strip().casefold()
+    for prefix, concepts in (("core", request.core_concepts), ("adjacent", request.adjacent_concepts)):
+        for index, concept in enumerate(concepts):
+            if any((normalize(value) or value.strip().casefold()) == key for value in concept.terms()):
+                return f"{prefix}:{index}"
+    return f"term:{key}"
+
+
+def empty_query_feedback() -> dict[str, Any]:
+    return {"groups": {}}
+
+
+def _robin(queries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    order: list[str] = []
+    for query in queries:
+        key = str(query.get("concept_id") or query.get("query") or "")
+        if key not in buckets:
+            order.append(key)
+            buckets[key] = []
+        buckets[key].append(query)
+    merged: list[dict[str, Any]] = []
+    while any(buckets[key] for key in order):
+        for key in order:
+            if buckets[key]:
+                merged.append(buckets[key].pop(0))
+    return merged
+
+
+def schedule_initial_queries(planned: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Cover each problem concept, then each exploration direction, before repeats."""
+    problems = [query for query in planned if query.get("kind") == "problem"]
+    explorations = [query for query in planned if query.get("kind") == "exploration"]
+    rest = [query for query in planned if query.get("kind") not in {"problem", "exploration"}]
+    return _robin(problems) + _robin(explorations) + rest
+
+
+def schedule_iteration_queries(planned: list[dict[str, Any]],
+                               explicit_terms: Iterable[str]) -> list[dict[str, Any]]:
+    """Agent-named targets first, then one query at a time from each other direction."""
+    wanted = {str(term).casefold() for term in explicit_terms if str(term).strip()}
+    explicit: list[dict[str, Any]] = []
+    other: list[dict[str, Any]] = []
+    for query in planned:
+        term = str(query.get("term") or "").casefold()
+        if term and term in wanted:
+            explicit.append(query)
+        else:
+            other.append(query)
+    return explicit + _robin(other)
+
+
+def schedule_followup_queries(planned: list[dict[str, Any]], *,
+                              feedback: dict[str, Any] | None,
+                              covered_terms: Iterable[str],
+                              target_terms: Iterable[str]) -> list[dict[str, Any]]:
+    """Order an existing plan. Missing feedback keeps the original order."""
+    groups = (feedback or {}).get("groups") or {}
+    covered = {str(term).casefold() for term in covered_terms if str(term).strip()}
+    targets = {str(term).casefold() for term in target_terms if str(term).strip()}
+
+    def sort_key(pair: tuple[int, dict[str, Any]]) -> tuple:
+        index, query = pair
+        term = str(query.get("term") or "").casefold()
+        stats = groups.get(query_group(query)) or {}
+        attempts = int(stats.get("attempts") or 0)
+        rate = float(stats.get("credit") or 0.0) / attempts if attempts else 0.0
+        # Uncovered targets, then queries with no measurement, then measured yield.
+        # Inside the target band a measured query is ordered by yield, so a
+        # high-yield query is not stuck behind the plan's original tail.
+        if term and term in targets and term not in covered:
+            if attempts <= 0:
+                return (0, 0.0, 0.0, index)
+            return (0, 1.0, -rate, index)
+        if attempts <= 0:
+            return (1, 0.0, 0.0, index)
+        return (2, 0.0, -rate, index)
+
+    return [query for _, query in sorted(enumerate(planned), key=sort_key)]
+
+
+def note_measured_attempts(feedback: dict[str, Any] | None,
+                           executed: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Count queries that returned. Network failures are omitted, not scored as zero."""
+    groups = {
+        key: {"attempts": int(value.get("attempts") or 0), "credit": float(value.get("credit") or 0.0)}
+        for key, value in ((feedback or {}).get("groups") or {}).items()
+        if isinstance(value, dict)
+    }
+    for spec in executed:
+        stats = groups.setdefault(query_group(spec), {"attempts": 0, "credit": 0.0})
+        stats["attempts"] += 1
+    return {"groups": groups}
+
+
+def credit_shared_discovery(feedback: dict[str, Any], finders: list[dict[str, Any]]) -> dict[str, Any]:
+    """Split one new candidate evenly across the queries that found it."""
+    groups = feedback.setdefault("groups", {})
+    if not finders:
+        return feedback
+    share = 1.0 / len(finders)
+    for spec in finders:
+        stats = groups.setdefault(query_group(spec), {"attempts": 0, "credit": 0.0})
+        stats["credit"] = float(stats.get("credit") or 0.0) + share
+    return feedback
+
+
 def query_fingerprint(query: str) -> str:
     tokens = [token.strip().strip('"').casefold() for token in query.split()]
     return " ".join(sorted(token for token in tokens if token))
@@ -429,7 +554,7 @@ def hypothesis_queries(hypothesis: SearchHypothesis, request: SearchRequest,
     known = set(known_fingerprints)
     planned: list[dict[str, Any]] = []
 
-    def add(term: str, kind: str, concept_id: str) -> None:
+    def add(term: str, kind: str) -> None:
         clean = term.strip()
         if not clean or term_blocked_by_negative(clean, blocked):
             return
@@ -440,7 +565,7 @@ def hypothesis_queries(hypothesis: SearchHypothesis, request: SearchRequest,
         normalized = " ".join(query.split())
         item = {
             "query": normalized, "kind": kind, "sort": "stars",
-            "concept_id": concept_id, "term": clean,
+            "concept_id": concept_identity(clean, request), "term": clean,
             "lane_kind": "adjacent" if kind in {"adjacent", "exploration"} else "core",
             "fingerprint": query_fingerprint(normalized),
         }
@@ -449,21 +574,21 @@ def hypothesis_queries(hypothesis: SearchHypothesis, request: SearchRequest,
         planned.append(item)
 
     if hypothesis.target_mechanism:
-        add(hypothesis.target_mechanism, "refinement", "hypothesis:mechanism")
+        add(hypothesis.target_mechanism, "refinement")
     if hypothesis.target_direction:
-        add(hypothesis.target_direction, "adjacent", "hypothesis:direction")
-    for index, term in enumerate(hypothesis.concepts):
-        add(term, "refinement", f"refinement:{index}")
-    for index, term in enumerate(hypothesis.aliases):
-        add(term, "refinement", f"hypothesis:alias:{index}")
-    for index, term in enumerate(hypothesis.adjacent_concepts):
-        add(term, "adjacent", f"adjacent:{index}")
-    for index, term in enumerate(hypothesis.promote_discovered_terms):
-        add(term, "adjacent", f"hypothesis:discovered:{index}")
-    for index, addition in enumerate(hypothesis.add_exploration_directions):
+        add(hypothesis.target_direction, "adjacent")
+    for term in hypothesis.concepts:
+        add(term, "refinement")
+    for term in hypothesis.aliases:
+        add(term, "refinement")
+    for term in hypothesis.adjacent_concepts:
+        add(term, "adjacent")
+    for term in hypothesis.promote_discovered_terms:
+        add(term, "adjacent")
+    for addition in hypothesis.add_exploration_directions:
         if addition.evidence == "host_hypothesis":
             continue
-        add(addition.term, "adjacent", f"hypothesis:exploration:{index}")
+        add(addition.term, "adjacent")
     for left in (hypothesis.concepts[:3] or ([hypothesis.target_mechanism] if hypothesis.target_mechanism else [])):
         for right in hypothesis.anchors[:3]:
             if not left or term_blocked_by_negative(left, blocked) or term_blocked_by_negative(right, blocked):
@@ -472,7 +597,7 @@ def hypothesis_queries(hypothesis: SearchHypothesis, request: SearchRequest,
             normalized = " ".join(query.split())
             item = {
                 "query": normalized, "kind": "anchor", "sort": "stars",
-                "concept_id": "hypothesis:anchor", "term": left,
+                "concept_id": concept_identity(left, request), "term": left,
                 "lane_kind": "core", "fingerprint": query_fingerprint(normalized),
             }
             if not any(existing["query"] == item["query"] for existing in planned):

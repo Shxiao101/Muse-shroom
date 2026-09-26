@@ -103,7 +103,7 @@ Decide from `observation` first, in this order: `stop`, `unexplored_directions`,
 
 If `stop.should_stop` is true, stop iterating. `stop.signals` (`no_new_mechanism`, `no_boundary_gain`, `directions_covered`) are advisory only. You may continue when remaining budget, discovered terms, or unexplored directions still look valuable.
 
-Hard stops recorded in `stop.reasons`: `agent_stop`, `max_iterations`, `query_budget_exhausted`, `duplicate_queries`, `consecutive_no_gain`.
+Hard stops recorded in `stop.reasons`: `agent_stop`, `max_iterations`, `query_budget_exhausted`, `duplicate_queries`, `consecutive_no_gain`. `consecutive_no_gain` counts rounds that ran and added no README-located evidence for a previously uncovered problem concept, exploration direction, or mechanism. A new term or alias does not reset it. A round whose only answered searches were semantic hypotheses still ran. A round that did not run, or that failed entirely on the network, leaves the count unchanged.
 
 Default deep-mode budget: 3 iterations after the initial search, 6 keyword queries per iteration, 30 session search queries, 15 README enrichments per iteration, a 250-candidate pool. The semantic sidecar is extra: up to 2 host hypotheses, 2 queries each, 4 README enrichments. Every recalled candidate whose recorded text matches the hypothesis term or one of its aliases is offered in the same response as a selectable assessment candidate carrying its `mechanism_match` evidence; code picks none of them, and the round stays within the output cap by publishing those candidates in a lean cite-and-quote form. Quick mode stays at 100 candidates and does not iterate or invoke the sidecar.
 

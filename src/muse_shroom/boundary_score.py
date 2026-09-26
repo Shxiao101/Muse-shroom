@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Iterable
 
-from .boundary import mechanism_distribution
 from .models import SearchRequest
 
 
@@ -240,29 +239,6 @@ def annotate_boundary_signals(items: list[dict[str, Any]], request: SearchReques
             + evidence * 0.10
         )
         item["_boundary_weights"] = weights
-
-
-FALLBACK_QUOTAS = {"core": 3, "gems": 4, "adjacent": 2, "concept_bridge": 3}
-
-
-def shortlist_quotas(items: Iterable[dict[str, Any]], *, mode: str = "deep") -> dict[str, int]:
-    pool = list(items)
-    if mode != "deep" or not any(candidate_mechanism_names(item) for item in pool):
-        return dict(FALLBACK_QUOTAS)
-    dist = mechanism_distribution(pool)
-    unique = len(dist)
-    assignments = sum(dist.values())
-    redundancy = max(0, assignments - unique) / max(1, assignments)
-    cores = [
-        float((item.get("selection_score_components") or {}).get("core_concept") or 0)
-        for item in pool
-    ]
-    mean_core = sum(cores) / max(1, len(cores))
-    if mean_core < 25:
-        return {"core": 4, "gems": 3, "adjacent": 2, "concept_bridge": 2, "boundary": 1}
-    if redundancy >= 0.45 and unique >= 2:
-        return {"boundary": 3, "core": 2, "adjacent": 2, "gems": 3, "concept_bridge": 2}
-    return {"core": 3, "boundary": 2, "gems": 3, "adjacent": 2, "concept_bridge": 2}
 
 
 def new_mechanisms_for(candidate: dict[str, Any], presented: Iterable[str]) -> list[str]:
